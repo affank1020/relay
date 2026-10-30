@@ -6,7 +6,10 @@ import { timingSafeEqual, randomUUID } from 'node:crypto';
 import { createAgentSession, ModelRuntime, SessionManager, DefaultResourceLoader } from '@earendil-works/pi-coding-agent';
 
 const token = process.env.RELAY_ACCESS_TOKEN || '';
-const modelId = process.env.RELAY_MODEL || 'qwen/qwen3-coder-next';
+const modelId = process.env.RELAY_MODEL || 'poolside/laguna-s-2.1:free';
+// Test mode: require OpenRouter's explicit zero-priced free model variant.
+// Do not allow a paid model if the default or environment value changes.
+if (!modelId.endsWith(':free')) throw new Error('Relay free-only mode requires RELAY_MODEL to end in :free');
 const maxActive = Math.max(1, Math.min(4, Number(process.env.RELAY_MAX_ACTIVE || 1)));
 if (token.length < 24) throw new Error('RELAY_ACCESS_TOKEN must be 24+ characters');
 if (!process.env.OPENROUTER_API_KEY) throw new Error('OPENROUTER_API_KEY is required');
@@ -29,7 +32,7 @@ async function readBody(req) {
 const summary = (s) => ({id:s.id,title:s.title,costUsd:s.costUsd,busy:s.busy,createdAt:s.createdAt});
 const event = (res,type,data) => { if (!res.destroyed) res.write(JSON.stringify({type,data})+'\n'); };
 async function createPi() {
-  runtime ||= await ModelRuntime.create();
+  runtime ||= await ModelRuntime.create({allowModelNetwork:true,modelRefreshTimeoutMs:15000});
   const model = runtime.getModel('openrouter',modelId);
   if (!model) throw new Error('Model unavailable in Pi OpenRouter catalog: '+modelId);
   const loader = new DefaultResourceLoader({systemPromptOverride:()=> 'You are Relay, a concise and helpful AI assistant. No tools are enabled in this initial release. Never claim to have read files, used Atlas, or executed operations.'});
