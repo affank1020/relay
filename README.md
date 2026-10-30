@@ -39,6 +39,6 @@ Cloudflare only needs the DNS A record for `relay` pointing to the same VPS as A
 
 See [deployment documentation](docs/deployment.md) for deployment order, verification and security notes.
 
-Atlas MCP orchestration, persistence, budgets and multi-agent execution are forthcoming. Don't send private data to free model providers without reviewing their policies.
+**Development preview:** Relay now includes a SQLite-backed task/conversation/event store, a Pi adapter, a restricted server-side Atlas MCP gateway, approvals for explicitly allowlisted development tasks, a bounded delegation queue, budget controls, and an execution inspector. These features have passing automated tests, but live Atlas MCP access and production end-to-end behaviour still require configuration and validation. This is not an unrestricted autonomous coding environment. Don't send private data to free model providers without reviewing their policies.
 
 **Hosted authentication:** `https://relay.affankhan.dev` needs only the shared VPS Basic Auth username/password. The private gateway injects `RELAY_ACCESS_TOKEN`; do not enter that token into the hosted browser. Direct `http://127.0.0.1:8765` access still prompts for the separate API token.

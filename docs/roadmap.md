@@ -1,3 +1,15 @@
+# Relay — integrated implementation status (30 October 2026)
+
+The initial readiness PR was extended into a single integration change at the owner's request. This supersedes the earlier staged-PR delivery sequence preserved below as historical planning context.
+
+Implemented in source: SQLite conversation/task/event storage with sequence-based replay; Pi harness with limited explicit tools; Atlas MCP Streamable HTTP gateway with a read-only allowlist, correlated event records and approval-gated named development tasks; bounded queued/dependent/delegated tasks; explicit cancellation/reconciliation and cost/token budgets; a basic chat UI with activity inspector and reconnect-friendly message idempotency; and persistent Docker data volume.
+
+Validated: Mac owner reports `npm run verify` passed for the integrated working tree, and GitHub Verify successfully ran on integration commit `90dcf256` (Node 22 typecheck, build, tests, Compose/Caddy and Docker). This does **not** establish production/live Atlas connectivity.
+
+Outstanding verification and product work: actual credentialed Relay→Atlas read-only smoke test; Atlas admin configuration of local Mac development tasks; Playwright browser E2E; robust performance/load and restart drills; UI model selection and broader UX refinements; secure paid-provider configuration if ever requested; richer agent-to-agent collaboration and additional mutation workflows. Keep these limitations visible instead of claiming the full long-term product vision is complete.
+
+---
+
 # Atlas-native Relay engineering sequence
 
 ## Inspected baseline — 30 October 2026

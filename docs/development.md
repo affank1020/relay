@@ -24,7 +24,7 @@ For interactive local chat, configure the variables in .env.example in your shel
 `node --env-file=.env dist/server.js`.
 Use HOST=127.0.0.1 for local-only access. Never copy production secrets into test fixtures.
 RELAY_MAX_ACTIVE must be an integer from 1 to 4; invalid values fail startup.
-Sessions are still ephemeral. Restarting discards conversations.
+Conversation metadata, task lifecycle, approvals and execution events now persist in a Relay-only SQLite file inside RELAY_DATA_DIR (default `.relay/`). Pi session files are stored beneath the same directory and the Docker configuration mounts a dedicated `relay_data` volume. Active work at restart is marked interrupted and requires reconciliation before retrying. Back up this volume before deployments and do not share its database with Atlas.
 
 ## Atlas Mac execution
 
@@ -70,3 +70,11 @@ and Docker build. A PR never deploys. Existing reviewed-main deployment, Basic A
 injection, private networking and resource limits remain in place.
 See [deployment](deployment.md) and [automatic deployment](auto-deploy.md) for rollback.
 This change has no database migration; rollback uses the existing image/source procedure.
+
+## Atlas MCP development integration (new)
+
+Set `ATLAS_MCP_URL` and `ATLAS_MCP_TOKEN` **on the Relay server only** after obtaining an Atlas-authorized credential. Never put the token in public files or browser storage. Without the URL, Relay can chat but reports Atlas as not configured. Read-only tool calls are explicitly allowlisted; `workspace_run_dev_task` additionally requires a per-checkout task name in `RELAY_ATLAS_DEV_TASKS` (a JSON map), Atlas Node capability support, and a user approval. The Atlas owner must still configure the Node-side named development tasks. A green fixture test does not prove live credentials or operations; perform a separately recorded read-only smoke test before relying on the integration.
+
+## Known verification limits
+
+The integrated branch has CI coverage for compilation, HTTP fixtures, Pi SDK startup, scheduler behaviour and real MCP protocol fixtures. Playwright browser-level E2E tests, a credentialed live Atlas→Relay smoke test, detailed VPS load measurements and production rollback rehearsal have not been completed. Do not describe those as passed. The legacy `src/application.ts` tests cover the previous HTTP seam; the current production HTTP server lives in `src/platform.ts`.
