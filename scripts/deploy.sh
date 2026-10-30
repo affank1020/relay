@@ -53,7 +53,14 @@ printf '\n'
 "${compose[@]}" ps
 echo "Relay healthy."
 if "$with_ingress"; then
-  echo "Private gateway ready; standalone vps-infra Caddy must be cut over to enable the public hostname."
+  # A healthy Relay server is insufficient: verify that the gateway really
+  # inserts its server-side API token, without sending secrets to the browser.
+  "${compose[@]}" exec -T gateway wget -q -O /dev/null http://127.0.0.1:8080/api/status || {
+    echo "Relay internal gateway API auth probe failed; check Caddy token injection." >&2
+    exit 1
+  }
+  echo "Relay gateway API auth probe passed."
+  echo "Private gateway ready; standalone vps-infra Caddy serves the public hostname."
 else
   echo 'For relay.affankhan.dev use ./scripts/deploy.sh --ingress'
 fi
