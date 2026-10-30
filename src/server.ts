@@ -15,7 +15,13 @@ if(!model.endsWith(':free'))throw new Error('Relay free-only mode requires RELAY
 const root=process.env.RELAY_DATA_DIR || join(process.cwd(),'.relay');
 await mkdir(root,{recursive:true,mode:0o700});
 const store=new Store(join(root,'relay.sqlite'));
-const atlas=process.env.ATLAS_MCP_URL?new McpTransport(process.env.ATLAS_MCP_URL,process.env.ATLAS_MCP_TOKEN || ''):undefined;
+const atlasUrl=process.env.ATLAS_MCP_URL?.trim() || '';
+const atlasToken=process.env.ATLAS_MCP_TOKEN || '';
+if (atlasUrl && !/^[a-f0-9]{64}$/.test(atlasToken))
+  throw new Error('ATLAS_MCP_TOKEN must be a 32-byte random hexadecimal service token when ATLAS_MCP_URL is set');
+if (!atlasUrl && atlasToken)
+  throw new Error('ATLAS_MCP_URL is required when ATLAS_MCP_TOKEN is configured');
+const atlas=atlasUrl ? new McpTransport(atlasUrl,atlasToken) : undefined;
 const devTasks:unknown=JSON.parse(process.env.RELAY_ATLAS_DEV_TASKS || '{}');
 if(!devTasks||typeof devTasks!=='object'||Array.isArray(devTasks)||Object.entries(devTasks).some(([id,names])=>!id.match(/^[a-f0-9-]{36}$/i)||!Array.isArray(names)||names.some(n=>typeof n!=='string'||!n.match(/^[a-z][a-z0-9_-]{0,63}$/))))throw new Error('Invalid development task allowlist');
 const number=(key:string,fallback:number)=>Number(process.env[key]??fallback);
