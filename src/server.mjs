@@ -98,7 +98,14 @@ const server = createServer(async (req,res) => {
       event(res,'done',{text,costUsd:s.costUsd});
     } catch(err) { event(res,'error',{message:String(err.message||err).slice(0,240)}); }
     finally { unsubscribe();s.busy=false;active--;if(!res.destroyed)res.end(); }
-  } catch(err) { if(!res.headersSent) send(res,400,{error:String(err.message||err).slice(0,240)});else res.end(); }
+  } catch(err) {
+    // The browser receives a short, non-sensitive message. Server diagnostics
+    // preserve the call stack so embedded Pi initialization failures can be
+    // investigated without asking users for API credentials.
+    console.error('Relay request failed:', err?.stack || String(err));
+    if(!res.headersSent) send(res,400,{error:String(err.message||err).slice(0,240)});
+    else res.end();
+  }
 });
 server.listen(Number(process.env.PORT||8765),process.env.HOST||'0.0.0.0',()=>console.log('Relay started'));
 process.on('SIGTERM',()=>{server.close();for(const s of sessions.values())s.pi.dispose();});
