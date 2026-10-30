@@ -12,6 +12,10 @@ Relay is a separate self-hosted AI agent control plane built on Pi and OpenRoute
 
 The public hostname `https://relay.affankhan.dev` uses **the same username/password as Atlas**. The vps-infra Caddy ingress authenticates the browser, then forwards requests across a small shared Docker network to Relay's private gateway. The gateway substitutes the Relay backend token without sending that token to the browser or the Atlas ingress.
 
+## Automatic deployment
+
+Merges into `main` trigger [Relay's GitHub Actions deployment](docs/auto-deploy.md) **after Verify CI passes**, independently of Atlas. One-time Relay GitHub deployment secrets are required; see the runbook. No VPS timer or manual deploy command is needed for future releases after configuration.
+
 ## Deployment
 
 On the VPS, retain the existing private `~/relay/.env`:
