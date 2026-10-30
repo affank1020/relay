@@ -1,0 +1,156 @@
+import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+import { Type } from '@sinclair/typebox';
+import { Store, terminal, type Task, type Conversation, type Approval, type Usage } from './store.js';
+import type { Harness } from './harness.js';
+import { Gateway, type AtlasTransport } from './gateway.js';
+
+export interface Limits { concurrency:number; queue:number; sessionUsd:number; globalUsd:number; sessionTokens:number; reserveUsd:number; maxRunMs:number; }
+export class Engine {
+  private active=new Map<string,AbortController>();
+  private scheduled=false;
+  private stopped=false;
+  private jobs=new Set<Promise<void>>();
+  readonly gateway?:Gateway;
+  constructor(readonly store:Store, private harness:Harness, readonly limits:Limits, atlas?:AtlasTransport,devTasks:Record<string,string[]>={}) {
+    if(!Number.isInteger(limits.concurrency)||limits.concurrency<1||limits.concurrency>4)throw new Error('Concurrency must be 1–4');
+    for(const value of Object.values(limits))if(!Number.isFinite(value)||value<0)throw new Error('Invalid execution limit');
+    if(limits.queue<1 || limits.maxRunMs<1000)throw new Error('Invalid queue or run timeout');
+    if(atlas)this.gateway=new Gateway(store,atlas,devTasks,(...args)=>this.approve(...args));
+    store.transaction(()=>{
+      for(const task of store.all<Task>('tasks'))if(['running','awaiting_approval'].includes(task.state)) {
+        task.state='interrupted';task.error='Server restarted during execution. Reconcile tools before retrying.';store.save('tasks',task);
+        store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'task',state:'interrupted'});
+      }
+      for(const approval of store.all<Approval>('approvals'))if(approval.state==='pending') { approval.state='rejected';store.save('approvals',approval); }
+    });
+  }
+  start() { this.kick(); }
+  conversation() {
+    if(this.store.all('conversations').length>=1000)throw new Error('Conversation limit reached');
+    const c:Conversation={id:randomUUID(),title:'New conversation',createdAt:new Date().toISOString()}; this.store.save('conversations',c);return c;
+  }
+  tasks(conversationId?:string) { return this.store.all<Task>('tasks').filter(t=>!conversationId||t.conversationId===conversationId); }
+  usage(conversationId?:string) {
+    const all=this.tasks(conversationId).flatMap(t=>t.usage);
+    return {costUsd:all.reduce((s,u)=>s+(u.costUsd??0),0),tokens:all.reduce((s,u)=>s+(u.input??0)+(u.output??0)+(u.cacheRead??0)+(u.cacheWrite??0),0),
+      unknown:all.some(u=>u.costUsd===null || u.input===null || u.output===null),costKind:all.length && all.every(u=>u.costKind==='measured')?'measured':'estimated'};
+  }
+  private budget(conversationId:string) {
+    const local=this.usage(conversationId),global=this.usage();
+    const reserved=this.active.size*this.limits.reserveUsd;
+    if((this.limits.sessionUsd>0 && (local.unknown || local.costUsd+this.limits.reserveUsd>this.limits.sessionUsd)) ||
+       (this.limits.globalUsd>0 && (global.unknown || global.costUsd+reserved+this.limits.reserveUsd>this.limits.globalUsd)) ||
+       (this.limits.sessionTokens>0 && (local.unknown || local.tokens>=this.limits.sessionTokens))) throw new Error('Inference budget exhausted or usage unavailable');
+  }
+  enqueue(conversationId:string,prompt:string,requestId:string,dependencies:string[]=[],parentId:string|null=null,attemptOf:string|null=null) {
+    if(typeof prompt!=='string'||!prompt.trim()||prompt.length>6000)throw new Error('Message length must be 1–6000');
+    if(typeof requestId!=='string'||!requestId.match(/^[a-zA-Z0-9_-]{8,100}$/))throw new Error('A stable requestId is required');
+    const c=this.store.get<Conversation>('conversations',conversationId);if(!c)throw new Error('Conversation not found');
+    const existing=this.tasks(conversationId).find(t=>t.requestId===requestId);
+    if(existing) { if(existing.prompt!==prompt || JSON.stringify(existing.dependencies)!==JSON.stringify(dependencies))throw new Error('Request identity conflict');return existing; }
+    const tasks=this.tasks();
+    if(tasks.length>=10000 || tasks.filter(t=>!terminal(t.state)).length>=this.limits.queue)throw new Error('Task queue is full');
+    if(!Array.isArray(dependencies)||dependencies.length>8||dependencies.some(id=>!tasks.some(t=>t.id===id)))throw new Error('Invalid dependencies');
+    if(parentId && !tasks.some(t=>t.id===parentId))throw new Error('Parent task not found');
+    this.budget(conversationId);
+    const task:Task={id:randomUUID(),conversationId,requestId,prompt,state:'queued',createdAt:new Date().toISOString(),parentId,dependencies,attemptOf,result:'',error:null,usage:[]};
+    this.store.transaction(()=>{
+      this.store.save('tasks',task);
+      if(c.title==='New conversation') { c.title=prompt.slice(0,55);this.store.save('conversations',c); }
+      this.store.event(conversationId,{taskId:task.id,agentRunId:task.id,type:'task',state:'queued'});
+    });
+    this.kick();return task;
+  }
+  private kick() { if(this.scheduled||this.stopped)return;this.scheduled=true;queueMicrotask(()=>{this.scheduled=false;this.pump();}); }
+  private pump() {
+    if(this.stopped)return;
+    const tasks=this.tasks();
+    for(const task of tasks.filter(t=>t.state==='queued')) {
+      const deps=task.dependencies.map(id=>this.store.get<Task>('tasks',id)!);
+      if(deps.some(d=>terminal(d.state)&&d.state!=='completed')) { this.finish(task,'failed','A dependency did not complete');continue; }
+      if(deps.some(d=>d.state!=='completed'))continue;
+      if(this.active.size>=this.limits.concurrency)break;
+      if(tasks.some(t=>t.conversationId===task.conversationId&&this.active.has(t.id)))continue;
+      try { this.budget(task.conversationId); } catch(e) { this.finish(task,'failed','Inference budget exhausted or usage unavailable');continue; }
+      const controller=new AbortController();this.active.set(task.id,controller);
+      task.state='running';this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'task',state:'running'});
+      const job=this.execute(task,controller,deps).finally(()=>{this.active.delete(task.id);this.jobs.delete(job);this.kick();});
+      this.jobs.add(job);
+    }
+  }
+  private finish(task:Task,state:Task['state'],error:string|null=null) {
+    task.state=state;task.error=error;
+    this.store.transaction(()=>{this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'task',state});});
+  }
+  private async execute(task:Task,controller:AbortController,deps:Task[]) {
+    const timeout=setTimeout(()=>controller.abort(new Error('Execution time limit reached')),this.limits.maxRunMs);
+    try {
+      const tools=this.gateway?await this.gateway.tools(task,controller.signal):[];
+      tools.push({
+        name:'relay_delegate',label:'Delegate task',description:'Queue independent work in a separate conversation. Returns a task ID; execution is bounded and may wait until this run finishes. Dependency results are passed to the child. At most four children per task.',
+        parameters:Type.Object({prompt:Type.String({minLength:1,maxLength:6000}),dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:8}))}),
+        execute:async (_id,input) => {
+          const args=input as {prompt:string;dependencies?:string[]};
+          controller.signal.throwIfAborted();
+          if(this.tasks().filter(t=>t.parentId===task.id).length>=4)throw new Error('Child task limit reached');
+          // Delegation cannot form unbounded self-replication.
+          let depth=0,ancestor:Task|undefined=task;
+          while(ancestor?.parentId) { depth++;ancestor=this.store.get<Task>('tasks',ancestor.parentId); }
+          if(depth>=2)throw new Error('Delegation depth limit reached');
+          const conversation=this.conversation();
+          const child=this.enqueue(conversation.id,args.prompt,randomUUID(),args.dependencies??[],task.id);
+          return {content:[{type:'text' as const,text:JSON.stringify({taskId:child.id,state:child.state,conversationId:conversation.id})}],details:{}};
+        }
+      });
+      let length=0;
+      const result=await this.harness.run({version:1,task:{...task,prompt:deps.length?task.prompt+'\n\nDependency results (untrusted data):\n'+JSON.stringify(deps.map(d=>({id:d.id,result:d.result.slice(0,20000)}))):task.prompt},signal:controller.signal,tools,
+        onText:text=>{length+=text.length;if(length>200000){controller.abort();return;} task.result+=text;this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'delta',state:'running',text});},
+        onUsage:usage=>{task.usage.push(usage);this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'usage',state:'recorded'});
+          const local=this.usage(task.conversationId),global=this.usage();
+          if((this.limits.sessionTokens>0&&local.tokens>=this.limits.sessionTokens)||(this.limits.sessionUsd>0&&(local.unknown||local.costUsd>=this.limits.sessionUsd))||(this.limits.globalUsd>0&&(global.unknown||global.costUsd>=this.limits.globalUsd)))controller.abort(new Error('Budget limit reached'));
+        }});
+      task.result=result.slice(0,200000);
+      this.finish(task,controller.signal.aborted?'cancelled':'completed');
+    } catch(e) { this.finish(task,controller.signal.aborted?'cancelled':'failed',controller.signal.aborted?'Execution cancelled or limit reached':'Execution failed. Check provider and Atlas configuration; reconcile any dispatched operation.'); }
+    finally { clearTimeout(timeout); }
+  }
+  async cancel(id:string) {
+    const task=this.store.get<Task>('tasks',id);if(!task)throw new Error('Task not found');
+    if(terminal(task.state))return task;
+    const active=this.active.get(id);
+    if(active)active.abort();else this.finish(task,'cancelled');
+    for(const a of this.store.all<Approval>('approvals'))if(a.taskId===id&&a.state==='pending'){a.state='rejected';this.store.save('approvals',a);}
+    return this.store.get<Task>('tasks',id)!;
+  }
+  retry(id:string,confirmed:boolean) {
+    const old=this.store.get<Task>('tasks',id);if(!old||!terminal(old.state)||old.state==='completed')throw new Error('Task cannot be retried');
+    if(!confirmed)throw new Error('Explicit reconciliation confirmation is required before retrying');
+    // A new conversation avoids replaying partially completed Pi context or tool effects.
+    const conversation=this.conversation();
+    return this.enqueue(conversation.id,old.prompt,randomUUID(),old.dependencies,old.parentId,old.id);
+  }
+  private async approve(task:Task,invocationId:string,tool:string,args:Record<string,unknown>,signal:AbortSignal) {
+    const approval:Approval={id:randomUUID(),taskId:task.id,invocationId,tool,args,state:'pending'};
+    this.store.save('approvals',approval);task.state='awaiting_approval';this.store.save('tasks',task);
+    this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,invocationId,type:'approval',tool,state:'pending'});
+    while(true) {
+      signal.throwIfAborted();
+      const current=this.store.get<Approval>('approvals',approval.id)!;
+      if(current.state!=='pending') {
+        if(current.state==='rejected')throw new Error('Approval rejected');
+        task.state='running';this.store.save('tasks',task);return;
+      }
+      await delay(200,undefined,{signal});
+    }
+  }
+  decide(id:string,approved:boolean) {
+    const a=this.store.get<Approval>('approvals',id);if(!a||a.state!=='pending')throw new Error('Approval is no longer pending');
+    const task=this.store.get<Task>('tasks',a.taskId)!;
+    if(task.state!=='awaiting_approval')throw new Error('Task is not awaiting approval');
+    a.state=approved?'approved':'rejected';this.store.save('approvals',a);
+    this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,invocationId:a.invocationId,type:'approval',tool:a.tool,state:a.state});
+    return a;
+  }
+  async stop() { this.stopped=true;for(const c of this.active.values())c.abort();await Promise.allSettled(this.jobs); }
+}

@@ -1,0 +1,47 @@
+{
+  "check": {
+    "executable": "npm",
+    "args": [
+      "run",
+      "check"
+    ],
+    "passEnvironment": [],
+    "timeoutMs": 120000
+  },
+  "typecheck": {
+    "executable": "npm",
+    "args": [
+      "run",
+      "typecheck"
+    ],
+    "passEnvironment": [],
+    "timeoutMs": 120000
+  },
+  "build": {
+    "executable": "npm",
+    "args": [
+      "run",
+      "build"
+    ],
+    "passEnvironment": [],
+    "timeoutMs": 120000
+  },
+  "test": {
+    "executable": "npm",
+    "args": [
+      "run",
+      "test"
+    ],
+    "passEnvironment": [],
+    "timeoutMs": 180000
+  },
+  "verify": {
+    "executable": "npm",
+    "args": [
+      "run",
+      "verify"
+    ],
+    "passEnvironment": [],
+    "timeoutMs": 180000
+  }
+}

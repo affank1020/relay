@@ -10,15 +10,15 @@
   <aside>
     <div class="brand"><span class="logo">R</span><div><b>Relay</b><small>Agent control plane</small></div></div>
     <button id="new" class="new">＋ New conversation</button>
-    <p class="section-label">CONVERSATIONS</p>
+    <button id="showTasks" class="new">Tasks &amp; agents</button><nav id="taskList" aria-label="Tasks"></nav><p class="section-label">CONVERSATIONS</p>
     <nav id="sessions" aria-label="Conversations"></nav>
     <footer><span class="dot"></span><span id="connection">Disconnected</span><button id="settings" title="Reconnect">⚙</button></footer>
   </aside>
   <main>
-    <header><div><h1 id="title">New conversation</h1><small id="subtitle">Pi · OpenRouter</small></div><span id="state">Idle</span></header>
-    <section id="messages" class="messages" aria-live="polite"><div class="empty"><span class="spark">✳</span><h2>Your agents, in one place.</h2><p>Start a conversation using Pi and OpenRouter. Atlas tools and multi-agent orchestration are coming next.</p></div></section>
-    <section class="composer"><form id="form"><textarea id="prompt" rows="2" maxlength="6000" aria-label="Message" placeholder="Message Relay…"></textarea><div class="compose-row"><span>Enter to send · Shift+Enter for a new line</span><div class="controls"><button id="stop" type="button" hidden>Stop</button><button id="send" type="submit" aria-label="Send">↑</button></div></div></form><div class="meta"><span id="model">Pi + OpenRouter</span><span id="cost">Session $0.0000</span></div></section>
-  </main>
+    <header><div><h1 id="title">New conversation</h1><small id="subtitle">Pi · OpenRouter</small></div><div><span id="state">Idle</span> <button id="toggleInspector" class="action" aria-expanded="false" aria-controls="inspector">Activity</button></div></header>
+    <section id="messages" class="messages" aria-live="polite"><div class="empty"><span class="spark">✳</span><h2>Your agents, in one place.</h2><p>Start a conversation using Pi and OpenRouter. Follow agent tasks and Atlas activity alongside your conversation.</p></div></section>
+    <div id="approvals" aria-live="polite"></div><p id="notice" role="status"></p><section class="composer"><form id="form"><textarea id="prompt" rows="2" maxlength="6000" aria-label="Message" placeholder="Message Relay…"></textarea><div class="compose-row"><span>Enter to send · Shift+Enter for a new line</span><div class="controls"><button id="stop" type="button" hidden>Stop</button><button id="send" type="submit" aria-label="Send">↑</button></div></div></form><div class="meta"><span id="model">Pi + OpenRouter</span><span id="cost">Session $0.0000</span></div></section>
+  </main><section id="inspector" aria-label="Execution inspector" hidden><h2>Execution activity</h2><p>Selected and executing Nodes are reported separately. Unknown means Atlas supplied no execution receipt.</p><div id="activity"></div></section>
 </div>
 <dialog id="login"><form id="loginForm"><div class="logo">R</div><h2>Connect to Relay</h2><p>Enter the Relay access token from your server configuration. The token remains in this tab and is never sent to OpenRouter.</p><input id="token" type="password" placeholder="Access token" autocomplete="off" minlength="24" required><button type="submit">Connect</button><p id="error" role="alert"></p></form></dialog>
 </body></html>
