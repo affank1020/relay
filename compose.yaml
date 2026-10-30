@@ -2,8 +2,11 @@ services:
   relay:
     build: .
     restart: unless-stopped
-    env_file: .env
     environment:
+      RELAY_ACCESS_TOKEN: ${RELAY_ACCESS_TOKEN:?Set RELAY_ACCESS_TOKEN in .env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
+      RELAY_MODEL: ${RELAY_MODEL:-poolside/laguna-s-2.1:free}
+      RELAY_MAX_ACTIVE: ${RELAY_MAX_ACTIVE:-1}
       PORT: "8765"
       HOST: "0.0.0.0"
     ports:
@@ -15,3 +18,9 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8765/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+      start_period: 15s

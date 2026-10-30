@@ -1,0 +1,14 @@
+# Optional Cloudflare Tunnel. Deploy with: ./scripts/deploy.sh --tunnel
+# Cloudflare dashboard published application origin: http://relay:8765
+services:
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?Set TUNNEL_TOKEN in .env for --tunnel deployments}
+    restart: unless-stopped
+    depends_on:
+      relay:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true

@@ -14,4 +14,13 @@ jobs:
           node-version: "22"
       - run: npm install --ignore-scripts --no-audit --no-fund
       - run: npm run check
+      - name: Check deployment scripts and Compose
+        env:
+          RELAY_ACCESS_TOKEN: ci-only-test-placeholder-token-123456
+          OPENROUTER_API_KEY: ci-only-placeholder
+          TUNNEL_TOKEN: ci-only-placeholder
+        run: |
+          bash -n scripts/deploy.sh scripts/status.sh
+          docker compose -f compose.yaml config --quiet
+          docker compose -f compose.yaml -f compose.tunnel.yaml --profile tunnel config --quiet
       - run: docker build -t relay:ci .
