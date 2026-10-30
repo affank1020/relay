@@ -41,7 +41,7 @@ test('Invalid or denied OAuth responses fail without logging a client secret', a
     const provider=new AtlasClientCredentials(issuer,'relay-client-id','secret-do-not-print',audience,
       async()=>new Response(JSON.stringify({error:'secret-do-not-print'}),{status}));
     await assert.rejects(provider.token(),error=>{
-      assert.doesNotMatch(String(error),'secret-do-not-print');return true;
+      assert.doesNotMatch(String(error),/secret-do-not-print/);return true;
     });
   }
   const provider=new AtlasClientCredentials(issuer,'relay-client-id','secret-do-not-print',audience,
@@ -73,7 +73,7 @@ test('Atlas MCP sends refreshed M2M access tokens on real HTTP transport request
   const tools=await mcp.list();
   assert.deepEqual(tools.map(t=>t.name),['get_atlas_status']);
   const result=await mcp.call('get_atlas_status',{});
-  assert.equal((result as {structuredContent:{result:{available:boolean}}}).structuredContent.result.available,true);
+  assert.equal((result as unknown as {structuredContent:{result:{available:boolean}}}).structuredContent.result.available,true);
   assert.ok(seen>=2);
   assert.equal(usedToken,1);
 });
