@@ -1,0 +1,1 @@
+{"name":"relay","private":true,"version":"0.1.0","type":"module","scripts":{"start":"node src/server.mjs","check":"node --check src/server.mjs && node --check public/app.js"},"dependencies":{"@earendil-works/pi-coding-agent":"1.4.0"},"engines":{"node":">=22.19"}}
