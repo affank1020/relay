@@ -54,12 +54,13 @@ async function create(){
   await select(result.session.id);$('prompt').focus();
 }
 function showError(err){window.alert(err.message||String(err));}
-function showHostedError(err){
-  $('connection').textContent='Gateway unavailable';
+function showHostedError(err,stage='api'){
+  const failedSession=stage==='session';
+  $('connection').textContent=failedSession?'Session unavailable':'API unavailable';
   $('settings').hidden=false;
   $('settings').title='Retry connection';
-  const message='Relay could not reach its API through the VPS gateway: '+(err.message||String(err))+'. Check the Relay gateway deployment, then retry.';
-  messages.replaceChildren(element('div','empty',message));
+  const prefix=failedSession?'Relay could not start a Pi session: ':'Relay API request failed: ';
+  messages.replaceChildren(element('div','empty',prefix+(err.message||String(err))+'. Retry the connection.'));
 }
 async function submit(event){
   event.preventDefault();if(busy)return;
@@ -99,13 +100,15 @@ $('prompt').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$(
 async function bootstrap(){
   // Hosted browsers rely on VPS Basic Auth; only localhost uses the token UI.
   // A gateway failure must not induce a Bearer-vs-Basic login loop.
+  let stage='api';
   try{
     await api('/status');
     $('settings').hidden=hosted;
     await refresh();
+    stage='session';
     if(!current)await create();
   }catch(err){
-    if(hosted)showHostedError(err);
+    if(hosted)showHostedError(err,stage);
     else $('login').showModal();
   }
 }

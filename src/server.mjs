@@ -35,7 +35,15 @@ async function createPi() {
   runtime ||= await ModelRuntime.create({allowModelNetwork:true,modelRefreshTimeoutMs:15000});
   const model = runtime.getModel('openrouter',modelId);
   if (!model) throw new Error('Model unavailable in Pi OpenRouter catalog: '+modelId);
-  const loader = new DefaultResourceLoader({systemPromptOverride:()=> 'You are Relay, a concise and helpful AI assistant. No tools are enabled in this initial release. Never claim to have read files, used Atlas, or executed operations.'});
+  // Pi SDK 1.4 requires BOTH paths. Omitting them causes resolvePath() to
+  // call startsWith on undefined during first-session creation.
+  // Keep the writable agent directory inside the container's /tmp tmpfs.
+  const agentDir = process.env.PI_CODING_AGENT_DIR || join(process.env.HOME || '/tmp', '.pi');
+  const loader = new DefaultResourceLoader({
+    cwd: process.cwd(),
+    agentDir,
+    systemPromptOverride:()=> 'You are Relay, a concise and helpful AI assistant. No tools are enabled in this initial release. Never claim to have read files, used Atlas, or executed operations.'
+  });
   await loader.reload();
   const {session} = await createAgentSession({modelRuntime:runtime,model,resourceLoader:loader,sessionManager:SessionManager.inMemory(),noTools:'all'});
   return session;
