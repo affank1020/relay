@@ -1,112 +1,64 @@
-# Deploy Relay with the same browser authentication as Atlas
+# Deploy Relay through Atlas's existing Caddy ingress
 
-Relay runs independently from Atlas on the same VPS. Atlas already occupies host ports 80/443 using Caddy inside its Docker ingress. Relay does **not** modify that stack or expose another public port.
+Relay is an **independent** Docker Compose stack on the same VPS. Atlas Caddy already owns HTTPS on host ports 80/443, with Basic Auth on the human-facing UI. Relay uses that same username/password, not a new Cloudflare Access policy or Tunnel.
 
-## Authentication and network path
+## Request path
 
 ~~~text
-Browser HTTPS -> Cloudflare Tunnel -> Relay Caddy Basic Auth -> Relay :8765 -> Pi/OpenRouter
-                                      |
-                         after valid user/password,
-                         inject server-side Bearer token
+Browser HTTPS -> atlas ingress Caddy (TLS + Atlas Basic Auth)
+               -> private shared relay_ingress Docker network
+               -> relay-gateway:8080 (replaces Authorization with server token)
+               -> relay:8765 (Pi/OpenRouter)
 ~~~
 
-- The browser shows **one native username/password prompt**, like Atlas.
-- Caddy checks the bcrypt password hash before proxying **any** request, including API requests and static files.
-- After authentication, Caddy overwrites the upstream Authorization header with the private `RELAY_ACCESS_TOKEN`, preserving Relay's existing API security without asking the browser to enter that token again.
-- Caddy and cloudflared both run on Relay's private Docker network. The only published Relay port remains `127.0.0.1:8765` for SSH tunnel testing. Never point the public Cloudflare hostname directly at `relay:8765`.
-- The internet-to-Cloudflare leg is HTTPS. Cloudflare Tunnel carries traffic securely to `cloudflared`; Caddy uses HTTP *only within the private Docker network*. Basic Auth must never be exposed over public plain HTTP.
+Only Atlas's `ingress` and Relay's `gateway` containers should be members of `relay_ingress`. Relay's API container remains on its private default network, with an optional maintenance port bound to VPS loopback (`127.0.0.1:8765`). The gateway must **never** publish a public or host port: it relies on the Atlas ingress for user authentication. Containers with access to the shared network are trusted, so do not attach unrelated workloads there.
 
-## One-time setup on the VPS
+## First deployment
 
-Keep the private `~/relay/.env` with your existing `RELAY_ACCESS_TOKEN`, `OPENROUTER_API_KEY` and the free `:free` model. **Never copy your current credentials into GitHub or chat.**
-
-Add two new settings:
-
-~~~dotenv
-RELAY_BASIC_AUTH_USER=your-username
-RELAY_BASIC_AUTH_HASH='$2a$14$THE_BCRYPT_HASH_FROM_THE_COMMAND'
-~~~
-
-Generate a strong password hash interactively without putting your plaintext password in shell history:
-
-~~~bash
-docker run --rm -it caddy:2-alpine caddy hash-password
-~~~
-
-Enter your chosen username in `RELAY_BASIC_AUTH_USER`; paste the **resulting hash** as `RELAY_BASIC_AUTH_HASH`, surrounded by single quotes. The single quotes are important: bcrypt hashes contain `$` and unquoted values can be interpolated by Compose.
-
-To edit:
-
-~~~bash
-cd ~/relay
-nano .env
-chmod 600 .env
-~~~
-
-You can choose the same credentials as Atlas, but a separate strong password is safer. Atlas's stored hash is managed in a different stack; this Relay configuration remains independent.
-
-## One-time Cloudflare setup
-
-You **do not need a Cloudflare Access application or an Allow policy**. Protection is provided by Relay's own Caddy Basic Auth.
-
-1. Open Cloudflare's dashboard > **Networking > Tunnels** and create a remotely managed tunnel named `relay-vps` (or reuse an existing Relay tunnel).
-2. Select the **Docker connector**. Copy the tunnel token from the provided install command, but don't execute that install command: Compose runs cloudflared for you.
-3. Under **Routes**, add a **Published application** route:
-   - Hostname: **`relay.affankhan.dev`**
-   - Type: **HTTP**
-   - Service URL: **`http://gateway:8080`**
-4. Cloudflare normally creates the DNS CNAME for the hostname when the route is saved. If a conflicting DNS record already exists, remove or adjust that record first.
-5. On the VPS, add `TUNNEL_TOKEN=YOUR_TOKEN` to the private `~/relay/.env`.
-6. If you previously created a Cloudflare Access application for `relay.affankhan.dev`, remove or disable it **if you want only the single Basic Auth prompt**. Leaving it enabled is also secure, but results in two different logins.
-
-**Important:** Do not use `http://relay:8765` as the tunnel destination; that would bypass Caddy's password gate. A Cloudflare Tunnel published application is normally publicly reachable unless protected by an app-level policy or an origin authentication mechanism; the Caddy proxy is that origin protection here.
-
-## Deploy and verify
+1. Add the DNS-only Cloudflare A record `relay.affankhan.dev` to the same VPS public IP as Atlas (this was configured separately). Do not create a Cloudflare Tunnel. If one was already created, remove its conflicting route.
+2. Merge and deploy the Atlas Caddy ingress change, which defines a **separate** `relay.affankhan.dev` Caddy site protected with `ATLAS_ADMIN_USER` and `ATLAS_ADMIN_PASSWORD_HASH`, forwarding to `relay-gateway:8080`. The Atlas GitHub Actions deployment creates the shared network if needed before starting Compose. Until Relay runs, this hostname may return 502, but existing Atlas routes remain unchanged.
+3. On the VPS, retain the existing `~/relay/.env` values for `RELAY_ACCESS_TOKEN`, `OPENROUTER_API_KEY`, and a free `RELAY_MODEL=...:free`. **No new Basic Auth or Cloudflare credentials are needed.**
+4. Run:
 
 ~~~bash
 cd ~/relay
 git pull --ff-only
-./scripts/deploy.sh --tunnel
+./scripts/deploy.sh --ingress
 ./scripts/status.sh
-docker compose -f compose.yaml -f compose.tunnel.yaml logs --tail=40 gateway tunnel
 ~~~
 
-`deploy.sh` fetches main with `--ff-only` (after its first installation), rebuilds the Node image, waits for the Relay health check, and starts the Caddy gateway and Cloudflare connector. It won't overwrite tracked local changes.
+You can run step 4 before Atlas deploys if preferred. The Relay script also creates `relay_ingress` if absent. On normal updates, only `./scripts/deploy.sh --ingress` is needed.
 
-In a private browser window, open **https://relay.affankhan.dev**. You should receive a username/password challenge. After successful login the Relay UI should load **without** its own access-token dialog. Try the first chat message to confirm OpenRouter works.
+## Verify protection and inference
 
-From a different unauthenticated client:
+Open `https://relay.affankhan.dev` in a private browser window. Enter **the same Atlas username/password** when challenged. Relay should load without asking for the Relay token a second time. The token is privately injected by the gateway.
+
+From a terminal without HTTP Basic Auth credentials:
 
 ~~~bash
-curl -I https://relay.affankhan.dev/
+curl -i https://relay.affankhan.dev/
 ~~~
 
-Expect `401 Unauthorized` with a `WWW-Authenticate: Basic` header. If it displays the Relay application without a challenge, **disable the public route** and check that the Cloudflare service URL is `http://gateway:8080` and Caddy has loaded the correct configuration.
+Expected: `401 Unauthorized` with `WWW-Authenticate: Basic`. Any unauthenticated access to the web UI or API means the ingress protection is misconfigured and the hostname should be disabled until fixed.
 
-To inspect the Caddy configuration without echoing secrets:
-
-~~~bash
-docker compose -f compose.yaml -f compose.tunnel.yaml exec gateway caddy validate --config /etc/caddy/Caddyfile
-~~~
-
-Note: Caddy's validate command may include expanded configuration values in verbose error output; don't paste logs containing credentials or private tokens.
-
-## Subsequent deployments
+Check services on the VPS:
 
 ~~~bash
 cd ~/relay
-./scripts/deploy.sh --tunnel
+docker compose -f compose.yaml -f compose.ingress.yaml ps
+docker compose -f compose.yaml -f compose.ingress.yaml logs --tail=50 gateway
+curl -f http://127.0.0.1:8765/health
 ~~~
 
-No Cloudflare or Atlas edits needed for normal releases. The script only performs manual deployments for now. Check `./scripts/status.sh` or `docker compose logs --tail=50 relay`.
+The health endpoint only confirms server startup. Verify a Pi model response by sending a message from the browser. The direct loopback API still requires `RELAY_ACCESS_TOKEN`.
 
 ## Security and limitations
 
-- Relay's internal bearer token remains mandatory for `/api/*` on the loopback endpoint, including when accessed over an SSH tunnel.
-- Caddy authenticates every public HTTP request and injects that bearer header only after authentication.
-- Do not expose `gateway:8080` or Relay's port 8765 directly to the internet.
-- Store your tunnel token, bcrypt hash, API key and internal token exclusively in `.env` on the VPS.
-- Basic Auth is single-user protection, not shared SSO, multi-user authorization, MFA or an identity provider.
-- Pi's built-in file and shell tools are disabled; future Atlas MCP execution needs its own authorisation.
-- Chat sessions remain in-memory and are lost on server restarts.
+- Atlas ingress uses HTTPS and Caddy Basic Auth; Basic Auth is not shared-session SSO, but browsers may reuse or ask for credentials at each hostname.
+- The **Atlas** container does not receive `RELAY_ACCESS_TOKEN`. The private gateway replaces the browser's Basic Authorization header before proxying to Relay.
+- Never publish gateway port 8080 or attach untrusted containers to `relay_ingress`.
+- Caddy TLS certificates are obtained using the existing Atlas ingress mechanism.
+- The script uses fast-forward-only Git pull and refuses dirty tracked files.
+- Free OpenRouter models can impose quotas and provider-specific data policies.
+- Pi shell and filesystem tools are disabled and Atlas MCP integration is not yet implemented.
+- Sessions are in memory; restarts lose conversations.

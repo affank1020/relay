@@ -1,15 +1,9 @@
-# Internal HTTP listener only; TLS terminates at the Cloudflare edge.
-# Do not publish this container's port on the VPS.
+# Internal API credential injection. The public Atlas Caddy ingress MUST
+# enforce Basic Auth before forwarding traffic to relay-gateway:8080.
+# Never publish this gateway's port to the host.
 :8080 {
-    route {
-        basic_auth {
-            {$RELAY_BASIC_AUTH_USER} {$RELAY_BASIC_AUTH_HASH}
-        }
-
-        # Only after valid Basic Auth, substitute the internal API bearer token.
-        # The public browser never needs to see RELAY_ACCESS_TOKEN.
-        reverse_proxy relay:8765 {
-            header_up Authorization "Bearer {$RELAY_ACCESS_TOKEN}"
-        }
+    reverse_proxy relay:8765 {
+        header_up Authorization "Bearer {$RELAY_ACCESS_TOKEN}"
+        flush_interval -1
     }
 }
