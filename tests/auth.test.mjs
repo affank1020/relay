@@ -43,7 +43,7 @@ test('hosted gateway error is retryable rather than prompting for Bearer token',
   assert.equal(requests.length,1);
   assert.equal(requests[0].options.headers.Authorization,undefined);
   assert.equal(element('login').shown||0,0);
-  assert.equal(element('connection').textContent,'Gateway unavailable');
+  assert.equal(element('connection').textContent,'API unavailable');
   assert.equal(element('settings').title,'Retry connection');
 });
 test('local HTTP still uses explicit API Bearer token',async()=>{

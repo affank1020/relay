@@ -15,6 +15,8 @@ jobs:
           node-version: "22"
       - run: npm install --ignore-scripts --no-audit --no-fund
       - run: npm run check
+      - name: Pi session startup integration test
+        run: node --test tests/session-startup.test.mjs
       - name: Check deployment scripts and Compose
         env:
           RELAY_ACCESS_TOKEN: ci-only-test-placeholder-token-123456
