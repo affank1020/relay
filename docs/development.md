@@ -79,29 +79,34 @@ Set `ATLAS_MCP_URL` and `ATLAS_MCP_TOKEN` **on the Relay server only** after obt
 
 The integrated branch has CI coverage for compilation, HTTP fixtures, Pi SDK startup, scheduler behaviour and real MCP protocol fixtures. Playwright browser-level E2E tests, a credentialed live Atlas→Relay smoke test, detailed VPS load measurements and production rollback rehearsal have not been completed. Do not describe those as passed. The legacy `src/application.ts` tests cover the previous HTTP seam; the current production HTTP server lives in `src/platform.ts`.
 
-## Relay machine credentials for Atlas (read-only)
+## Relay → Atlas MCP service token (no Auth0 app required)
 
-After deploying the corresponding Atlas read-only service identity support, create an Auth0
-**Machine to Machine** application authorized for the Atlas MCP API. Grant only the API
-permission `atlas:relay:read` (never the human `atlas:access`). Configure privately
-in `~/relay/.env` on the VPS:
+Relay is just another client of the existing Atlas MCP server. ChatGPT keeps
+using Auth0 OAuth, while Relay authenticates with an independently generated,
+high-entropy bearer token that never leaves the VPS application environments.
+
+1. Generate one 32-byte random hex token on your trusted Mac/VPS:
+   `openssl rand -hex 32`. Keep it out of chat, screenshots and command history.
+2. Compute its SHA-256 digest using `printf '%s' "$token" | shasum -a 256`
+   on macOS or `sha256sum` on Linux, without adding a newline.
+3. In Atlas's private `~/atlas-deploy/infra/production.env`, set
+   `ATLAS_MCP_RELAY_TOKEN_SHA256=<digest>` and deploy the Atlas service-token PR
+   first. Keep the existing human Auth0 credentials unchanged.
+4. In Relay's private `~/relay/.env`, set:
 
 ```dotenv
 ATLAS_MCP_URL=https://atlas.affankhan.dev/mcp
-ATLAS_OAUTH_ISSUER=https://YOUR_TENANT.REGION.auth0.com/
-ATLAS_OAUTH_CLIENT_ID=YOUR_RELAY_M2M_CLIENT_ID
-ATLAS_OAUTH_CLIENT_SECRET=YOUR_PRIVATE_M2M_CLIENT_SECRET
-ATLAS_MCP_TOKEN=
+ATLAS_MCP_TOKEN=YOUR_64_CHARACTER_RANDOM_HEX_TOKEN
 ```
 
-On Atlas, set only `ATLAS_MCP_OAUTH_RELAY_CLIENT_ID` to this same client ID
-inside its private `infra/production.env`; do not copy the client secret there.
-Relay automatically obtains and renews short-lived client-credentials tokens for
-the exact MCP audience. Atlas validates each JWT and advertises **only read-only**
-tools to the Relay service. No named development tasks are authorized by this
-service identity yet. Do not weaken Atlas's allowlist to enable them.
+5. Deploy Relay via `./scripts/deploy.sh --ingress --no-pull`.
+   Use `docker compose -f compose.yaml -f compose.ingress.yaml config --quiet`
+   to verify env interpolation without printing the token.
+6. Smoke-test a real read-only `get_atlas_status` from the Relay chat.
+   Confirm an Atlas mutation is not in the service-account tool catalogue.
 
-Deployment order: enable Atlas service identity and deploy first, then set Relay
-credentials and redeploy Relay. Verify a live read-only `get_atlas_status`.
-Without the Auth0 client and VPS secrets, the integration is not live even if CI
-and Docker builds pass. Never print the secret, token or resolved Docker config.
+Atlas compares the token's hash in constant time, and scopes this service
+credential to server-enforced read-only MCP tools. Development task execution
+and all mutations stay denied even if Relay's own client is modified.
+Do not disable Auth0 for ChatGPT or expand Atlas permissions for an initial test.
+Rotate both private settings and redeploy if the raw token is exposed.
