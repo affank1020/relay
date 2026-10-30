@@ -78,3 +78,30 @@ Set `ATLAS_MCP_URL` and `ATLAS_MCP_TOKEN` **on the Relay server only** after obt
 ## Known verification limits
 
 The integrated branch has CI coverage for compilation, HTTP fixtures, Pi SDK startup, scheduler behaviour and real MCP protocol fixtures. Playwright browser-level E2E tests, a credentialed live Atlas→Relay smoke test, detailed VPS load measurements and production rollback rehearsal have not been completed. Do not describe those as passed. The legacy `src/application.ts` tests cover the previous HTTP seam; the current production HTTP server lives in `src/platform.ts`.
+
+## Relay machine credentials for Atlas (read-only)
+
+After deploying the corresponding Atlas read-only service identity support, create an Auth0
+**Machine to Machine** application authorized for the Atlas MCP API. Grant only the API
+permission `atlas:relay:read` (never the human `atlas:access`). Configure privately
+in `~/relay/.env` on the VPS:
+
+```dotenv
+ATLAS_MCP_URL=https://atlas.affankhan.dev/mcp
+ATLAS_OAUTH_ISSUER=https://YOUR_TENANT.REGION.auth0.com/
+ATLAS_OAUTH_CLIENT_ID=YOUR_RELAY_M2M_CLIENT_ID
+ATLAS_OAUTH_CLIENT_SECRET=YOUR_PRIVATE_M2M_CLIENT_SECRET
+ATLAS_MCP_TOKEN=
+```
+
+On Atlas, set only `ATLAS_MCP_OAUTH_RELAY_CLIENT_ID` to this same client ID
+inside its private `infra/production.env`; do not copy the client secret there.
+Relay automatically obtains and renews short-lived client-credentials tokens for
+the exact MCP audience. Atlas validates each JWT and advertises **only read-only**
+tools to the Relay service. No named development tasks are authorized by this
+service identity yet. Do not weaken Atlas's allowlist to enable them.
+
+Deployment order: enable Atlas service identity and deploy first, then set Relay
+credentials and redeploy Relay. Verify a live read-only `get_atlas_status`.
+Without the Auth0 client and VPS secrets, the integration is not live even if CI
+and Docker builds pass. Never print the secret, token or resolved Docker config.

@@ -6,7 +6,7 @@ Implemented in source: SQLite conversation/task/event storage with sequence-base
 
 Validated: Mac owner reports `npm run verify` passed for the integrated working tree, and GitHub Verify successfully ran on integration commit `90dcf256` (Node 22 typecheck, build, tests, Compose/Caddy and Docker). This does **not** establish production/live Atlas connectivity.
 
-Outstanding verification and product work: actual credentialed Relay→Atlas read-only smoke test; Atlas admin configuration of local Mac development tasks; Playwright browser E2E; robust performance/load and restart drills; UI model selection and broader UX refinements; secure paid-provider configuration if ever requested; richer agent-to-agent collaboration and additional mutation workflows. Keep these limitations visible instead of claiming the full long-term product vision is complete.
+Outstanding verification and product work: actual credentialed Relay→Atlas read-only smoke test (requires Auth0 M2M + Atlas service identity rollout); Atlas admin configuration of local Mac development tasks; Playwright browser E2E; robust performance/load and restart drills; UI model selection and broader UX refinements; secure paid-provider configuration if ever requested; richer agent-to-agent collaboration and additional mutation workflows. Keep these limitations visible instead of claiming the full long-term product vision is complete.
 
 ---
 

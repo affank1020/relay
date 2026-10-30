@@ -7,16 +7,73 @@ import { Store, type Task, type ExecutionEvent } from './store.js';
 
 export const READ_TOOLS = new Set(['get_atlas_status','list_projects','get_project','list_nodes','get_node','list_workspaces','get_workspace','list_logical_workspaces','list_project_workspaces','list_applications','get_application','list_stores','get_store','list_records','get_record','list_views','get_view','workspace_list_files','workspace_read_file','workspace_search_files','workspace_git_status','workspace_git_diff','workspace_list_dev_tasks']);
 export interface AtlasTransport { list(): Promise<Array<{name:string;description?:string;inputSchema:Record<string,unknown>}>>; call(name:string,args:Record<string,unknown>,signal?:AbortSignal): Promise<unknown>; close(): Promise<void>; }
+/** OAuth 2.0 client-credentials token source for Atlas's least-privilege Relay identity.
+ * No browser token, owner refresh token or static long-lived bearer is involved.
+ */
+export class AtlasClientCredentials {
+  private current?:{accessToken:string;refreshAt:number};
+  private pending?:Promise<string>;
+  private readonly tokenUrl:string;
+  constructor(issuer:string,private clientId:string,private clientSecret:string,
+    private audience:string,private fetchFn:typeof fetch=fetch) {
+    const base=new URL(issuer), resource=new URL(audience);
+    if(base.protocol!=='https:' || base.username || base.password || base.search || base.hash ||
+       base.pathname!=='/' || !base.hostname ||
+       resource.protocol!=='https:' || resource.search || resource.hash || resource.pathname!=='/mcp' ||
+       !clientId.trim() || !clientSecret || audience===issuer)
+      throw new Error('Invalid Atlas OAuth machine credential configuration');
+    this.tokenUrl=new URL('/oauth/token',base).toString();
+  }
+  async token():Promise<string> {
+    if(this.current && Date.now()<this.current.refreshAt)return this.current.accessToken;
+    if(this.pending)return this.pending;
+    const work=async()=>{
+      const body=new URLSearchParams({grant_type:'client_credentials',client_id:this.clientId,
+        client_secret:this.clientSecret,audience:this.audience,scope:'atlas:relay:read'});
+      const response=await this.fetchFn(this.tokenUrl,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body,redirect:'error',signal:AbortSignal.timeout(15000)});
+      if(!response.ok)throw new Error('Atlas OAuth token request failed');
+      if(Number(response.headers.get('content-length')||0)>16384)throw new Error('Atlas OAuth token response is too large');
+      const raw=await response.text();
+      if(raw.length>16384)throw new Error('Atlas OAuth token response is too large');
+      let parsed:unknown;
+      try{parsed=JSON.parse(raw)}catch{throw new Error('Invalid Atlas OAuth token response')}
+      const data=parsed as {access_token?:unknown;token_type?:unknown;expires_in?:unknown;scope?:unknown};
+      if(!data || typeof data.access_token!=='string' || data.access_token.length<20 ||
+         data.access_token.length>16384 || data.token_type?.toLowerCase?.()!=='bearer' ||
+         typeof data.expires_in!=='number' || !Number.isFinite(data.expires_in) ||
+         data.expires_in<30 || data.expires_in>86400 ||
+         (typeof data.scope==='string' && !data.scope.split(/\\s+/).includes('atlas:relay:read')))
+        throw new Error('Invalid Atlas OAuth token response');
+      this.current={accessToken:data.access_token,
+        refreshAt:Date.now()+(data.expires_in-Math.min(60,Math.floor(data.expires_in/2)))*1000};
+      return data.access_token;
+    };
+    this.pending=work();
+    try{return await this.pending}finally{this.pending=undefined}
+  }
+  invalidate(){this.current=undefined}
+}
+
 export class McpTransport implements AtlasTransport {
   private connection?: Promise<Client>;
-  constructor(private url:string, private token:string) {
+  constructor(private url:string, private token:string|AtlasClientCredentials) {
     const u=new URL(url);
     if(u.username || u.password || u.search || u.hash || (u.protocol!=='https:' && !(u.protocol==='http:' && ['127.0.0.1','localhost','atlas'].includes(u.hostname)))) throw new Error('Atlas requires HTTPS or a trusted local endpoint');
   }
   private connect() {
     return this.connection ??= (async()=>{
       const client=new Client({name:'relay',version:'1.0.0'});
-      const transport=new StreamableHTTPClientTransport(new URL(this.url),{requestInit:{headers:this.token?{Authorization:'Bearer '+this.token}:{},redirect:'error'}});
+      const transport=new StreamableHTTPClientTransport(new URL(this.url),
+        typeof this.token==='string'
+          ? {requestInit:{headers:this.token?{Authorization:'Bearer '+this.token}:{},redirect:'error'}}
+          : {requestInit:{redirect:'error'},fetch:async (input,init)=>{
+              const headers=new Headers(init?.headers);
+              headers.set('Authorization','Bearer '+await (this.token as AtlasClientCredentials).token());
+              const response=await fetch(input,{...init,headers,redirect:'error'});
+              if(response.status===401)(this.token as AtlasClientCredentials).invalidate();
+              return response;
+            }});
       try { await client.connect(transport,{timeout:15000}); return client; }
       catch(e) { await client.close().catch(()=>{}); this.connection=undefined; throw e; }
     })();

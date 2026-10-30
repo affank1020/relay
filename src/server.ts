@@ -4,7 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import { Store } from './store.js';
 import { PiHarness } from './harness.js';
 import { Engine } from './engine.js';
-import { McpTransport } from './gateway.js';
+import { McpTransport, AtlasClientCredentials } from './gateway.js';
 import { createPlatform } from './platform.js';
 
 const model=process.env.RELAY_MODEL || 'poolside/laguna-s-2.1:free';
@@ -15,7 +15,16 @@ if(!model.endsWith(':free'))throw new Error('Relay free-only mode requires RELAY
 const root=process.env.RELAY_DATA_DIR || join(process.cwd(),'.relay');
 await mkdir(root,{recursive:true,mode:0o700});
 const store=new Store(join(root,'relay.sqlite'));
-const atlas=process.env.ATLAS_MCP_URL?new McpTransport(process.env.ATLAS_MCP_URL,process.env.ATLAS_MCP_TOKEN || ''):undefined;
+const atlasUrl=process.env.ATLAS_MCP_URL?.trim()||'';
+const oauthIssuer=process.env.ATLAS_OAUTH_ISSUER?.trim()||'';
+const oauthClientId=process.env.ATLAS_OAUTH_CLIENT_ID?.trim()||'';
+const oauthClientSecret=process.env.ATLAS_OAUTH_CLIENT_SECRET||'';
+const oauthConfigured=!!(oauthIssuer||oauthClientId||oauthClientSecret);
+if(oauthConfigured && (!atlasUrl||!oauthIssuer||!oauthClientId||!oauthClientSecret))
+  throw new Error('Atlas OAuth requires ATLAS_MCP_URL, ATLAS_OAUTH_ISSUER, ATLAS_OAUTH_CLIENT_ID and ATLAS_OAUTH_CLIENT_SECRET');
+if(oauthConfigured && process.env.ATLAS_MCP_TOKEN)throw new Error('Do not mix static Atlas bearer tokens with OAuth credentials');
+const atlas=atlasUrl?new McpTransport(atlasUrl,
+  oauthConfigured?new AtlasClientCredentials(oauthIssuer,oauthClientId,oauthClientSecret,atlasUrl):process.env.ATLAS_MCP_TOKEN||''):undefined;
 const devTasks:unknown=JSON.parse(process.env.RELAY_ATLAS_DEV_TASKS || '{}');
 if(!devTasks||typeof devTasks!=='object'||Array.isArray(devTasks)||Object.entries(devTasks).some(([id,names])=>!id.match(/^[a-f0-9-]{36}$/i)||!Array.isArray(names)||names.some(n=>typeof n!=='string'||!n.match(/^[a-z][a-z0-9_-]{0,63}$/))))throw new Error('Invalid development task allowlist');
 const number=(key:string,fallback:number)=>Number(process.env[key]??fallback);
