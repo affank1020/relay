@@ -35,3 +35,7 @@ The gateway's port 8080 must stay private, and secrets must never be committed.
 For `https://relay.affankhan.dev`, use the shared VPS username/password only. Browser requests must not include a Bearer Authorization header because it overrides the browser's HTTP Basic credentials and triggers repeated proxy login challenges. The frontend now suppresses the internal access-token prompt for HTTPS-hosted Relay, and shows a retryable gateway error instead. A direct loopback `http://127.0.0.1:8765` connection still requires the Relay API token.
 
 The deploy script now probes `/api/status` through the **internal gateway** and fails if its server-side token injection does not work. Never copy or paste the Relay token into browser debugging output.
+
+## Building Relay
+
+See [TypeScript development](typescript.md). Both server and browser are now compiled from TypeScript as part of the production Docker build. No generated JavaScript is tracked.

@@ -13,16 +13,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm install --ignore-scripts --no-audit --no-fund
-      - run: npm run check
-      - name: Pi session startup integration test
-        run: node --test tests/session-startup.test.mjs
+      - name: Install dependencies
+        run: npm install --include=dev --ignore-scripts --no-audit --no-fund
+      - name: Strict TypeScript typecheck
+        run: npm run check
+      - name: Build production TypeScript bundles
+        run: npm run build
+      - name: Test compiled browser and real Pi server
+        run: npm test
+      - name: Reject checked-in JavaScript source
+        run: |
+          test -z "$(find src tests public -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' -o -name '*.jsx' \) -print)"
+          test -f dist/server.js
+          test -f dist/public/app.js
+          ! git ls-files | grep -E '^(src|tests|public)/.*\.(js|mjs|cjs|jsx)$'
       - name: Check deployment scripts and Compose
         env:
           RELAY_ACCESS_TOKEN: ci-only-test-placeholder-token-123456
           OPENROUTER_API_KEY: ci-only-placeholder
         run: |
-          bash -n scripts/deploy.sh scripts/status.sh
+          bash -n scripts/*.sh
           docker compose -f compose.yaml config --quiet
           docker compose -f compose.yaml -f compose.ingress.yaml config --quiet
       - name: Validate internal Caddy gateway
@@ -34,6 +44,5 @@ jobs:
             caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
       - name: Verify gateway image contains local HTTP probe
         run: docker run --rm caddy:2-alpine sh -c 'command -v wget'
-      - name: Test browser auth modes
-        run: node --test tests/auth.test.mjs
-      - run: docker build -t relay:ci .
+      - name: Build production container
+        run: docker build -t relay:ci .

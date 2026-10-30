@@ -1,1 +1,24 @@
-{"name":"relay","private":true,"version":"0.1.0","type":"module","scripts":{"start":"node src/server.mjs","check":"node --check src/server.mjs && node --check public/app.js"},"dependencies":{"@earendil-works/pi-coding-agent":"1.4.0"},"engines":{"node":">=22.19"}}
+{
+  "name": "relay",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node dist/server.js",
+    "check": "tsc --noEmit",
+    "build": "bash scripts/build.sh",
+    "test": "node --import tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "esbuild": "^0.25.12",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.19"
+  }
+}
