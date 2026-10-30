@@ -1,0 +1,128 @@
+name: Relay Deploy
+
+# Same pattern as Atlas: verified CI on main is the ONLY automatic trigger.
+on:
+  workflow_run:
+    workflows: [Verify]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relay-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy verified Relay commit to VPS
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Checkout the verified commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+          fetch-depth: 0
+
+      - name: Verify the SHA from the successful CI run
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
+          # A CI job for an old main SHA cannot deploy code that is not on main.
+          git merge-base --is-ancestor "$DEPLOY_SHA" origin/main
+
+      - name: Configure pinned SSH access
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          for name in SSH_PRIVATE_KEY SSH_KNOWN_HOSTS VPS_HOST VPS_USER; do
+            test -n "${!name}" || { echo "::error::Missing Relay production secret: $name"; exit 1; }
+          done
+          install -d -m 700 "$HOME/.ssh"
+          (umask 077; printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519")
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Deploy exactly the verified commit
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              "$VPS_USER@$VPS_HOST" 'bash -se' -- "$DEPLOY_SHA" <<'REMOTE'
+          set -Eeuo pipefail
+          deploy_sha="$1"
+          [[ "$deploy_sha" =~ ^[0-9a-f]{40}$ ]]
+          cd "$HOME/relay"
+
+          # The deploy checkout belongs exclusively to Relay on main.
+          test "$(git branch --show-current)" = main || {
+            echo "Refusing Relay deploy from a non-main checkout" >&2; exit 1;
+          }
+          case "$(git remote get-url origin)" in
+            https://github.com/affank1020/relay|https://github.com/affank1020/relay.git|git@github.com:affank1020/relay|git@github.com:affank1020/relay.git) ;;
+            *) echo "Unexpected Relay origin; refusing deploy" >&2; exit 1 ;;
+          esac
+          test -s .env || { echo "Relay .env missing" >&2; exit 1; }
+          test -z "$(git status --porcelain --untracked-files=no)" || {
+            echo "Local Relay tracked changes detected; refusing deploy" >&2; exit 1;
+          }
+
+          # Protect against concurrent manual/automated deploy commands.
+          exec 9>"$HOME/.relay-deploy.lock"
+          flock -w 60 9 || { echo "Relay deployment lock busy" >&2; exit 1; }
+
+          previous_sha="$(git rev-parse HEAD)"
+          git fetch --no-tags origin main
+          remote_sha="$(git rev-parse refs/remotes/origin/main)"
+          if [ "$remote_sha" != "$deploy_sha" ]; then
+            echo "Skipping outdated CI run $deploy_sha; newer Relay main is $remote_sha."
+            exit 0
+          fi
+          git merge-base --is-ancestor "$previous_sha" "$deploy_sha" || {
+            echo "Refusing stale or divergent Relay production deploy" >&2
+            exit 1
+          }
+
+          # Update only after proving exact CI SHA, clean checkout and fast forward.
+          git merge --ff-only "$deploy_sha"
+
+          recover() {
+            trap - ERR
+            echo "Relay deployment failed. Attempting to restore $previous_sha." >&2
+            if [ "$previous_sha" != "$deploy_sha" ]; then
+              git reset --hard "$previous_sha"
+            fi
+            if ! ./scripts/deploy.sh --ingress --no-pull; then
+              echo "Relay rollback failed: manual intervention required." >&2
+            fi
+            exit 1
+          }
+          trap recover ERR
+
+          ./scripts/deploy.sh --ingress --no-pull
+          # The deploy script verifies both /health and authenticated gateway API.
+          printf '%s\n' "$deploy_sha" > "$HOME/.relay-deployed-sha.next"
+          mv "$HOME/.relay-deployed-sha.next" "$HOME/.relay-deployed-sha"
+          trap - ERR
+          echo "Relay deployment complete at $deploy_sha."
+          REMOTE
