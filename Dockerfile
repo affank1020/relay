@@ -17,6 +17,7 @@ ENV PI_CODING_AGENT_DIR=/tmp/.pi
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+RUN mkdir -p /data && chown node:node /data
 USER node
 EXPOSE 8765
 CMD ["node", "dist/server.js"]

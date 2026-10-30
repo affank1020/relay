@@ -7,8 +7,18 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
       RELAY_MODEL: ${RELAY_MODEL:-poolside/laguna-s-2.1:free}
       RELAY_MAX_ACTIVE: ${RELAY_MAX_ACTIVE:-1}
+      RELAY_DATA_DIR: /data
+      ATLAS_MCP_URL: ${ATLAS_MCP_URL:-}
+      ATLAS_MCP_TOKEN: ${ATLAS_MCP_TOKEN:-}
+      RELAY_ATLAS_DEV_TASKS: ${RELAY_ATLAS_DEV_TASKS:-}
+      RELAY_SESSION_BUDGET_USD: ${RELAY_SESSION_BUDGET_USD:-0}
+      RELAY_GLOBAL_BUDGET_USD: ${RELAY_GLOBAL_BUDGET_USD:-0}
+      RELAY_SESSION_TOKEN_LIMIT: ${RELAY_SESSION_TOKEN_LIMIT:-0}
+      RELAY_RUN_RESERVATION_USD: ${RELAY_RUN_RESERVATION_USD:-0}
       PORT: "8765"
       HOST: "0.0.0.0"
+    volumes:
+      - relay_data:/data
     ports:
       - "127.0.0.1:8765:8765"
     mem_limit: 768m
@@ -24,3 +34,6 @@ services:
       timeout: 4s
       retries: 5
       start_period: 15s
+
+volumes:
+  relay_data:

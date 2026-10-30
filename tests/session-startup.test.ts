@@ -8,7 +8,7 @@ import { join } from 'node:path';
 
 // Check the *compiled production server* with the actual Pi dependency.
 // A session is created without sending any external model request.
-test('compiled Relay serves HTML and creates Pi sessions', { timeout: 65000 }, async () => {
+test('compiled Relay serves HTML and creates durable conversations', { timeout: 65000 }, async () => {
   const token = 'ci-relay-integration-token-12345678';
   const home = await mkdtemp(join(tmpdir(), 'relay-pi-test-'));
   const child = spawn(process.execPath, ['dist/server.js'], {
@@ -16,7 +16,7 @@ test('compiled Relay serves HTML and creates Pi sessions', { timeout: 65000 }, a
     env: {
       ...process.env,
       PORT: '0', HOST: '127.0.0.1',
-      HOME: home, PI_CODING_AGENT_DIR: join(home, '.pi'),
+      HOME: home, PI_CODING_AGENT_DIR: join(home, '.pi'), RELAY_DATA_DIR: join(home,'data'),
       RELAY_MAX_ACTIVE: '1',
       RELAY_ACCESS_TOKEN: token,
       OPENROUTER_API_KEY: 'ci-test-key-not-valid-for-inference',
