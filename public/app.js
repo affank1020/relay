@@ -1,9 +1,15 @@
 const $=id=>document.getElementById(id);
 let token='',current=null,history=[],busy=false;
+// HTTPS is always served behind VPS Basic Auth; localhost HTTP requires
+// the separate internal API token. Never replace a hosted Basic credential.
+const hosted=window.location.protocol==='https:';
 const messages=$('messages');
 function element(tag,className,text) { const el=document.createElement(tag);el.className=className;el.textContent=text;return el; }
 async function api(path,options={}) {
-  const response=await fetch('/api'+path,{...options,headers:{...(token?{Authorization:'Bearer '+token}:{}),'Content-Type':'application/json',...(options.headers||{})}});
+  const headers={'Content-Type':'application/json',...(options.headers||{})};
+  if(!hosted && token)headers.Authorization='Bearer '+token;
+  if(hosted)delete headers.Authorization;
+  const response=await fetch('/api'+path,{credentials:'same-origin',...options,headers});
   if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error||'Request failed');}
   return response;
 }
@@ -48,6 +54,13 @@ async function create(){
   await select(result.session.id);$('prompt').focus();
 }
 function showError(err){window.alert(err.message||String(err));}
+function showHostedError(err){
+  $('connection').textContent='Gateway unavailable';
+  $('settings').hidden=false;
+  $('settings').title='Retry connection';
+  const message='Relay could not reach its API through the VPS gateway: '+(err.message||String(err))+'. Check the Relay gateway deployment, then retry.';
+  messages.replaceChildren(element('div','empty',message));
+}
 async function submit(event){
   event.preventDefault();if(busy)return;
   const value=$('prompt').value.trim();if(!value)return;
@@ -77,22 +90,23 @@ async function submit(event){
   }catch(err){body.textContent='Error: '+err.message;history.push({role:'assistant',text:body.textContent});}
   finally{setBusy(false);await refresh().catch(()=>{});$('prompt').focus();}
 }
-$('loginForm').onsubmit=async e=>{e.preventDefault();token=$('token').value;try{await api('/status');$('login').close();$('token').value='';$('error').textContent='';await refresh();if(!current)await create();}catch(err){$('error').textContent=err.message;}};
-$('settings').onclick=()=>{token='';$('login').showModal();};
+$('loginForm').onsubmit=async e=>{e.preventDefault();if(hosted)return;token=$('token').value;try{await api('/status');$('login').close();$('token').value='';$('error').textContent='';await refresh();if(!current)await create();}catch(err){$('error').textContent=err.message;}};
+$('settings').onclick=()=>{if(hosted){bootstrap();return;}token='';$('login').showModal();};
 $('new').onclick=()=>create().catch(showError);
 $('form').onsubmit=submit;
 $('stop').onclick=()=>{if(current&&busy)api('/sessions/'+current+'/abort',{method:'POST',body:'{}'}).catch(showError);};
 $('prompt').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('form').requestSubmit();}};
 async function bootstrap(){
-  // Caddy-authenticated public deployment needs no second browser token login.
-  // On direct localhost access, /api/status returns 401 and shows the token prompt.
+  // Hosted browsers rely on VPS Basic Auth; only localhost uses the token UI.
+  // A gateway failure must not induce a Bearer-vs-Basic login loop.
   try{
     await api('/status');
-    $('settings').hidden=true;
+    $('settings').hidden=hosted;
     await refresh();
     if(!current)await create();
-  }catch{
-    $('login').showModal();
+  }catch(err){
+    if(hosted)showHostedError(err);
+    else $('login').showModal();
   }
 }
 bootstrap();

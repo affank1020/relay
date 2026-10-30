@@ -2,6 +2,7 @@ name: Verify
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -29,4 +30,8 @@ jobs:
           docker run --rm -e RELAY_ACCESS_TOKEN \
             -v "$PWD/infra/Caddyfile.relay:/etc/caddy/Caddyfile:ro" \
             caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+      - name: Verify gateway image contains local HTTP probe
+        run: docker run --rm caddy:2-alpine sh -c 'command -v wget'
+      - name: Test browser auth modes
+        run: node --test tests/auth.test.mjs
       - run: docker build -t relay:ci .
