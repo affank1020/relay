@@ -6,6 +6,8 @@ Relay is a separate self-hosted AI agent control plane built on Pi and OpenRoute
 
 Relay is TypeScript-only at source level; `npm run check && npm run build && npm test` validates the compiled Node and browser bundles. See [TypeScript development](docs/typescript.md).
 
+See [local Mac development](docs/development.md) for reproducible checks and Atlas task setup, and the [engineering sequence](docs/roadmap.md) for the next reviewable milestones.
+
 ## Current MVP
 
 - Streaming web chat, in-memory sessions and basic cost reporting.

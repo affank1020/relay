@@ -7,7 +7,9 @@
     "start": "node dist/server.js",
     "check": "tsc --noEmit",
     "build": "bash scripts/build.sh",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "npm run build && node --import tsx --test --test-timeout=65000 tests/*.test.ts",
+    "typecheck": "npm run check",
+    "verify": "npm run check && npm test"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0"

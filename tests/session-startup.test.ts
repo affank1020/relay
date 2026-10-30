@@ -2,18 +2,22 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { test } from 'node:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // Check the *compiled production server* with the actual Pi dependency.
 // A session is created without sending any external model request.
 test('compiled Relay serves HTML and creates Pi sessions', { timeout: 65000 }, async () => {
   const token = 'ci-relay-integration-token-12345678';
-  const port = 29876;
+  const home = await mkdtemp(join(tmpdir(), 'relay-pi-test-'));
   const child = spawn(process.execPath, ['dist/server.js'], {
     cwd: new URL('..', import.meta.url).pathname,
     env: {
       ...process.env,
-      PORT: String(port), HOST: '127.0.0.1',
-      HOME: '/tmp', PI_CODING_AGENT_DIR: '/tmp/.pi-relay-test',
+      PORT: '0', HOST: '127.0.0.1',
+      HOME: home, PI_CODING_AGENT_DIR: join(home, '.pi'),
+      RELAY_MAX_ACTIVE: '1',
       RELAY_ACCESS_TOKEN: token,
       OPENROUTER_API_KEY: 'ci-test-key-not-valid-for-inference',
       RELAY_MODEL: 'poolside/laguna-s-2.1:free',
@@ -30,11 +34,14 @@ test('compiled Relay serves HTML and creates Pi sessions', { timeout: 65000 }, a
       await new Promise(resolve => setTimeout(resolve, 150));
     }
     assert.match(output, /Relay started/, 'Relay did not start: ' + output);
+    const port = output.match(/Relay started on port (\d+)/)?.[1];
+    assert.ok(port, 'Server must report its ephemeral port');
     const root = await fetch('http://127.0.0.1:' + port + '/');
     assert.equal(root.status, 200, 'Compiled server must serve HTML from dist/public');
     assert.match(await root.text(), /Relay · Agent control plane/);
     const client = await fetch('http://127.0.0.1:' + port + '/app.js');
     assert.equal(client.status, 200, 'Compiled browser entrypoint must exist');
+    await client.text();
     const response = await fetch('http://127.0.0.1:' + port + '/api/sessions', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
@@ -50,5 +57,10 @@ test('compiled Relay serves HTML and creates Pi sessions', { timeout: 65000 }, a
     if (child.exitCode === null) {
       await Promise.race([once(child, 'exit'), new Promise(resolve => setTimeout(resolve, 2000))]);
     }
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      await once(child, 'exit');
+    }
+    await rm(home, { recursive: true, force: true });
   }
 });
