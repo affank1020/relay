@@ -19,7 +19,7 @@ services:
     tmpfs:
       - /tmp:size=64m,mode=1777
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8765/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "dist/healthcheck.js"]
       interval: 10s
       timeout: 4s
       retries: 5

@@ -25,6 +25,7 @@ jobs:
         run: |
           test -z "$(find src tests public -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' -o -name '*.jsx' \) -print)"
           test -f dist/server.js
+          test -f dist/healthcheck.js
           test -f dist/public/app.js
           ! git ls-files | grep -E '^(src|tests|public)/.*\.(js|mjs|cjs|jsx)$'
       - name: Check deployment scripts and Compose

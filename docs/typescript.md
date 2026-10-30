@@ -5,6 +5,7 @@ Relay now uses **TypeScript for its HTTP server, browser frontend, shared API ty
 - `src/server.ts` — Pi agent runtime, HTTP routes and streaming
 - `src/client.ts` — browser UI and Basic Auth / localhost-token flows
 - `src/shared.ts` — shared session and streaming response interfaces
+- `src/healthcheck.ts` — Docker health probe (no inline JavaScript in Compose)
 - `tests/*.test.ts` — browser auth tests plus a real Pi session smoke test
 - `tsconfig.json` — strict typechecking
 
