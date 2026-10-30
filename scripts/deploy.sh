@@ -6,7 +6,7 @@ cd "$root"
 
 usage() {
   printf 'Usage: ./scripts/deploy.sh [--ingress] [--no-pull]\n'
-  printf '  --ingress  Add private gateway for the Atlas Caddy ingress\n'
+  printf '  --ingress  Add private gateway for the standalone vps-infra Caddy ingress\n'
   printf '  --no-pull  Deploy this checked-out commit without git pull\n'
 }
 
@@ -38,9 +38,9 @@ fi
 
 compose=(docker compose -f compose.yaml)
 if "$with_ingress"; then
-  if ! docker network inspect relay_ingress >/dev/null 2>&1; then
-    docker network create --driver bridge relay_ingress >/dev/null
-    echo 'Created shared relay_ingress Docker network.'
+  if ! docker network inspect vps_ingress >/dev/null 2>&1; then
+    docker network create --driver bridge vps_ingress >/dev/null
+    echo 'Created shared vps_ingress Docker network.'
   fi
   compose+=(-f compose.ingress.yaml)
 fi
@@ -53,7 +53,7 @@ printf '\n'
 "${compose[@]}" ps
 echo "Relay healthy."
 if "$with_ingress"; then
-  echo "Private gateway ready; Atlas Caddy must be updated to enable the public hostname."
+  echo "Private gateway ready; standalone vps-infra Caddy must be cut over to enable the public hostname."
 else
   echo 'For relay.affankhan.dev use ./scripts/deploy.sh --ingress'
 fi

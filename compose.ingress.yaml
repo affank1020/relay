@@ -12,12 +12,12 @@ services:
         condition: service_healthy
     networks:
       default: {}
-      relay_ingress:
+      vps_ingress:
         aliases: [relay-gateway]
     security_opt:
       - no-new-privileges:true
 
 networks:
-  relay_ingress:
+  vps_ingress:
     external: true
-    name: relay_ingress
+    name: vps_ingress
