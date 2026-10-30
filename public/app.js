@@ -22,7 +22,7 @@ function render(){
   }
   for(const turn of history)bubble(turn.role,turn.text);
 }
-function setBusy(v){busy=v;$('new').disabled=v;$('send').disabled=v;$('prompt').disabled=v;$('state').textContent=v?'Thinking…':'Idle';}
+function setBusy(v){busy=v;$('new').disabled=v;$('send').disabled=v;$('prompt').disabled=v;$('stop').hidden=!v;$('state').textContent=v?'Thinking…':'Idle';}
 async function refresh(){
   const [state,list]=await Promise.all([api('/status').then(r=>r.json()),api('/sessions').then(r=>r.json())]);
   $('model').textContent=state.provider+' · '+state.model;
@@ -81,5 +81,6 @@ $('loginForm').onsubmit=async e=>{e.preventDefault();token=$('token').value;try{
 $('settings').onclick=()=>{token='';$('login').showModal();};
 $('new').onclick=()=>create().catch(showError);
 $('form').onsubmit=submit;
+$('stop').onclick=()=>{if(current&&busy)api('/sessions/'+current+'/abort',{method:'POST',body:'{}'}).catch(showError);};
 $('prompt').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('form').requestSubmit();}};
 $('login').showModal();
