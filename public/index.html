@@ -17,7 +17,7 @@
   <main>
     <header><div><h1 id="title">New conversation</h1><small id="subtitle">Pi · OpenRouter</small></div><span id="state">Idle</span></header>
     <section id="messages" class="messages" aria-live="polite"><div class="empty"><span class="spark">✳</span><h2>Your agents, in one place.</h2><p>Start a conversation using Pi and OpenRouter. Atlas tools and multi-agent orchestration are coming next.</p></div></section>
-    <section class="composer"><form id="form"><textarea id="prompt" rows="2" maxlength="6000" aria-label="Message" placeholder="Message Relay…"></textarea><div class="compose-row"><span>Enter to send · Shift+Enter for a new line</span><button id="send" type="submit" aria-label="Send">↑</button></div></form><div class="meta"><span id="model">Pi + OpenRouter</span><span id="cost">Session $0.0000</span></div></section>
+    <section class="composer"><form id="form"><textarea id="prompt" rows="2" maxlength="6000" aria-label="Message" placeholder="Message Relay…"></textarea><div class="compose-row"><span>Enter to send · Shift+Enter for a new line</span><div class="controls"><button id="stop" type="button" hidden>Stop</button><button id="send" type="submit" aria-label="Send">↑</button></div></div></form><div class="meta"><span id="model">Pi + OpenRouter</span><span id="cost">Session $0.0000</span></div></section>
   </main>
 </div>
 <dialog id="login"><form id="loginForm"><div class="logo">R</div><h2>Connect to Relay</h2><p>Enter the Relay access token from your server configuration. The token remains in this tab and is never sent to OpenRouter.</p><input id="token" type="password" placeholder="Access token" autocomplete="off" minlength="24" required><button type="submit">Connect</button><p id="error" role="alert"></p></form></dialog>
