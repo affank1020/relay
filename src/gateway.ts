@@ -40,10 +40,10 @@ export class AtlasClientCredentials {
       try{parsed=JSON.parse(raw)}catch{throw new Error('Invalid Atlas OAuth token response')}
       const data=parsed as {access_token?:unknown;token_type?:unknown;expires_in?:unknown;scope?:unknown};
       if(!data || typeof data.access_token!=='string' || data.access_token.length<20 ||
-         data.access_token.length>16384 || data.token_type?.toLowerCase?.()!=='bearer' ||
+         data.access_token.length>16384 || (typeof data.token_type!=='string' || data.token_type.toLowerCase()!=='bearer') ||
          typeof data.expires_in!=='number' || !Number.isFinite(data.expires_in) ||
          data.expires_in<30 || data.expires_in>86400 ||
-         (typeof data.scope==='string' && !data.scope.split(/\\s+/).includes('atlas:relay:read')))
+         (typeof data.scope==='string' && !data.scope.split(/\s+/).includes('atlas:relay:read')))
         throw new Error('Invalid Atlas OAuth token response');
       this.current={accessToken:data.access_token,
         refreshAt:Date.now()+(data.expires_in-Math.min(60,Math.floor(data.expires_in/2)))*1000};
