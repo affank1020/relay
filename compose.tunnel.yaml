@@ -1,6 +1,21 @@
-# Optional Cloudflare Tunnel. Deploy with: ./scripts/deploy.sh --tunnel
-# Cloudflare dashboard published application origin: http://relay:8765
+# Optional public deployment: Cloudflare Tunnel -> Caddy Basic Auth -> Relay.
+# Cloudflare Published application service URL: http://gateway:8080 (NOT relay:8765).
 services:
+  gateway:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      RELAY_BASIC_AUTH_USER: ${RELAY_BASIC_AUTH_USER:?Set RELAY_BASIC_AUTH_USER in .env}
+      RELAY_BASIC_AUTH_HASH: ${RELAY_BASIC_AUTH_HASH:?Set RELAY_BASIC_AUTH_HASH in .env}
+      RELAY_ACCESS_TOKEN: ${RELAY_ACCESS_TOKEN:?Set RELAY_ACCESS_TOKEN in .env}
+    volumes:
+      - ./infra/Caddyfile.relay:/etc/caddy/Caddyfile:ro
+    depends_on:
+      relay:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
   tunnel:
     image: cloudflare/cloudflared:latest
     command: ["tunnel", "--no-autoupdate", "run"]
@@ -8,7 +23,7 @@ services:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:?Set TUNNEL_TOKEN in .env for --tunnel deployments}
     restart: unless-stopped
     depends_on:
-      relay:
-        condition: service_healthy
+      gateway:
+        condition: service_started
     security_opt:
       - no-new-privileges:true

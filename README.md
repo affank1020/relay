@@ -7,7 +7,7 @@ Relay is a self-hosted AI agent control plane. **Pi** manages individual agent s
 - Web chat with Pi SDK streaming, a session switcher and basic cost visibility.
 - Server-side OpenRouter API key and bearer-protected API.
 - Docker Compose deployment with health checks and resource limits.
-- Optional private Cloudflare Tunnel for `https://relay.affankhan.dev`.
+- Optional Cloudflare Tunnel + Caddy Basic Auth for `https://relay.affankhan.dev`.
 - Free-model-only safeguard: model ID must end in `:free`.
 - Pi filesystem and shell tools are **disabled** until remote tool routing and permissions are implemented.
 
@@ -26,13 +26,13 @@ git pull --ff-only
 
 The script itself pulls `main` with `--ff-only`; the explicit pull above is only needed to fetch the script on first use.
 
-For the public hostname, first create a Cloudflare Access policy, a Cloudflare Tunnel and published application route as described in **[deployment instructions](docs/deployment.md)**. Then set `TUNNEL_TOKEN` in your private `.env` and run:
+For the public hostname, configure Caddy Basic Auth credentials and create a Cloudflare Tunnel published route **to `http://gateway:8080`** as described in **[deployment instructions](docs/deployment.md)**. Then set `TUNNEL_TOKEN` in your private `.env` and run:
 
 ~~~bash
 ./scripts/deploy.sh --tunnel
 ~~~
 
-This avoids editing the existing Atlas Caddy ingress, which runs in Docker and already owns ports 80/443. No new VPS public ports are required. Cloudflare Access and Relay's own token both protect the interface.
+This avoids editing the existing Atlas Caddy ingress, which runs in Docker and already owns ports 80/443. No new VPS public ports are required. Caddy protects the site with the same kind of username/password prompt as Atlas; Caddy securely injects the internal Relay token for API requests so the browser only logs in once.
 
 The initial dashboard is intentionally chat-only. Tool activity will eventually flow through a Relay gateway using deterministic TypeScript event translation—**no extra model calls** for UI rendering.
 

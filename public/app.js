@@ -3,7 +3,7 @@ let token='',current=null,history=[],busy=false;
 const messages=$('messages');
 function element(tag,className,text) { const el=document.createElement(tag);el.className=className;el.textContent=text;return el; }
 async function api(path,options={}) {
-  const response=await fetch('/api'+path,{...options,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',...(options.headers||{})}});
+  const response=await fetch('/api'+path,{...options,headers:{...(token?{Authorization:'Bearer '+token}:{}),'Content-Type':'application/json',...(options.headers||{})}});
   if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error||'Request failed');}
   return response;
 }
@@ -83,4 +83,16 @@ $('new').onclick=()=>create().catch(showError);
 $('form').onsubmit=submit;
 $('stop').onclick=()=>{if(current&&busy)api('/sessions/'+current+'/abort',{method:'POST',body:'{}'}).catch(showError);};
 $('prompt').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('form').requestSubmit();}};
-$('login').showModal();
+async function bootstrap(){
+  // Caddy-authenticated public deployment needs no second browser token login.
+  // On direct localhost access, /api/status returns 401 and shows the token prompt.
+  try{
+    await api('/status');
+    $('settings').hidden=true;
+    await refresh();
+    if(!current)await create();
+  }catch{
+    $('login').showModal();
+  }
+}
+bootstrap();

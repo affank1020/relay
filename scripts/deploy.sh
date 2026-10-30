@@ -6,7 +6,7 @@ cd "$root"
 
 usage() {
   printf 'Usage: ./scripts/deploy.sh [--tunnel] [--no-pull]\n'
-  printf '  --tunnel   Include Cloudflare Tunnel service (requires TUNNEL_TOKEN in .env)\n'
+  printf '  --tunnel   Enable Caddy Basic Auth + Cloudflare Tunnel (requires credentials and TUNNEL_TOKEN in .env)\n'
   printf '  --no-pull  Deploy checked-out code without git pull\n'
 }
 

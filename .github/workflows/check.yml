@@ -19,8 +19,21 @@ jobs:
           RELAY_ACCESS_TOKEN: ci-only-test-placeholder-token-123456
           OPENROUTER_API_KEY: ci-only-placeholder
           TUNNEL_TOKEN: ci-only-placeholder
+          RELAY_BASIC_AUTH_USER: ci-user
+          RELAY_BASIC_AUTH_HASH: 'ci-only-placeholder'
         run: |
           bash -n scripts/deploy.sh scripts/status.sh
           docker compose -f compose.yaml config --quiet
           docker compose -f compose.yaml -f compose.tunnel.yaml --profile tunnel config --quiet
+      - name: Validate Caddy authentication configuration
+        env:
+          RELAY_BASIC_AUTH_USER: ci-user
+          RELAY_ACCESS_TOKEN: ci-only-test-placeholder-token-123456
+        run: |
+          hash="$(docker run --rm caddy:2-alpine caddy hash-password --plaintext ci-test-password)"
+          docker run --rm \
+            -e RELAY_BASIC_AUTH_USER -e RELAY_ACCESS_TOKEN \
+            -e RELAY_BASIC_AUTH_HASH="$hash" \
+            -v "$PWD/infra/Caddyfile.relay:/etc/caddy/Caddyfile:ro" \
+            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
       - run: docker build -t relay:ci .

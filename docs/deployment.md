@@ -1,105 +1,112 @@
-# Deploy Relay to relay.affankhan.dev
+# Deploy Relay with the same browser authentication as Atlas
 
-Relay is designed to run alongside Atlas without touching the Atlas Caddy ingress or its production Compose stack.
+Relay runs independently from Atlas on the same VPS. Atlas already occupies host ports 80/443 using Caddy inside its Docker ingress. Relay does **not** modify that stack or expose another public port.
 
-## Why a Cloudflare Tunnel?
-
-Atlas's `infra/docker-compose.production.yml` runs Caddy **inside its own ingress container**, which already publishes VPS ports 80 and 443. A second host-level Caddy stanza will not take effect there. Relay therefore offers a dedicated `cloudflared` service which makes an **outbound** connection to Cloudflare, using Docker networking to reach the Relay container. It publishes no additional VPS ports.
-
-Architecture:
+## Authentication and network path
 
 ~~~text
-Browser -> Cloudflare Access -> Cloudflare Tunnel
-                                 |
-                           cloudflared (Relay stack)
-                                 |
-                            http://relay:8765
-                                 |
-                         Pi -> OpenRouter
+Browser HTTPS -> Cloudflare Tunnel -> Relay Caddy Basic Auth -> Relay :8765 -> Pi/OpenRouter
+                                      |
+                         after valid user/password,
+                         inject server-side Bearer token
 ~~~
 
-Relay still exposes `127.0.0.1:8765` on the VPS for SSH tunnel testing. The Relay HTTP API requires a strong access token, independent of Cloudflare Access.
+- The browser shows **one native username/password prompt**, like Atlas.
+- Caddy checks the bcrypt password hash before proxying **any** request, including API requests and static files.
+- After authentication, Caddy overwrites the upstream Authorization header with the private `RELAY_ACCESS_TOKEN`, preserving Relay's existing API security without asking the browser to enter that token again.
+- Caddy and cloudflared both run on Relay's private Docker network. The only published Relay port remains `127.0.0.1:8765` for SSH tunnel testing. Never point the public Cloudflare hostname directly at `relay:8765`.
+- The internet-to-Cloudflare leg is HTTPS. Cloudflare Tunnel carries traffic securely to `cloudflared`; Caddy uses HTTP *only within the private Docker network*. Basic Auth must never be exposed over public plain HTTP.
 
-## One-time VPS setup
+## One-time setup on the VPS
 
-Use the existing `~/relay` checkout on the VPS:
+Keep the private `~/relay/.env` with your existing `RELAY_ACCESS_TOKEN`, `OPENROUTER_API_KEY` and the free `:free` model. **Never copy your current credentials into GitHub or chat.**
+
+Add two new settings:
+
+~~~dotenv
+RELAY_BASIC_AUTH_USER=your-username
+RELAY_BASIC_AUTH_HASH='$2a$14$THE_BCRYPT_HASH_FROM_THE_COMMAND'
+~~~
+
+Generate a strong password hash interactively without putting your plaintext password in shell history:
+
+~~~bash
+docker run --rm -it caddy:2-alpine caddy hash-password
+~~~
+
+Enter your chosen username in `RELAY_BASIC_AUTH_USER`; paste the **resulting hash** as `RELAY_BASIC_AUTH_HASH`, surrounded by single quotes. The single quotes are important: bcrypt hashes contain `$` and unquoted values can be interpolated by Compose.
+
+To edit:
 
 ~~~bash
 cd ~/relay
-test -s .env || cp .env.example .env
+nano .env
 chmod 600 .env
 ~~~
 
-Keep the values you've already configured for `RELAY_ACCESS_TOKEN` and `OPENROUTER_API_KEY`. Do **not** paste either one into chat or commit `.env` to the repository. For initial testing, keep the free model `poolside/laguna-s-2.1:free`.
+You can choose the same credentials as Atlas, but a separate strong password is safer. Atlas's stored hash is managed in a different stack; this Relay configuration remains independent.
 
-From this point forward use:
+## One-time Cloudflare setup
+
+You **do not need a Cloudflare Access application or an Allow policy**. Protection is provided by Relay's own Caddy Basic Auth.
+
+1. Open Cloudflare's dashboard > **Networking > Tunnels** and create a remotely managed tunnel named `relay-vps` (or reuse an existing Relay tunnel).
+2. Select the **Docker connector**. Copy the tunnel token from the provided install command, but don't execute that install command: Compose runs cloudflared for you.
+3. Under **Routes**, add a **Published application** route:
+   - Hostname: **`relay.affankhan.dev`**
+   - Type: **HTTP**
+   - Service URL: **`http://gateway:8080`**
+4. Cloudflare normally creates the DNS CNAME for the hostname when the route is saved. If a conflicting DNS record already exists, remove or adjust that record first.
+5. On the VPS, add `TUNNEL_TOKEN=YOUR_TOKEN` to the private `~/relay/.env`.
+6. If you previously created a Cloudflare Access application for `relay.affankhan.dev`, remove or disable it **if you want only the single Basic Auth prompt**. Leaving it enabled is also secure, but results in two different logins.
+
+**Important:** Do not use `http://relay:8765` as the tunnel destination; that would bypass Caddy's password gate. A Cloudflare Tunnel published application is normally publicly reachable unless protected by an app-level policy or an origin authentication mechanism; the Caddy proxy is that origin protection here.
+
+## Deploy and verify
 
 ~~~bash
-./scripts/deploy.sh
+cd ~/relay
+git pull --ff-only
+./scripts/deploy.sh --tunnel
 ./scripts/status.sh
+docker compose -f compose.yaml -f compose.tunnel.yaml logs --tail=40 gateway tunnel
 ~~~
 
-The deploy script pulls `main` with `--ff-only`, validates the Compose configuration, builds the image, waits for the Relay health check, then verifies the loopback endpoint. It stops rather than overwriting tracked local changes. To build an already checked-out commit, use `./scripts/deploy.sh --no-pull`.
+`deploy.sh` fetches main with `--ff-only` (after its first installation), rebuilds the Node image, waits for the Relay health check, and starts the Caddy gateway and Cloudflare connector. It won't overwrite tracked local changes.
 
-## Cloudflare one-time configuration
+In a private browser window, open **https://relay.affankhan.dev**. You should receive a username/password challenge. After successful login the Relay UI should load **without** its own access-token dialog. Try the first chat message to confirm OpenRouter works.
 
-**Set up Access before creating the publicly reachable tunnel route.** In the Cloudflare Zero Trust dashboard:
-
-1. Go to **Access -> Applications**, create a **Self-hosted** application for `relay.affankhan.dev`, and add a policy allowing **only your identity** (for example, an allow rule on your verified email). Test that policy in a separate browser session. Never choose an allow-everyone policy.
-2. Go to **Networking -> Tunnels**. Create a remotely managed tunnel named `relay-vps`. Select Docker for the connector.
-3. Under the tunnel's **Routes**, add a **Published application** for hostname `relay.affankhan.dev`. Set the **Service URL to `http://relay:8765`**, not `http://localhost:8765`: `cloudflared` and Relay are separate containers on the same Compose network. Cloudflare normally creates the CNAME for a published application automatically; resolve any pre-existing conflicting DNS record first.
-4. Copy only the **tunnel token** (`eyJ...`) from the connector's installation command. Do not run a separate Cloudflare Docker container command; Relay already provides one.
-5. On the VPS, append `TUNNEL_TOKEN=...` to the private `~/relay/.env` file. Keep `.env` readable only by its owner.
-
-Cloudflare's tunnel token is a credential: anyone holding it can connect a replica. Rotate it in Cloudflare if exposed.
-
-Now enable the managed tunnel with:
+From a different unauthenticated client:
 
 ~~~bash
-cd ~/relay
-./scripts/deploy.sh --tunnel
-docker compose -f compose.yaml -f compose.tunnel.yaml --profile tunnel logs --tail=50 tunnel
+curl -I https://relay.affankhan.dev/
 ~~~
 
-The tunnel's published service URL works because the cloudflared container joins Relay's private Compose network. **No Atlas configuration changes or public firewall openings are required.**
+Expect `401 Unauthorized` with a `WWW-Authenticate: Basic` header. If it displays the Relay application without a challenge, **disable the public route** and check that the Cloudflare service URL is `http://gateway:8080` and Caddy has loaded the correct configuration.
 
-Open https://relay.affankhan.dev from a separate browser or private window. You should first encounter Cloudflare Access authentication, then Relay's own token prompt. If the site can be opened anonymously, fix the Access policy immediately.
+To inspect the Caddy configuration without echoing secrets:
 
-## Updating Relay
+~~~bash
+docker compose -f compose.yaml -f compose.tunnel.yaml exec gateway caddy validate --config /etc/caddy/Caddyfile
+~~~
 
-For a tunnel-enabled deployment:
+Note: Caddy's validate command may include expanded configuration values in verbose error output; don't paste logs containing credentials or private tokens.
+
+## Subsequent deployments
 
 ~~~bash
 cd ~/relay
 ./scripts/deploy.sh --tunnel
 ~~~
 
-Without Cloudflare Tunnel: `./scripts/deploy.sh`.
+No Cloudflare or Atlas edits needed for normal releases. The script only performs manual deployments for now. Check `./scripts/status.sh` or `docker compose logs --tail=50 relay`.
 
-Check the service with `./scripts/status.sh`. To diagnose model errors (without printing credentials):
+## Security and limitations
 
-~~~bash
-docker compose logs --tail=80 relay
-~~~
-
-For tunnel connectivity errors:
-
-~~~bash
-docker compose -f compose.yaml -f compose.tunnel.yaml --profile tunnel logs --tail=80 tunnel
-~~~
-
-Container restart policies keep both services running across VPS restarts. Deployments are manual for now. This repository does not contain SSH private keys, Cloudflare API tokens, or automatic GitHub Actions deployment credentials.
-
-## Resource and security boundaries
-
-- Only the loopback port is mapped from the Relay container to the VPS.
-- The cloudflared service makes outbound connections; no additional inbound host ports are needed.
-- The tunnel token is passed only to the cloudflared service, **not** to the Pi process.
-- The Pi process runs as an unprivileged user with a read-only root filesystem; only a small writable tmpfs is available.
-- Pi's default shell and file tools are disabled. Atlas MCP integration is not yet implemented.
-- Model calls are restricted to `:free` model identifiers in this initial version. Free providers may impose usage limits and data-retention policies.
-- Conversation sessions are currently in-memory. Upgrades/restarts will lose them until persistence is implemented.
-
-## Future option: share the existing Caddy ingress
-
-If you prefer to route this hostname through Atlas's Caddy instead of using a tunnel, modify Atlas's `infra/Caddyfile.production`, ensure the Atlas ingress container can reach Relay through a reviewed private network, and redeploy the Atlas ingress image. **Do not** just add a new Caddyfile on the VPS host: the Atlas Caddy process runs inside Docker. Keep this as a separate, reviewed infrastructure change.
+- Relay's internal bearer token remains mandatory for `/api/*` on the loopback endpoint, including when accessed over an SSH tunnel.
+- Caddy authenticates every public HTTP request and injects that bearer header only after authentication.
+- Do not expose `gateway:8080` or Relay's port 8765 directly to the internet.
+- Store your tunnel token, bcrypt hash, API key and internal token exclusively in `.env` on the VPS.
+- Basic Auth is single-user protection, not shared SSO, multi-user authorization, MFA or an identity provider.
+- Pi's built-in file and shell tools are disabled; future Atlas MCP execution needs its own authorisation.
+- Chat sessions remain in-memory and are lost on server restarts.
