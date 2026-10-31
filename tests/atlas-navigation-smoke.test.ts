@@ -23,7 +23,7 @@ test('Atlas navigation accepts only operator-supplied HTTPS or local development
     'https://atlas.example.com/#/projects','ftp://atlas.example.com',
     '//atlas.example.com','javascript:alert(1)','https://atlas.example.com\n',
     ' https://atlas.example.com','https://atlas.example.com/extra/..',
-  ])assert.throws(()=>parseAtlasWebOrigin(invalid),undefined,invalid);
+  ])assert.throws(()=>parseAtlasWebOrigin(invalid),/ATLAS_WEB_ORIGIN/,invalid);
 });
 
 test('navigation uses verified Atlas Web routes, never imaginary record or checkout routes',()=>{
