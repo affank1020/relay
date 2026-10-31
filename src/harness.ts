@@ -27,6 +27,7 @@ export class PiHarness implements Harness {
     this.runtime ??= ModelRuntime.create({allowModelNetwork:true,modelRefreshTimeoutMs:15000,authPath:join(agentDir,'auth.json'),modelsPath:null})
       .catch(e=>{this.runtime=undefined;throw e;});
     const modelRuntime=await this.runtime;
+    signal.throwIfAborted();
     const key=modelKey??this.registry?.defaultKey??'openrouter/'+this.modelId;
     if(key.startsWith('ollama/')&&this.registry) {
       await refreshOllamaModels(this.registry);
