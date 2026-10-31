@@ -59,14 +59,31 @@ export class TrustedSkills {
         ...(skill.source==='git'?{sourceRef:skill.owner+'/'+skill.repo+'@'+skill.commit.slice(0,12)+' / '+skill.path}:{})};
     }));
   }
+  // One coherent, validated resource snapshot per Pi inference. A concurrent
+  // disable/remove cannot make metadata and instructions come from different
+  // admission decisions. Running tasks may finish with an earlier snapshot.
+  async snapshot():Promise<{paths:Array<{name:string;path:string}>;instructions:string}> {
+    const permitted=this.entries().filter(skill=>this.enabled(skill.id));
+    const paths:Array<{name:string;path:string}>=[];
+    const parts:string[]=[];
+    for(const skill of permitted){
+      const content=await this.validated(skill);
+      paths.push({name:skill.name,path:this.path(skill.id,skill.source)});
+      parts.push('<trusted_skill name="'+skill.name+'">\n'+content+'\n</trusted_skill>');
+    }
+    return {paths,instructions:parts.join('\n\n')};
+  }
   async permittedPaths():Promise<Array<{name:string;path:string}>> {
+    // Missing/modified packages are silently omitted in status and discovery;
+    // the inference snapshot above deliberately fails rather than loading a
+    // partially trusted set.
     const list=await this.list();
     return list.filter(s=>s.enabled).map(s=>({name:s.name,path:this.path(s.id,s.source)}));
   }
   async promptContent():Promise<string> {
-    const listed=await this.list();
+    const list=await this.list();
     const parts:string[]=[];
-    for(const skill of listed.filter(s=>s.enabled)){
+    for(const skill of list.filter(s=>s.enabled)){
       const entry=this.entries().find(s=>s.id===skill.id);
       if(!entry)throw new Error('Trusted Skill removed during loading');
       const content=await this.validated(entry);

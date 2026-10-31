@@ -87,11 +87,14 @@ export class PiHarness implements Harness {
     }
     onPhase?.('loading_resources');
     const settingsManager=SettingsManager.inMemory();
-    const trusted=await this.capabilityRegistry?.skillPaths()??[];
+    // Collect admitted paths and trusted instructions in one validated
+    // snapshot; a mid-load settings update cannot split these decisions.
+    const skillSnapshot=await this.capabilityRegistry?.skills.snapshot()??{paths:[],instructions:''};
+    const trusted=skillSnapshot.paths;
     // Pi normally advertises Skills only when an authorised read/bash tool can
     // open them. Relay grants neither, so include just validated trusted Skill
     // instructions directly, never arbitrary filesystem content.
-    const skillInstructions=await this.capabilityRegistry?.skills.promptContent()??'';
+    const skillInstructions=skillSnapshot.instructions;
     const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager,noExtensions:true,disabledBuiltinExtensions:['mcp'],
       noSkills:false,additionalSkillPaths:trusted.map(s=>s.path),
       skillsOverride:current=>({...current,skills:current.skills.filter(s=>trusted.some(t=>s.name===t.name&&s.filePath===t.path))}),
