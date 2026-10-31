@@ -4,8 +4,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Type } from '@sinclair/typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Store, type Task, type ExecutionEvent } from './store.js';
+import { observeAtlasResult, type AtlasCheckoutFact } from './atlas-awareness.js';
 
-export const READ_TOOLS = new Set(['get_atlas_status','list_projects','get_project','list_nodes','get_node','list_workspaces','get_workspace','list_logical_workspaces','list_project_workspaces','list_applications','get_application','list_stores','get_store','list_records','get_record','list_views','get_view','workspace_list_files','workspace_read_file','workspace_search_files','workspace_git_status','workspace_git_diff','workspace_list_dev_tasks']);
+export const READ_TOOLS = new Set(['get_atlas_status','list_projects','get_project','list_nodes','get_node','list_workspaces','get_workspace','list_logical_workspaces','list_project_workspaces','list_applications','get_application','list_stores','get_store','list_records','get_record','list_views','get_view','workspace_list_files','workspace_read_file','workspace_search_files','workspace_git_status','workspace_git_diff','workspace_git_list_worktrees','workspace_list_dev_tasks']);
 export interface AtlasTransport { list(): Promise<Array<{name:string;description?:string;inputSchema:Record<string,unknown>}>>; call(name:string,args:Record<string,unknown>,signal?:AbortSignal): Promise<unknown>; close(): Promise<void>; }
 export class McpTransport implements AtlasTransport {
   private connection?: Promise<Client>;
@@ -66,7 +67,7 @@ export class Gateway {
       throw new Error('Invocation already dispatched; reconciliation required');
     }
     const id=randomUUID();
-    const fields:Partial<ExecutionEvent>={taskId:task.id,agentRunId:task.id,invocationId:id,tool:name,type:'tool',
+    const fields:Partial<ExecutionEvent>={taskId:task.id,agentRunId:(task as Task & {agentRunId?:string}).agentRunId??task.id,invocationId:id,tool:name,type:'tool',
       projectId:uuid(args.projectId),workspaceId:uuid(args.checkoutId ?? args.workspaceId)};
     const emit=(state:string,extra:Partial<ExecutionEvent>={})=>this.store.event(task.conversationId,{...fields,...extra,state});
     if(!READ_TOOLS.has(name) && name!=='workspace_run_dev_task') { emit('denied'); throw new Error('Tool is not permitted'); }
@@ -76,12 +77,16 @@ export class Gateway {
     this.store.save('invocations',{id:key,digest,state:'validating'} as {id:string});
     emit('validating');
     try {
+      let resolvedCheckout:AtlasCheckoutFact|undefined;
       signal.throwIfAborted();
       if(name.startsWith('workspace_')) {
         if(!fields.workspaceId)throw new Error('A checkout ID is required');
         const workspace=payload(await this.invoke(task,callId+':workspace','get_workspace',{checkoutId:fields.workspaceId},signal));
         const nodeId=uuid(workspace.nodeId);
         if(!nodeId || workspace.status!=='active')throw new Error('Active checkout placement unavailable');
+        // Placement is a resolved relationship, not proof that the Node ran the tool.
+        if(workspace.id && workspace.id!==fields.workspaceId)throw new Error('Checkout identity changed');
+        resolvedCheckout={id:fields.workspaceId,nodeId};
         fields.selectedNodeId=nodeId;
         const node=payload(await this.invoke(task,callId+':node','get_node',{nodeId},signal));
         const capability=name.startsWith('workspace_git_')?'workspace.git':name.includes('dev_task')?'workspace.dev':'workspace.files';
@@ -104,8 +109,15 @@ export class Gateway {
       const failed=!!(result && typeof result==='object' && 'isError' in result && result.isError) || raw.success===false;
       // Only an execution receipt with matching checkout and task establishes actual execution.
       const actual=name==='workspace_run_dev_task' && raw.workspaceId===fields.workspaceId && raw.task===args.task ? uuid(raw.nodeId):null;
-      this.store.save('invocations',{id:key,digest,state:'completed',result} as {id:string});
-      emit(failed?'failed':'completed',{executingNodeId:actual,atlasOperationId:uuid(raw.operationId)});
+      const observation=failed?null:observeAtlasResult(name,args,raw,resolvedCheckout);
+      // A completed invocation and its safe observation are one durable receipt.
+      // Replaying an existing call ID returns the saved result without re-emitting.
+      this.store.transaction(()=>{
+        this.store.save('invocations',{id:key,digest,state:'completed',result} as {id:string});
+        emit(failed?'failed':'completed',{executingNodeId:actual,atlasOperationId:uuid(raw.operationId)});
+        if(observation)this.store.event(task.conversationId,{...fields,type:'atlas_resource',
+          state:'completed',atlasResource:observation});
+      });
       return result;
     } catch(error) {
       this.store.save('invocations',{id:key,digest,state:'uncertain'} as {id:string});
