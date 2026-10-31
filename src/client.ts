@@ -369,7 +369,14 @@ async function poll(){
   if(!current||polling)return;
   const id=current,generation=epoch;polling=true;
   try{
-    const [snapshot,replay]=await Promise.all([get<Snapshot>('/sessions/'+id),get<{events:ExecutionEvent[];nextCursor:number;hasMore:boolean}>('/sessions/'+id+'/events?after='+cursor)]);
+    // Replay first, snapshot second. Both are read from the same persisted
+    // server state: a snapshot fetched after the replay is guaranteed to
+    // include every task transition represented by the consumed events.
+    // Concurrent requests could otherwise consume a completion event while
+    // rendering a stale running snapshot, leaving a live chat stuck busy.
+    const replay=await get<{events:ExecutionEvent[];nextCursor:number;hasMore:boolean}>('/sessions/'+id+'/events?after='+cursor);
+    if(generation!==epoch)return;
+    const snapshot=await get<Snapshot>('/sessions/'+id);
     if(generation!==epoch)return;
     for(const event of replay.events){
       if(event.sequence<=cursor||event.type==='delta')continue;
