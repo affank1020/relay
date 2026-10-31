@@ -12,7 +12,7 @@ export interface ProviderConfig {
 }
 export interface IntegrationStatus {
   id:string; label:string; enabled:boolean; configured:boolean;
-  state:'disabled'|'unconfigured'|'ready'|'offline'; availableTools:string[];
+  state:'disabled'|'unconfigured'|'unchecked'|'ready'|'offline'; availableTools:string[];
 }
 const GITHUB_READ=[
   'get_me','get_file_contents','get_commit','get_latest_release','get_release_by_tag',
@@ -105,7 +105,7 @@ export class ConnectionManager {
   list():IntegrationStatus[]{
     return this.configs.map(p=>({
       id:p.id,label:p.label,enabled:this.enabled(p.id),configured:!!p.token,
-      state:!this.enabled(p.id)?'disabled':!p.token?'unconfigured':this.states.get(p.id)??'ready',
+      state:!this.enabled(p.id)?'disabled':!p.token?'unconfigured':this.states.get(p.id)??'unchecked',
       availableTools:this.inventory.get(p.id)??[]
     }));
   }
