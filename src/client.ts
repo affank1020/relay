@@ -1,4 +1,5 @@
 import type { Task, ExecutionEvent, Approval } from './store.js';
+import { renderMarkdown } from './markdown.js';
 interface Summary { id:string; title:string; modelKey?:string; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
 interface Snapshot { session:Summary; tasks:Task[]; approvals:Approval[]; }
 function $<T extends HTMLElement=HTMLElement>(id:string):T { const n=document.getElementById(id);if(!n)throw new Error('Missing element '+id);return n as T; }
@@ -6,7 +7,21 @@ const hosted=window.location.protocol==='https:';
 let token='',current:string|null=null,busy=false,polling=false,timer:ReturnType<typeof setTimeout>|undefined,cursor=0,epoch=0,lastView='',submitting=false;
 let pending:{conversationId:string;message:string;requestId:string}|null=null;
 const activity:ExecutionEvent[]=[];
+// Separate durable-in-session receipt index from the capped activity inspector.
+// One latest event per tool invocation is retained for each task, including old
+// turns and paginated history replayed when a conversation is reopened.
+const toolReceipts=new Map<string,Map<string,ExecutionEvent>>();
+let receiptVersion=0;
+function indexToolReceipt(event:ExecutionEvent){
+  if(event.type!=='tool'||!event.invocationId||!event.taskId)return;
+  let task=toolReceipts.get(event.taskId);
+  if(!task){task=new Map();toolReceipts.set(event.taskId,task);}
+  if(task.get(event.invocationId)?.id===event.id)return;
+  task.set(event.invocationId,event);
+  receiptVersion++;
+}
 let configuredModels:{key:string;label:string}[]=[];
+let knownSessions:Summary[]=[];
 const text=(e:unknown)=>e instanceof Error?e.message:String(e);
 function el(tag:string,className:string,value:string){const n=document.createElement(tag);n.className=className;n.textContent=value;return n;}
 function remember(key:string,value:string){try{window.sessionStorage?.setItem(key,value);}catch{}}
@@ -21,7 +36,61 @@ async function api(path:string,options:RequestInit={}):Promise<Response>{
 }
 async function get<T>(path:string){return await (await api(path)).json() as T;}
 function notify(error:unknown){$('notice').textContent=text(error);}
-function setBusy(value:boolean){busy=value;$<HTMLButtonElement>('send').disabled=value||submitting;$<HTMLTextAreaElement>('prompt').disabled=value;$('stop').hidden=!value;$('state').textContent=value?'Working…':'Idle';}
+function setBusy(value:boolean){
+  busy=value;
+  $<HTMLButtonElement>('send').disabled=value||submitting;
+  $<HTMLTextAreaElement>('prompt').disabled=value;
+  $('stop').hidden=!value;
+  $('state').textContent=value?'Working…':'Ready';
+  $('state').className='run-state'+(value?' is-running':'');
+}
+function toolLabel(tool:string|null){
+  return (tool||'Atlas action').replace(/^atlas_/,'').replace(/^workspace_/,'Workspace · ').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+}
+function currentToolEvents(taskId:string){
+  return [...(toolReceipts.get(taskId)?.values()??[])].sort((a,b)=>a.sequence-b.sequence);
+}
+function renderSessions(){
+  const q=$<HTMLInputElement>('sessionSearch').value.trim().toLowerCase();
+  const matched=knownSessions.filter(s=>s.title.toLowerCase().includes(q));
+  $('sessionCount').textContent=String(matched.length);
+  const parent=$('sessions');parent.replaceChildren();
+  for(const session of matched){
+    const button=el('button','session'+(session.id===current?' selected':''),'') as HTMLButtonElement;
+    button.type='button';button.title=session.title;
+    const icon=el('span','session-icon','◱');icon.setAttribute('aria-hidden','true');
+    const title=el('span','session-title',session.title);
+    button.append(icon,title);
+    if(session.busy)button.append(el('span','session-running',''));
+    button.onclick=()=>{void select(session.id).catch(notify);closeSidebar();};
+    parent.append(button);
+  }
+  if(!matched.length)parent.append(el('p','sidebar-empty',q?'No matching conversations.':'No conversations yet.'));
+}
+function closeSidebar(){document.body?.classList?.remove('sidebar-open');}
+function fillPrompt(value:string){
+  const prompt=$<HTMLTextAreaElement>('prompt');
+  prompt.value=value;prompt.focus();
+}
+function emptyConversation(){
+  const wrapper=el('div','empty','');
+  wrapper.append(el('span','spark','✳'),el('h2','','What are we working on?'),el('p','','Ask anything, or explore your Atlas projects and agents.'));
+  const chips=el('div','prompt-chips','');
+  for(const [label,description,message] of [
+    ['Atlas health','Check infrastructure and service status','Use Atlas MCP to get the current Atlas status.'],
+    ['My projects','Explore projects in Atlas','Use Atlas MCP to list my projects.'],
+    ['Workspaces','Find available development workspaces','Use Atlas MCP to list my workspaces and their associated Nodes.'],
+    ['Atlas Nodes','Inspect connected devices and capabilities','Use Atlas MCP to list my Nodes and their available capabilities.']
+  ]){
+    const button=el('button','prompt-chip','') as HTMLButtonElement;
+    button.type='button';
+    button.append(el('b','',label),el('small','',description));
+    button.onclick=()=>fillPrompt(message);
+    chips.append(button);
+  }
+  wrapper.append(chips);return wrapper;
+}
+
 async function refresh(){
   const [state,list]=await Promise.all([get<{provider:string;model:string;atlas:string;defaultModelKey?:string;models?:{key:string;label:string}[]}>('/status'),get<{sessions:Summary[]}>('/sessions')]);
   configuredModels=state.models??[];
@@ -32,20 +101,45 @@ async function refresh(){
     picker.value=configuredModels.some(x=>x.key===previous)?previous:(state.defaultModelKey??configuredModels[0].key);
   }
   $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===$<HTMLSelectElement>('modelPicker').value)?.label??state.model);
-  $('connection').textContent='Pi connected';$('subtitle').textContent='Atlas '+state.atlas;
-  $('sessions').replaceChildren();
-  for(const s of list.sessions){const button=el('button','session'+(s.id===current?' selected':''),s.title) as HTMLButtonElement;button.type='button';button.onclick=()=>{void select(s.id).catch(notify);};$('sessions').append(button);}
+  $('connection').textContent='Pi connected';
+  $('subtitle').textContent=state.atlas==='configured'?'Connected to Atlas · '+configuredModels.length+' models available':'Atlas not configured';
+  $('atlasSummary').title=state.atlas==='configured'?'Atlas MCP configured':'Atlas MCP is not configured';
+  knownSessions=list.sessions;
+  renderSessions();
   return list.sessions;
 }
 function render(data:Snapshot){
-  const serialized=JSON.stringify(data.tasks);
+  // Enqueue retitles the first message server-side. Keep the searchable
+  // sidebar in sync with the authoritative snapshot, not only /sessions.
+  const known=knownSessions.find(s=>s.id===data.session.id);
+  if(known && (known.title!==data.session.title || known.busy!==data.session.busy)){
+    known.title=data.session.title;
+    known.busy=data.session.busy;
+    renderSessions();
+  }
+  const serialized=JSON.stringify(data.tasks)+'|'+receiptVersion;
   if(serialized!==lastView){
     const messages=$('messages');const nearBottom=messages.scrollHeight-messages.scrollTop-messages.clientHeight<120;
     messages.replaceChildren();
-    if(!data.tasks.length)messages.append(el('div','empty','Ask Relay a question or give it work to coordinate.'));
+    if(!data.tasks.length)messages.append(emptyConversation());
     for(const task of data.tasks){
       const user=el('div','message user',task.prompt);messages.append(user);
-      const assistant=el('div','message assistant','');assistant.append(el('span','heading','Relay · '+task.state),el('div','text',task.result||task.error||(task.state==='queued'?'Queued…':'Working…')));
+      const assistant=el('div','message assistant','');
+      assistant.append(el('span','heading',task.state==='running'?'✳ Relay is working':task.state==='completed'?'✳ Relay':'✳ Relay · '+task.state));
+      const events=currentToolEvents(task.id);
+      if(events.length){
+        const tools=el('div','inline-tools','');
+        for(const event of events){
+          const pill=el('div','tool-pill '+event.state,'');
+          pill.append(el('span','','◈'),el('strong','',toolLabel(event.tool)),el('span','tool-state',event.state));
+          tools.append(pill);
+        }
+        assistant.append(tools);
+      }
+      if(task.result)assistant.append(renderMarkdown(task.result));
+      else if(task.error)assistant.append(el('p','error',task.error));
+      else assistant.append(el('p','status-line',task.state==='queued'?'Waiting for available agent…':'Working on your request…'));
+
       if(task.error&&task.result)assistant.append(el('p','error',task.error));
       if(['failed','interrupted','cancelled'].includes(task.state)){
         const retry=el('button','action','Retry in new conversation') as HTMLButtonElement;
@@ -61,14 +155,14 @@ function render(data:Snapshot){
   const picker=$<HTMLSelectElement>('modelPicker');
   if(data.session.modelKey&&configuredModels.some(m=>m.key===data.session.modelKey))picker.value=data.session.modelKey;
   $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===picker.value)?.label??'OpenRouter');
-  $('cost').textContent=(data.session.usage.unknown?'Usage incomplete · ':'')+data.session.usage.costKind+' $'+data.session.costUsd.toFixed(4)+' · '+data.session.usage.tokens+' tokens';
+  $('cost').textContent=data.session.usage.tokens+' tokens'+(data.session.usage.unknown?' · usage incomplete':data.session.modelKey?.startsWith('ollama/')?' · local':' · $'+data.session.costUsd.toFixed(4));
   setBusy(data.session.busy);
   $('approvals').replaceChildren();
   for(const a of data.approvals.filter(a=>a.state==='pending')){
-    const card=el('div','approval','Approval required: '+a.tool);
+    const card=el('div','approval','');card.append(el('strong','','Approval required · '+toolLabel(a.tool)));
     card.append(el('pre','',JSON.stringify(a.args,null,2)));
     for(const approved of [true,false]){
-      const button=el('button','action',approved?'Approve operation':'Reject operation') as HTMLButtonElement;
+      const button=el('button','action'+(approved?'':' deny'),approved?'Approve action':'Reject') as HTMLButtonElement;
       button.onclick=async()=>{button.disabled=true;try{await api('/approvals/'+a.id,{method:'POST',body:JSON.stringify({approved})});await poll();}catch(e){notify(e);}};
       card.append(button);
     }
@@ -86,8 +180,14 @@ function renderActivity(){
     if(!details){
       details=el('details','activity','');
       details.dataset.eventId=e.id;
-      details.append(el('summary','',(e.tool||e.type)+' · '+e.state));
-      const fields={timestamp:e.timestamp,task:e.taskId,agentRun:e.agentRunId,invocation:e.invocationId,atlasOperation:e.atlasOperationId,project:e.projectId,checkout:e.workspaceId,selectedNode:e.selectedNodeId,executingNode:e.executingNodeId??'Unknown'};
+      const summary=el('summary','','');
+      summary.append(el('span','event-marker '+e.state,''));
+      const item=el('span','event-summary','');
+      item.append(el('span','event-title',e.type==='tool'?toolLabel(e.tool):e.type==='task'?'Agent task':e.type==='approval'?'Approval required':e.type==='usage'?'Model usage':e.type));
+      item.append(el('span','event-sub',e.state+' · '+new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})));
+      summary.append(item,el('span','event-open','⌄'));
+      details.append(summary);
+      const fields={timestamp:e.timestamp,task:e.taskId,agentRun:e.agentRunId,invocation:e.invocationId,atlasOperation:e.atlasOperationId,project:e.projectId,workspace:e.workspaceId,selectedNode:e.selectedNodeId,executingNode:e.executingNodeId??'Not confirmed'};
       details.append(el('pre','',JSON.stringify(fields,null,2)));
     }
     if(parent.children[index]!==details)parent.insertBefore(details,parent.children[index]??null);
@@ -100,17 +200,21 @@ async function poll(){
   try{
     const [snapshot,replay]=await Promise.all([get<Snapshot>('/sessions/'+id),get<{events:ExecutionEvent[];nextCursor:number;hasMore:boolean}>('/sessions/'+id+'/events?after='+cursor)]);
     if(generation!==epoch)return;
-    render(snapshot);
-    for(const event of replay.events)if(event.sequence>cursor&&event.type!=='delta')activity.push(event);
+    for(const event of replay.events){
+      if(event.sequence<=cursor||event.type==='delta')continue;
+      indexToolReceipt(event);
+      activity.push(event);
+    }
     cursor=replay.nextCursor;
     if(activity.length>300)activity.splice(0,activity.length-300);
     renderActivity();
+    render(snapshot);
     $('notice').textContent=pending?'A send is awaiting confirmation. Retry uses the same request ID.':'';
   }catch(e){notify('Connection interrupted. Reconnecting safely; no prompt is resubmitted. '+text(e));}
   finally{polling=false;if(timer)clearTimeout(timer);timer=setTimeout(()=>{void poll();},600);}
 }
 async function select(id:string){
-  epoch++;current=id;cursor=0;lastView='';activity.length=0;$('activity').replaceChildren();remember('relay.conversation',id);
+  epoch++;current=id;cursor=0;lastView='';activity.length=0;toolReceipts.clear();receiptVersion=0;$('activity').replaceChildren();remember('relay.conversation',id);
   const generation=epoch;const data=await get<Snapshot>('/sessions/'+id);
   if(generation!==epoch)return;
   render(data);await refresh();void poll();
@@ -153,14 +257,30 @@ $<HTMLFormElement>('loginForm').onsubmit=async event=>{
   catch(e){$('error').textContent=text(e);}
 };
 $('settings').onclick=()=>{if(hosted){void bootstrap();return;}token='';$<HTMLDialogElement>('login').showModal();};
-$('new').onclick=()=>{void create().catch(notify);};
+$('new').onclick=()=>{void create().then(closeSidebar).catch(notify);};
+$<HTMLInputElement>('sessionSearch').oninput=renderSessions;
+$('openSidebar').onclick=()=>{document.body?.classList?.add('sidebar-open');};
+// Explicit shortcut, matching the keycap in the sidebar. Do not intercept regular typing.
+document.addEventListener?.('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();void create().catch(notify);}});
+$('closeSidebar').onclick=closeSidebar;
+$('closeInspector').onclick=()=>{const panel=$('inspector');panel.hidden=true;$('toggleInspector').setAttribute('aria-expanded','false');};
 $<HTMLSelectElement>('modelPicker').onchange=()=>{void create().catch(notify);};
 $<HTMLFormElement>('form').onsubmit=event=>{void submit(event);};
 $('stop').onclick=()=>{if(current)void api('/sessions/'+current+'/abort',{method:'POST',body:'{}'}).then(()=>poll()).catch(notify);};
 $<HTMLTextAreaElement>('prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$<HTMLFormElement>('form').requestSubmit();}};
 $('toggleInspector').onclick=()=>{const panel=$('inspector');panel.hidden=!panel.hidden;$('toggleInspector').setAttribute('aria-expanded',String(!panel.hidden));};
 $('showTasks').onclick=async()=>{
-  try{const data=await get<{tasks:Task[]}>('/tasks');$('taskList').replaceChildren();for(const t of data.tasks){const button=el('button','session',t.state+' · '+t.prompt.slice(0,70)) as HTMLButtonElement;button.onclick=()=>{void select(t.conversationId).catch(notify);};$('taskList').append(button);}}
-  catch(e){notify(e);}
+  const list=$('taskList');list.hidden=!list.hidden;
+  $('showTasks').setAttribute('aria-expanded',String(!list.hidden));
+  if(list.hidden)return;
+  try{
+    const data=await get<{tasks:Task[]}>('/tasks');list.replaceChildren();
+    for(const t of data.tasks.slice(0,35)){
+      const button=el('button','session','') as HTMLButtonElement;
+      button.append(el('span','session-icon',t.state==='completed'?'✓':t.state==='failed'?'!':'◷'),el('span','session-title',t.prompt.slice(0,70)));
+      button.title=t.state+' · '+t.prompt;button.onclick=()=>{void select(t.conversationId).then(closeSidebar).catch(notify);};list.append(button);
+    }
+    if(!data.tasks.length)list.append(el('span','sidebar-empty','No recent tasks.'));
+  }catch(e){notify(e);}
 };
 void bootstrap();

@@ -6,5 +6,5 @@ rm -rf dist
 mkdir -p dist/public
 ./node_modules/.bin/esbuild src/server.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=dist/server.js
 ./node_modules/.bin/esbuild src/healthcheck.ts --platform=node --format=esm --target=node22 --outfile=dist/healthcheck.js
-./node_modules/.bin/esbuild src/client.ts --platform=browser --format=iife --target=es2022 --outfile=dist/public/app.js
+./node_modules/.bin/esbuild src/client.ts --bundle --platform=browser --format=iife --target=es2022 --outfile=dist/public/app.js
 cp public/index.html public/style.css dist/public/

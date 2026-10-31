@@ -17,6 +17,7 @@ class Element {
   onclick?:()=>void;
   onsubmit?:()=>void;
   onkeydown?:()=>void;
+  oninput?:()=>void;
   constructor(readonly tag='div'){}
   append(...nodes:Element[]){for(const node of nodes)this.insertBefore(node,null);}
   insertBefore(node:Element,before:Element|null) {
@@ -95,4 +96,127 @@ test('Activity details stay expanded across idle polls and newly prepended event
   assert.equal(list.children.length,1);
   assert.equal(list.children[0].dataset.eventId,'event-2');
   assert.notStrictEqual(list.children[0],original,'session switches must discard old activity rows');
+});
+
+test('Atlas receipts render beside a Markdown response without injecting model HTML',async()=>{
+  const nodes=new Map<string,Element>();
+  const element=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id)!;};
+  const task={id:'t1',conversationId:'c1',prompt:'Get Atlas status',result:'**Atlas active**\n\n<script>alert(1)</script>',state:'completed',error:null,usage:[]};
+  const receipt={...event('tool-1',1),type:'tool',state:'completed',taskId:'t1',invocationId:'call-1',tool:'get_atlas_status'};
+  let timeout:(()=>void)|undefined;
+  const context={
+    window:{location:{protocol:'https:'},sessionStorage:{getItem:()=>null,setItem:()=>{}}},
+    document:{getElementById:element,createElement:(tag:string)=>new Element(tag)},
+    Headers,Response,URL,
+    setTimeout:(fn:()=>void)=>{timeout=fn;return 1;},
+    clearTimeout:()=>{timeout=undefined;},
+    fetch:async(url:string)=>{
+      if(url==='/api/status')return new Response(JSON.stringify({provider:'OpenRouter',model:'test-free',atlas:'configured'}));
+      if(url==='/api/sessions')return new Response(JSON.stringify({sessions:[{id:'c1',title:'Atlas status'}]}));
+      if(url==='/api/sessions/c1')return new Response(JSON.stringify({session:{id:'c1',title:'Atlas status',busy:false,costUsd:0,usage:{costKind:'estimated',tokens:20,unknown:false}},tasks:[task],approvals:[]}));
+      if(url.startsWith('/api/sessions/c1/events?after='))return new Response(JSON.stringify({events:url.endsWith('=0')?[receipt]:[],nextCursor:1,hasMore:false}));
+      throw Error('unexpected '+url);
+    }
+  };
+  runInNewContext(source,context,{filename:'dist/public/app.js'});
+  await flush();
+  const message=element('messages');
+  assert.ok(message.children.some(x=>x.className==='message assistant'));
+  const assistant=message.children.find(x=>x.className==='message assistant')!;
+  const pills=assistant.children.find(x=>x.className==='inline-tools');
+  assert.ok(pills,'tool action should be adjacent to its assistant response');
+  assert.ok(pills.children[0].children.some(x=>x.textContent==='Get Atlas Status'));
+  const markdown=assistant.children.find(x=>x.className==='markdown');
+  assert.ok(markdown);
+  const elements=(root:Element):Element[]=>[root,...root.children.flatMap(elements)];
+  assert.ok(!elements(markdown).some(x=>x.tag==='script'),'untrusted model markup must stay text');
+  assert.ok(elements(markdown).some(x=>x.textContent.includes('<script>')));
+  assert.ok(timeout,'polling should remain active after tool events');
+});
+
+test('newly titled first-message chats are searchable without navigation or refresh',async()=>{
+  const nodes=new Map<string,Element>();
+  const element=(id:string):Element=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id)!;};
+  let title='New conversation',task:Record<string,unknown>|undefined;
+  let nextPoll:(()=>void)|undefined;
+  let sessionListings=0;
+  const context={
+    window:{location:{protocol:'https:'},sessionStorage:{getItem:()=>null,setItem:()=>{}}},
+    document:{getElementById:element,createElement:(tag:string)=>new Element(tag)},
+    Headers,Response,URL,crypto:{randomUUID:()=> 'request-id-001'},
+    setTimeout:(fn:()=>void)=>{nextPoll=fn;return 1;},
+    clearTimeout:()=>{nextPoll=undefined;},
+    fetch:async(url:string,options?:RequestInit)=>{
+      if(url==='/api/status')return new Response(JSON.stringify({provider:'OpenRouter',model:'free-model',atlas:'configured'}));
+      if(url==='/api/sessions'){sessionListings++;return new Response(JSON.stringify({sessions:[{id:'c1',title:'New conversation'}]}));}
+      if(url==='/api/sessions/c1/messages' && options?.method==='POST'){
+        task={id:'t1',prompt:'Investigate build failures',result:'',state:'queued',error:null,usage:[]};
+        title='Investigate build failures';
+        return new Response(JSON.stringify({task}),{status:202});
+      }
+      if(url==='/api/sessions/c1')
+        return new Response(JSON.stringify({session:{id:'c1',title,busy:false,costUsd:0,usage:{costKind:'estimated',tokens:0,unknown:false}},tasks:task?[task]:[],approvals:[]}));
+      if(url.startsWith('/api/sessions/c1/events?after='))
+        return new Response(JSON.stringify({events:[],nextCursor:0,hasMore:false}));
+      throw Error('unexpected '+url);
+    }
+  };
+  runInNewContext(source,context,{filename:'dist/public/app.js'});
+  await flush();
+  const prompt=element('prompt');
+  prompt.value='Investigate build failures';
+  (element('form').onsubmit as unknown as ((e:{preventDefault():void})=>void))?.({preventDefault(){}});
+  await flush();
+  const search=element('sessionSearch');
+  search.value='build';
+  search.oninput?.();
+  assert.equal(sessionListings,2,'send path should not require a third sessions refresh');
+  const matches=element('sessions').children;
+  assert.equal(matches.length,1);
+  assert.equal(matches[0].title,'Investigate build failures');
+  assert.ok(matches[0].children.some(child=>child.textContent==='Investigate build failures'));
+  assert.ok(nextPoll,'polling remains scheduled');
+});
+
+test('Atlas receipts survive >500 event replay, 300-event inspector eviction and reloading',async()=>{
+  const receipts=[{...event('receipt-1',1),type:'tool',taskId:'t1',invocationId:'inv-1',tool:'get_atlas_status',state:'completed'}];
+  const all=[...receipts,...Array.from({length:605},(_,i)=>event('event-'+i,i+2))];
+  const task={id:'t1',conversationId:'c1',prompt:'Atlas status',result:'All healthy',state:'completed',error:null,usage:[]};
+  for(let load=0;load<2;load++){
+    const nodes=new Map<string,Element>();
+    const element=(id:string):Element=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id)!;};
+    let nextPoll:(()=>void)|undefined;
+    const context={
+      window:{location:{protocol:'https:'},sessionStorage:{getItem:()=>null,setItem:()=>{}}},
+      document:{getElementById:element,createElement:(tag:string)=>new Element(tag)},
+      Headers,Response,URL,
+      setTimeout:(fn:()=>void)=>{nextPoll=fn;return 1;},
+      clearTimeout:()=>{nextPoll=undefined;},
+      fetch:async(url:string)=>{
+        if(url==='/api/status')return new Response(JSON.stringify({provider:'OpenRouter',model:'free-model',atlas:'configured'}));
+        if(url==='/api/sessions')return new Response(JSON.stringify({sessions:[{id:'c1',title:'Atlas status'}]}));
+        if(url==='/api/sessions/c1')
+          return new Response(JSON.stringify({session:{id:'c1',title:'Atlas status',busy:false,costUsd:0,usage:{costKind:'estimated',tokens:10,unknown:false}},tasks:[task],approvals:[]}));
+        if(url.startsWith('/api/sessions/c1/events?after=')){
+          const after=Number(url.split('=')[1]);
+          const batch=all.filter(e=>e.sequence>after).slice(0,500);
+          return new Response(JSON.stringify({events:batch,nextCursor:batch.at(-1)?.sequence??after,hasMore:batch.length===500}));
+        }
+        throw Error('unexpected '+url);
+      }
+    };
+    runInNewContext(source,context,{filename:'dist/public/app.js'});
+    await flush();
+    assert.ok(nextPoll,'expected a scheduled history replay poll');
+    const next=nextPoll;next();
+    await flush();
+    const messages=element('messages');
+    const assistant=messages.children.find(x=>x.className==='message assistant');
+    assert.ok(assistant);
+    const pills=assistant.children.find(x=>x.className==='inline-tools');
+    assert.ok(pills,'first tool invocation must remain visible after inspector trims older events');
+    assert.equal(pills.children.length,1);
+    assert.equal(pills.children[0].children.at(-1)?.textContent,'completed');
+    assert.equal(element('activity').children.length,100,'inspector remains capped at latest 100 visible rows');
+  }
 });
