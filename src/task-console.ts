@@ -62,6 +62,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   let status='all';
   let conversation='';
   let selected:string|null=null;
+  let pinnedId:string|null=null;
   let selectedData:Detail|null=null;
   let selectedFingerprint='';
   let cursor:string|null=null;
@@ -168,6 +169,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       const response=await read<Page>(taskUrl(status as State,conversation));
       if(generation!==listEpoch||!visible)return;
       const incoming=new Set(response.tasks.map(task=>task.id));
+      if(pinnedId&&incoming.has(pinnedId))pinnedId=null;
       if(!response.hasMore) {
         // An exhaustive filtered page is authoritative, including for any
         // previously loaded older rows.
@@ -182,6 +184,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
           throw new Error('Invalid newest-page cursor');
         const missing=[...newestIds].filter(id=>!incoming.has(id));
         const pinned=selected&&missing.includes(selected)&&!olderIds.has(selected)?selected:null;
+        if(pinned)pinnedId=pinned;
 
         // Automatically displaced rows are not automatically loaded history.
         // Drop them from the DOM and cache; pagination is rebased to include
@@ -261,6 +264,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   }
   function clearSelection() {
     // Invalidate any pending detail or event request before removing actionable controls.
+    if(pinnedId&&!newestIds.has(pinnedId)&&!olderIds.has(pinnedId))tasks.delete(pinnedId);
+    pinnedId=null;
     detailEpoch++;
     selected=null;selectedData=null;selectedFingerprint='';
     events=[];eventCursor=0;eventMore=false;eventLoading=false;
@@ -272,7 +277,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     clearSelection();
     cursor=null;hasMore=false;paginationInitialized=false;newestBoundary=null;pagingRevision++;
     initialPageLoaded=false;olderCheckOffset=0;
-    newestIds.clear();olderIds.clear();tasks.clear();rows.clear();list.replaceChildren();
+    newestIds.clear();olderIds.clear();tasks.clear();pinnedId=null;rows.clear();list.replaceChildren();
     message('Loading tasks…');
     if(!visible)return;
     await firstPage();
@@ -439,6 +444,10 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     }
   }
   async function inspect(id:string) {
+    if(pinnedId&&pinnedId!==id) {
+      if(!newestIds.has(pinnedId)&&!olderIds.has(pinnedId))tasks.delete(pinnedId);
+      pinnedId=null;
+    }
     selected=id;
     detailEpoch++;
     const generation=detailEpoch;
