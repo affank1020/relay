@@ -5,8 +5,9 @@ import { timingSafeEqual } from 'node:crypto';
 import type { Engine } from './engine.js';
 import type { Conversation, Task, Approval } from './store.js';
 import { terminal } from './store.js';
+import type { RelayModels } from './models.js';
 
-export function createPlatform(engine:Engine, token:string, staticDir:string, model:string) {
+export function createPlatform(engine:Engine, token:string, staticDir:string, model:string, modelRegistry?:RelayModels) {
   if(token.length<24)throw new Error('RELAY_ACCESS_TOKEN must be 24+ characters');
   if(!model.endsWith(':free'))throw new Error('Relay requires a free OpenRouter model');
   const summary=(c:Conversation)=>({...c,busy:engine.tasks(c.id).some(t=>!terminal(t.state)),costUsd:engine.usage(c.id).costUsd,usage:engine.usage(c.id)});
@@ -33,9 +34,13 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
       const expected=Buffer.from(token);
       if(got.length!==expected.length||!timingSafeEqual(got,expected))return send(res,401,{error:'Invalid Relay token'});
       if(req.headers.origin && new URL(req.headers.origin).host!==req.headers.host)return send(res,403,{error:'Origin not permitted'});
-      if(path==='/api/status'&&req.method==='GET')return send(res,200,{harness:'Pi',provider:'OpenRouter',model,atlas:engine.gateway?'configured':'not configured',active:engine.tasks().filter(t=>['running','awaiting_approval'].includes(t.state)).length,maxActive:engine.limits.concurrency,usage:engine.usage(),limits:engine.limits});
+      if(path==='/api/status'&&req.method==='GET')return send(res,200,{harness:'Pi',provider:modelRegistry?.ollama?'OpenRouter + Ollama':'OpenRouter',model,models:modelRegistry?.models??[],defaultModelKey:modelRegistry?.defaultKey,atlas:engine.gateway?'configured':'not configured',active:engine.tasks().filter(t=>['running','awaiting_approval'].includes(t.state)).length,maxActive:engine.limits.concurrency,usage:engine.usage(),limits:engine.limits});
       if(path==='/api/sessions'&&req.method==='GET')return send(res,200,{sessions:engine.store.all<Conversation>('conversations').reverse().map(summary)});
-      if(path==='/api/sessions'&&req.method==='POST')return send(res,201,{session:summary(engine.conversation())});
+      if(path==='/api/sessions'&&req.method==='POST'){
+        const data=await body(req);
+        if(data.modelKey!==undefined&&typeof data.modelKey!=='string')throw new Error('Invalid model selection');
+        return send(res,201,{session:summary(engine.conversation(data.modelKey as string|undefined))});
+      }
       if(path==='/api/tasks'&&req.method==='GET')return send(res,200,{tasks:engine.tasks().slice(-200).reverse()});
       const conversation=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/messages|\/events|\/abort)?$/);
       if(conversation) {
@@ -71,7 +76,7 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
     }catch(error){
       // Only deterministic validation errors are exposed. Provider/tool errors are recorded as safe task states.
       const text=error instanceof Error?error.message:'Request failed';
-      const safe=/^(Message length|A stable|Conversation|Request identity|Task queue|Invalid depend|Parent task|Inference budget|Task cannot|Explicit reconciliation|Approval is|Task is|approved must|message and|Invalid event|Request too|Expected an)/.test(text)?text:'Request could not be completed';
+      const safe=/^(Invalid model selection|Message length|A stable|Conversation|Request identity|Task queue|Invalid depend|Parent task|Inference budget|Task cannot|Explicit reconciliation|Approval is|Task is|approved must|message and|Invalid event|Request too|Expected an)/.test(text)?text:'Request could not be completed';
       if(!res.headersSent)send(res,400,{error:safe});else res.end();
     }
   });

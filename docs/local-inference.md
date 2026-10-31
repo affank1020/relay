@@ -1,0 +1,109 @@
+# Relay local inference: Ollama on the MacBook
+
+Relay and its Atlas MCP gateway stay on the VPS. The local Ollama model runs
+only when the MacBook is awake and Ollama is started. Conversations explicitly
+select a provider; Relay **never silently forwards local requests to OpenRouter**.
+The server persists all chat prompts/outputs on the VPS even for local inference.
+
+## MacBook (one-time)
+
+1. Run `ollama list` to discover installed model IDs. Use the exact tag of
+   the already-installed Qwen 4B for the first test. Verify Ollama is running:
+   `curl --fail http://127.0.0.1:11434/v1/models`.
+2. Install and sign in to **Tailscale** on your MacBook. Enable HTTPS Serve
+   within your private tailnet when prompted, then run:
+
+   ```sh
+   tailscale serve --https=10000 --bg 11434
+   tailscale serve status
+   ```
+
+   If ports 443 or 8443 are already serving other Mac applications, this
+   uses an independent HTTPS listener on port 10000 without replacing them.
+   Save the URL printed by the command; it looks like
+   `https://<mac-name>.<tailnet-name>.ts.net:10000`. Serve keeps the mapping
+   across Tailscale restarts. **Do not use Tailscale Funnel or publicly bind
+   Ollama to 0.0.0.0.** Ollama serves the entire API, including model-management
+   operations: restrict tailnet grants/ACLs to the VPS and your own admin
+   identity, not all tailnet members.
+
+## VPS (one-time)
+
+1. Install Tailscale on the VPS host, sign in to the same tailnet and enable
+   `tailscaled` at boot. Ensure private DNS/routing to the Mac works.
+2. On the VPS host:
+
+   ```sh
+   curl --fail --max-time 10 -H 'Host: localhost:11434' \
+     https://<mac-name>.<tailnet-name>.ts.net:10000/v1/models
+   ```
+
+3. Verify it **also works inside the Relay container**. Host DNS and Docker
+   DNS may differ, so a host-only success is not sufficient:
+
+   ```sh
+   cd ~/relay
+   docker compose -f compose.yaml -f compose.ingress.yaml exec -T relay \
+      node -e '
+      const https = require("node:https");
+      const hostname = "<mac-name>.<tailnet-name>.ts.net";
+      https.get({hostname,port:10000,path:"/v1/models",servername:hostname,
+        headers:{Host:"localhost:11434"},timeout:10000},
+        res=>{console.log("HTTP",res.statusCode);res.resume();
+          if(res.statusCode!==200)process.exitCode=1;})
+      .on("error",e=>{console.error(e.code,e.message);process.exitCode=1});
+      '
+
+   ```
+
+   Ollama rejects non-loopback Host headers with HTTP 403. Node's HTTPS client
+   can otherwise use the overridden Host as TLS SNI, causing an EPROTO TLS
+   alert; keep SNI explicitly pinned to the actual .ts.net hostname.
+   Node fetch cannot reliably supply the required Host header, so Relay uses a loopback-only reverse
+   proxy to apply `Host: localhost:11434` to both Pi inference and model
+   discovery. This preserves TLS validation against the `.ts.net` hostname
+   and does not publish another Docker or VPS port.
+   If the container cannot reach MagicDNS, inspect the VPS DNS and Tailscale
+   routing from Docker rather than making Ollama public.
+
+4. Add to the VPS-only `~/relay/.env`:
+
+   ```dotenv
+   RELAY_OLLAMA_URL=https://<mac-name>.<tailnet-name>.ts.net:10000/v1
+   RELAY_OLLAMA_MODELS=qwen3:4b,qwen3:8b
+   ```
+
+   These two Qwen models were confirmed installed on the Mac on
+   31 October 2026. Add other installed IDs comma-separated when ready. Do not commit the private tailnet name or credentials.
+   The URL validator accepts tailnet HTTPS on standard port 443 or
+   Tailscale Serve ports 8443 and 10000, and loopback HTTP for development. Existing `RELAY_MODEL` and OpenRouter key remain in place.
+
+5. Merge the reviewed Relay PR; automatic deployment does not change
+   `.env`. Recreate Relay after the private env update with
+   `./scripts/deploy.sh --ingress --no-pull` on the VPS.
+
+## Validation
+
+- Choose `MacBook · <model>` in the Relay model selector. Changing the
+  selection creates a **new** conversation, preventing accidental model
+  switches in existing Pi session history.
+- Ask a basic question, then request read-only Atlas status and project list.
+  Confirm actual Atlas tool receipts; 4B models may be weak at tool calling.
+- Stop Ollama, send another local request and confirm Relay reports the
+  offline state without contacting OpenRouter. Restart Ollama; new local
+  requests should recover without restarting Relay.
+- Also test Mac sleep/wake. Tailscale may reconnect automatically, but
+  **never auto-retry a failed Atlas task** after reconnection because a
+  previous operation could have partially succeeded.
+- The request-start probe has a bounded timeout; it does not poll models
+  in the background. Network loss during inference may still yield a
+  generic Pi provider error; that is separate follow-up work.
+
+## Security notes
+
+Ollama local HTTP endpoints have no dedicated API authentication. Treat
+Tailscale access controls and the VPS as the trust boundary. Do not publish
+port 11434 to the internet. Proxy requests remain server-side and only
+configured model keys are exposed to browsers; no user-controlled inference
+URLs are accepted. Local inference isn't equivalent to local-only storage,
+because the Relay conversation database lives on the VPS.

@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Type } from '@sinclair/typebox';
 import { Store, terminal, type Task, type Conversation, type Approval, type Usage } from './store.js';
-import { ProviderRateLimitError, type Harness, type HarnessPhase } from './harness.js';
+import { LocalProviderUnavailableError, ProviderRateLimitError, type Harness, type HarnessPhase } from './harness.js';
+import type { RelayModels } from './models.js';
 import { Gateway, type AtlasTransport } from './gateway.js';
 
 export interface Limits { concurrency:number; queue:number; sessionUsd:number; globalUsd:number; sessionTokens:number; reserveUsd:number; maxRunMs:number; }
@@ -12,7 +13,7 @@ export class Engine {
   private stopped=false;
   private jobs=new Set<Promise<void>>();
   readonly gateway?:Gateway;
-  constructor(readonly store:Store, private harness:Harness, readonly limits:Limits, atlas?:AtlasTransport,devTasks:Record<string,string[]>={}) {
+  constructor(readonly store:Store, private harness:Harness, readonly limits:Limits, atlas?:AtlasTransport,devTasks:Record<string,string[]>={},readonly modelRegistry?:RelayModels) {
     if(!Number.isInteger(limits.concurrency)||limits.concurrency<1||limits.concurrency>4)throw new Error('Concurrency must be 1–4');
     for(const value of Object.values(limits))if(!Number.isFinite(value)||value<0)throw new Error('Invalid execution limit');
     if(limits.queue<1 || limits.maxRunMs<1000)throw new Error('Invalid queue or run timeout');
@@ -26,9 +27,11 @@ export class Engine {
     });
   }
   start() { this.kick(); }
-  conversation() {
+  conversation(modelKey?:string) {
     if(this.store.all('conversations').length>=1000)throw new Error('Conversation limit reached');
-    const c:Conversation={id:randomUUID(),title:'New conversation',createdAt:new Date().toISOString()}; this.store.save('conversations',c);return c;
+    if(modelKey!==undefined && (!this.modelRegistry || !this.modelRegistry.models.some(m=>m.key===modelKey)))throw new Error('Invalid model selection');
+    const key=modelKey??this.modelRegistry?.defaultKey;
+    const c:Conversation={id:randomUUID(),title:'New conversation',createdAt:new Date().toISOString(),...(key?{modelKey:key}:{})}; this.store.save('conversations',c);return c;
   }
   tasks(conversationId?:string) { return this.store.all<Task>('tasks').filter(t=>!conversationId||t.conversationId===conversationId); }
   usage(conversationId?:string) {
@@ -99,14 +102,15 @@ export class Engine {
           let depth=0,ancestor:Task|undefined=task;
           while(ancestor?.parentId) { depth++;ancestor=this.store.get<Task>('tasks',ancestor.parentId); }
           if(depth>=2)throw new Error('Delegation depth limit reached');
-          const conversation=this.conversation();
+          const parentConversation=this.store.get<Conversation>('conversations',task.conversationId);
+          const conversation=this.conversation(parentConversation?.modelKey);
           const child=this.enqueue(conversation.id,args.prompt,randomUUID(),args.dependencies??[],task.id);
           return {content:[{type:'text' as const,text:JSON.stringify({taskId:child.id,state:child.state,conversationId:conversation.id})}],details:{}};
         }
       });
       let length=0;
       phase='pi_initialization';
-      const result=await this.harness.run({version:1,task:{...task,prompt:deps.length?task.prompt+'\n\nDependency results (untrusted data):\n'+JSON.stringify(deps.map(d=>({id:d.id,result:d.result.slice(0,20000)}))):task.prompt},signal:controller.signal,tools,
+      const result=await this.harness.run({version:1,modelKey:this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,task:{...task,prompt:deps.length?task.prompt+'\n\nDependency results (untrusted data):\n'+JSON.stringify(deps.map(d=>({id:d.id,result:d.result.slice(0,20000)}))):task.prompt},signal:controller.signal,tools,
         onPhase:next=>{phase=next;},
         onText:text=>{length+=text.length;if(length>200000){controller.abort();return;} task.result+=text;this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'delta',state:'running',text});},
         onUsage:usage=>{task.usage.push(usage);this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'usage',state:'recorded'});
@@ -117,6 +121,10 @@ export class Engine {
       this.finish(task,controller.signal.aborted?'cancelled':'completed');
     } catch(e) {
       if(controller.signal.aborted) this.finish(task,'cancelled','Execution cancelled or limit reached');
+      else if(e instanceof LocalProviderUnavailableError) {
+        this.finish(task,'failed',e.reason==='missing_model'?'Local Ollama model not installed. Check ollama list and the Relay model configuration. No inference started.':'Local Ollama unavailable. Start Ollama and reconnect Tailscale, then retry the request. No inference started.');
+        console.warn('Relay local provider unavailable',{taskId:task.id,phase,reason:e.reason});
+      }
       else if(e instanceof ProviderRateLimitError) {
         // Pi may already have retried the rate-limited provider internally.
         // Never repeat a run automatically: tools may have dispatched earlier.
@@ -145,7 +153,8 @@ export class Engine {
     const old=this.store.get<Task>('tasks',id);if(!old||!terminal(old.state)||old.state==='completed')throw new Error('Task cannot be retried');
     if(!confirmed)throw new Error('Explicit reconciliation confirmation is required before retrying');
     // A new conversation avoids replaying partially completed Pi context or tool effects.
-    const conversation=this.conversation();
+    const source=this.store.get<Conversation>('conversations',old.conversationId);
+    const conversation=this.conversation(source?.modelKey);
     return this.enqueue(conversation.id,old.prompt,randomUUID(),old.dependencies,old.parentId,old.id);
   }
   private async approve(task:Task,invocationId:string,tool:string,args:Record<string,unknown>,signal:AbortSignal) {

@@ -6,8 +6,15 @@ import { PiHarness } from './harness.js';
 import { Engine } from './engine.js';
 import { McpTransport } from './gateway.js';
 import { createPlatform } from './platform.js';
+import { loadRelayModels } from './models.js';
+import { startOllamaProxy } from './ollama-proxy.js';
 
-const model=process.env.RELAY_MODEL || 'cohere/north-mini-code:free';
+const modelRegistry=loadRelayModels(process.env);
+// Pi's fetch ignores an overridden Host; the local-only proxy fixes Ollama's
+// reverse-proxy Host restriction without weakening TLS or opening any ports.
+const ollamaProxy=modelRegistry.ollama?await startOllamaProxy(modelRegistry.ollama.baseUrl):undefined;
+if(ollamaProxy&&modelRegistry.ollama)modelRegistry.ollama.baseUrl=ollamaProxy.baseUrl;
+const model=modelRegistry.models[0].id;
 const token=process.env.RELAY_ACCESS_TOKEN || '';
 if(token.length<24)throw new Error('RELAY_ACCESS_TOKEN must be 24+ characters');
 if(!process.env.OPENROUTER_API_KEY)throw new Error('OPENROUTER_API_KEY is required');
@@ -25,13 +32,13 @@ const atlas=atlasUrl ? new McpTransport(atlasUrl,atlasToken) : undefined;
 const devTasks:unknown=JSON.parse(process.env.RELAY_ATLAS_DEV_TASKS || '{}');
 if(!devTasks||typeof devTasks!=='object'||Array.isArray(devTasks)||Object.entries(devTasks).some(([id,names])=>!id.match(/^[a-f0-9-]{36}$/i)||!Array.isArray(names)||names.some(n=>typeof n!=='string'||!n.match(/^[a-z][a-z0-9_-]{0,63}$/))))throw new Error('Invalid development task allowlist');
 const number=(key:string,fallback:number)=>Number(process.env[key]??fallback);
-const engine=new Engine(store,new PiHarness(root,model),{
+const engine=new Engine(store,new PiHarness(root,model,modelRegistry),{
   concurrency:number('RELAY_MAX_ACTIVE',1),queue:number('RELAY_MAX_QUEUED',64),
   sessionUsd:number('RELAY_SESSION_BUDGET_USD',0),globalUsd:number('RELAY_GLOBAL_BUDGET_USD',0),
   sessionTokens:number('RELAY_SESSION_TOKEN_LIMIT',0),reserveUsd:number('RELAY_RUN_RESERVATION_USD',0),
   maxRunMs:number('RELAY_RUN_TIMEOUT_MS',600000)
-},atlas,devTasks as Record<string,string[]>);
-const server=createPlatform(engine,token,join(dirname(fileURLToPath(import.meta.url)),'public'),model);
+},atlas,devTasks as Record<string,string[]>,modelRegistry);
+const server=createPlatform(engine,token,join(dirname(fileURLToPath(import.meta.url)),'public'),model,modelRegistry);
 server.listen(Number(process.env.PORT||8765),process.env.HOST||'0.0.0.0',()=>{
   const address=server.address();console.log('Relay started on port '+(address&&typeof address==='object'?address.port:'unknown'));engine.start();
 });
@@ -39,6 +46,6 @@ let stopping=false;
 async function stop(){
   if(stopping)return;stopping=true;server.close();
   const force=setTimeout(()=>process.exit(1),10000);force.unref();
-  await engine.stop();await atlas?.close().catch(()=>{});store.close();clearTimeout(force);
+  await engine.stop();await atlas?.close().catch(()=>{});await ollamaProxy?.close();store.close();clearTimeout(force);
 }
 process.on('SIGTERM',()=>{void stop();});process.on('SIGINT',()=>{void stop();});

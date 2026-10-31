@@ -151,3 +151,34 @@ test('provider rate limit shows actionable safe error without retrying',async()=
     assert.doesNotMatch(task.error||'',/credentials|secret|Bearer /i);
   } finally {await engine.stop();store.close();}
 });
+
+test('local model choice persists through execution and explicit reconciliation retry',async()=>{
+  const store=new Store(':memory:');
+  const registry={defaultKey:'openrouter/cohere/north-mini-code:free',models:[{key:'openrouter/cohere/north-mini-code:free',provider:'openrouter' as const,id:'cohere/north-mini-code:free',label:'Cloud'},{key:'ollama/qwen3:4b',provider:'ollama' as const,id:'qwen3:4b',label:'MacBook'}],ollama:{baseUrl:'http://127.0.0.1:11434/v1',modelIds:['qwen3:4b']}};
+  const chosen:string[]=[];
+  const engine=new Engine(store,fixtureHarness(async request=>{chosen.push(request.modelKey||'missing');throw new Error('fixture failure');}),limits,undefined,{},registry);
+  try{
+    assert.throws(()=>engine.conversation('ollama/missing'),/Invalid model selection/);
+    const conversation=engine.conversation('ollama/qwen3:4b');
+    assert.equal(store.get<{modelKey?:string}>('conversations',conversation.id)?.modelKey,'ollama/qwen3:4b');
+    const original=engine.enqueue(conversation.id,'local test','local-choice-001');
+    await until(()=>engine.tasks().find(t=>t.id===original.id)?.state==='failed');
+    assert.deepEqual(chosen,['ollama/qwen3:4b']);
+    const retry=engine.retry(original.id,true);
+    await until(()=>engine.tasks().find(t=>t.id===retry.id)?.state==='failed');
+    assert.deepEqual(chosen,['ollama/qwen3:4b','ollama/qwen3:4b']);
+    assert.equal(store.get<{modelKey?:string}>('conversations',retry.conversationId)?.modelKey,'ollama/qwen3:4b');
+  }finally{await engine.stop();store.close();}
+});
+
+test('real Pi registers configured Ollama provider before aborted inference', {timeout:65000},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'relay-ollama-startup-'));
+  const registry={defaultKey:'openrouter/cohere/north-mini-code:free',models:[{key:'openrouter/cohere/north-mini-code:free',provider:'openrouter' as const,id:'cohere/north-mini-code:free',label:'OpenRouter'},{key:'ollama/qwen3:4b',provider:'ollama' as const,id:'qwen3:4b',label:'MacBook'}],ollama:{baseUrl:'http://127.0.0.1:11434/v1',modelIds:['qwen3:4b']}};
+  const controller=new AbortController();controller.abort(new Error('cancel-before-inference'));
+  const task:Task={id:crypto.randomUUID(),conversationId:crypto.randomUUID(),requestId:'ollama-startup',prompt:'never infer',state:'running',createdAt:new Date().toISOString(),parentId:null,dependencies:[],attemptOf:null,result:'',error:null,usage:[]};
+  const phases:string[]=[];
+  try {
+    await assert.rejects(new PiHarness(root,'cohere/north-mini-code:free',registry).run({version:1,task,modelKey:'ollama/qwen3:4b',signal:controller.signal,tools:[],onText:()=>assert.fail(),onUsage:()=>assert.fail(),onPhase:p=>phases.push(p)}),/cancel-before-inference/);
+    assert.ok(phases.includes('checking_local_provider'),'Pi must resolve registered local model before cancellation');
+  }finally{await rm(root,{recursive:true,force:true});}
+});
