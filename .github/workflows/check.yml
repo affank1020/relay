@@ -35,6 +35,7 @@ jobs:
           test -z "$(find src tests public -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' -o -name '*.jsx' \) -print)"
           test -f dist/server.js
           test -f dist/healthcheck.js
+          test -f dist/atlas-smoke.js
           test -f dist/public/app.js
           ! git ls-files | grep -E '^(src|tests|public)/.*\.(js|mjs|cjs|jsx)$'
       - name: Check deployment scripts and Compose
@@ -45,6 +46,9 @@ jobs:
           bash -n scripts/*.sh
           docker compose -f compose.yaml config --quiet
           docker compose -f compose.yaml -f compose.ingress.yaml config --quiet
+          # Verify Compose forwards the configured Atlas origin into the container.
+          ATLAS_WEB_ORIGIN=https://atlas.example.com docker compose -f compose.yaml config --format json |
+            node -e "let value='';process.stdin.on('data',part=>value+=part);process.stdin.on('end',()=>{const data=JSON.parse(value);if(data.services?.relay?.environment?.ATLAS_WEB_ORIGIN!=='https://atlas.example.com')process.exit(1);})"
       - name: Validate internal Caddy gateway
         env:
           RELAY_ACCESS_TOKEN: ci-only-test-placeholder-token-123456
@@ -56,3 +60,14 @@ jobs:
         run: docker run --rm caddy:2-alpine sh -c 'command -v wget'
       - name: Build production container
         run: docker build -t relay:ci .
+      - name: Verify Atlas smoke command runs from production image without tsx
+        run: |
+          set -euo pipefail
+          # Missing credentials must yield the expected diagnostic, not a missing
+          # TypeScript entrypoint/module. No external Atlas access is attempted.
+          set +e
+          output="$(docker run --rm --entrypoint npm relay:ci run atlas:smoke 2>&1)"
+          exit_code=$?
+          set -e
+          test "$exit_code" -eq 1
+          printf '%s\n' "$output" | grep -Fq 'Atlas smoke requires ATLAS_MCP_URL and a 64-hex ATLAS_MCP_TOKEN.'
