@@ -508,6 +508,9 @@ export class Engine {
         onSkills:names=>{for(const name of names)this.store.event(task.conversationId,{
           taskId:task.id,agentRunId:task.agentRunId??null,agentId:task.agentId??null,
           type:'skill',state:'loaded',tool:name});},
+        onSkippedSkills:names=>{for(const name of names)this.store.event(task.conversationId,{
+          taskId:task.id,agentRunId:task.agentRunId??null,agentId:task.agentId??null,
+          type:'skill',state:'skipped_context',tool:name});},
         onPhase:next=>{phase=next;this.store.event(task.conversationId,{taskId:task.id,
           agentId:task.agentId??null,agentRunId:task.agentRunId??null,type:'phase',state:next});},
         onText:text=>{

@@ -669,3 +669,22 @@ dialog #deleteName { color: var(--text); overflow-wrap: anywhere; }
 
 .atlas-observed-link { color: var(--accent); width: fit-content; font-size: 11px; text-decoration: none; }
 .atlas-observed-link:hover { text-decoration: underline; }
+
+/* Reviewed Git Skills: preview full untrusted text before granting trusted instruction status. */
+.git-skill-installer { margin-top:20px; border-top:1px solid var(--border); padding-top:14px; font-size:12px; }
+.git-skill-installer summary { cursor:pointer; color:var(--text); font-weight:550; }
+.git-skill-fields { display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px; }
+.git-skill-fields label { display:grid;gap:5px;color:var(--text-secondary);font-size:11px;min-width:0; }
+.git-skill-fields input { width:100%; min-width:0; box-sizing:border-box;border:1px solid var(--border-strong);background:var(--surface);border-radius:6px;padding:8px;color:var(--text);font:inherit; }
+.git-skill-fields label:nth-child(n+3) { grid-column:1 / -1; }
+#gitSkillReview { margin-top:14px; }
+#gitSkillReview h3 { margin:0;font-size:13px; }
+.git-skill-digest { color:var(--text-secondary);font:11px ui-monospace,SFMono-Regular,monospace;overflow-wrap:anywhere; }
+#gitSkillReviewText { white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow-y:auto;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:11px;line-height:1.6;color:var(--text); }
+.git-skill-acknowledge { display:flex;gap:9px;align-items:flex-start;font-size:11px;color:var(--text-secondary); }
+.git-skill-acknowledge input { margin-top:2px; accent-color:var(--accent); }
+.capability-remove { background:transparent;border:1px solid var(--border-strong);border-radius:6px;padding:6px 8px;color:var(--text-secondary);font-size:11px;cursor:pointer; }
+@media(max-width:480px) { .git-skill-fields { grid-template-columns:1fr; } }
+
+.atlas-observed-link { color: var(--accent); width: fit-content; font-size: 11px; text-decoration: none; }
+.atlas-observed-link:hover { text-decoration: underline; }

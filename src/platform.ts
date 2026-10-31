@@ -9,6 +9,7 @@ import { taskConsolePage, taskConsoleDetail } from './task-console-api.js';
 import { refreshOllamaModels, type RelayModels } from './models.js';
 import { AtlasContextError } from './atlas-context.js';
 import type { CapabilityRegistry } from './capabilities.js';
+import { SkillPackageError } from './skills/git.js';
 import { streamConversationEvents } from './live-events.js';
 
 export function createPlatform(engine:Engine, token:string, staticDir:string, model:string, modelRegistry?:RelayModels,capabilities?:CapabilityRegistry) {
@@ -60,6 +61,32 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
           return send(res,404,{error:'Unknown capability'});
         await capabilities.update(capability[1] as 'skills'|'integrations',capability[2],data.enabled);
         return send(res,200,await capabilities.list());
+      }
+      if(path==='/api/skills/git/preview'&&req.method==='POST'){
+        if(!capabilities)return send(res,503,{error:'Capabilities unavailable'});
+        const data=await body(req);
+        if(Object.keys(data).sort().join(',')!=='commit,owner,path,repo')
+          return send(res,400,{error:'Provide owner, repo, pinned commit and SKILL.md path'});
+        try{return send(res,200,await capabilities.previewGitSkill(data));}
+        catch(error){if(error instanceof SkillPackageError)return send(res,error.status,{error:error.message});throw error;}
+      }
+      if(path==='/api/skills/git/install'&&req.method==='POST'){
+        if(!capabilities)return send(res,503,{error:'Capabilities unavailable'});
+        const data=await body(req);
+        if(Object.keys(data).sort().join(',')!=='acknowledged,previewId,sha256')
+          return send(res,400,{error:'Expected preview ID, digest and acknowledgement'});
+        try{
+          const installed=await capabilities.installGitSkill(data.previewId,data.sha256,data.acknowledged);
+          return send(res,201,{installed,capabilities:await capabilities.list()});
+        }catch(error){if(error instanceof SkillPackageError)return send(res,error.status,{error:error.message});throw error;}
+      }
+      const gitSkillDelete=path.match(/^\/api\/skills\/git\/(git-[0-9a-f]{32})$/);
+      if(gitSkillDelete&&req.method==='DELETE'){
+        if(!capabilities)return send(res,503,{error:'Capabilities unavailable'});
+        try{
+          await capabilities.uninstallGitSkill(gitSkillDelete[1]);
+          return send(res,200,await capabilities.list());
+        }catch(error){if(error instanceof SkillPackageError)return send(res,error.status,{error:error.message});throw error;}
       }
       if(path==='/api/sessions'&&req.method==='GET') {
         const internal=engine.store.internalConversationIds();

@@ -7,7 +7,7 @@ import type { CapabilityRegistry } from './capabilities.js';
 import { formatAtlasContext, type AtlasContext } from './atlas-context.js';
 
 export type HarnessPhase = 'preparing_directories' | 'loading_model' | 'checking_local_provider' | 'loading_resources' | 'opening_session' | 'creating_session' | 'running_inference' | 'finalizing_response';
-export interface HarnessRequest { version:1; task:Task; modelKey?:string; atlasContext?:AtlasContext|null; atlasAvailable?:boolean; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; onSkills?:(names:string[])=>void; }
+export interface HarnessRequest { version:1; task:Task; modelKey?:string; atlasContext?:AtlasContext|null; atlasAvailable?:boolean; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; onSkills?:(names:string[])=>void; onSkippedSkills?:(names:string[])=>void; }
 export interface Harness {
   readonly version:1;
   readonly capabilities: { persistence:boolean; cancellation:boolean; tools:boolean };
@@ -16,6 +16,14 @@ export interface Harness {
   deleteConversationSessions?(conversationId:string):Promise<void>;
 }
 const count=(n:unknown)=>typeof n==='number' && Number.isFinite(n) && n>=0?n:null;
+// Count worst-case UTF-8 bytes, not estimated average tokens. Reserve model
+// output and enough prompt/history capacity for ordinary conversations.
+export function skillInstructionBudget(contextWindow:number,maxOutputTokens:number):number {
+  if(!Number.isFinite(contextWindow)||!Number.isFinite(maxOutputTokens)||
+    contextWindow<=0||maxOutputTokens<0)return 0;
+  return Math.max(0,Math.floor(Math.min(contextWindow/4,
+    (contextWindow-maxOutputTokens-2048)/2)));
+}
 export const isPiRateLimited=(detail:unknown):boolean=>typeof detail==='string' && /\b429\b|\brate[\s_-]?limit(?:ed|ing)?\b/i.test(detail);
 export class ProviderRateLimitError extends Error { constructor(){super('OpenRouter rate limit');this.name='ProviderRateLimitError';} }
 export class LocalProviderUnavailableError extends Error { constructor(readonly reason:'offline'|'missing_model'){super(reason);this.name='LocalProviderUnavailableError';} }
@@ -41,7 +49,7 @@ export class PiHarness implements Harness {
     }
     await rm(directory,{recursive:true,force:true,maxRetries:2,retryDelay:100});
   }
-  async run({task,modelKey,atlasContext,atlasAvailable,signal,tools,onText,onUsage,onPhase,onSkills}:HarnessRequest):Promise<string> {
+  async run({task,modelKey,atlasContext,atlasAvailable,signal,tools,onText,onUsage,onPhase,onSkills,onSkippedSkills}:HarnessRequest):Promise<string> {
     onPhase?.('preparing_directories');
     const cwd=join(this.root,'isolated'); const agentDir=join(this.root,'agent');
     const sessionDir=join(this.root,'sessions',task.conversationId);
@@ -87,14 +95,25 @@ export class PiHarness implements Harness {
     }
     onPhase?.('loading_resources');
     const settingsManager=SettingsManager.inMemory();
-    // A globally enabled Skill does not automatically become child authority.
-    // Child Skills will require explicit scoped admission in a later slice.
+    // Collect admitted paths and trusted instructions in one validated
+    // snapshot; a mid-load settings update cannot split these decisions.
+    const skillBudget=skillInstructionBudget(model.contextWindow,model.maxTokens);
+    // Root Skills are opt-in. A child never inherits globally enabled Skills,
+    // even when the profile is researcher/reviewer/implementer. Explicitly
+    // scoped child Skill admission is a separate future security contract.
     const rootSkillScope=!task.parentId&&!task.delegation;
-    const trusted=rootSkillScope?(await this.capabilityRegistry?.skillPaths()??[]):[];
+    const skillSnapshot=rootSkillScope?
+      (await this.capabilityRegistry?.skills.snapshot(skillBudget)??
+        {paths:[],instructions:'',skipped:[]}):
+      {paths:[],instructions:'',skipped:[]};
+    // Excluded Skills must be visible in execution receipts, never described
+    // as loaded; they grant no instructions or tools in this inference.
+    if(skillSnapshot.skipped.length)onSkippedSkills?.(skillSnapshot.skipped);
+    const trusted=skillSnapshot.paths;
     // Pi normally advertises Skills only when an authorised read/bash tool can
     // open them. Relay grants neither, so include just validated trusted Skill
     // instructions directly, never arbitrary filesystem content.
-    const skillInstructions=rootSkillScope?(await this.capabilityRegistry?.skills.promptContent()??''):'';
+    const skillInstructions=skillSnapshot.instructions;
     const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager,noExtensions:true,disabledBuiltinExtensions:['mcp'],
       noSkills:false,additionalSkillPaths:trusted.map(s=>s.path),
       skillsOverride:current=>({...current,skills:current.skills.filter(s=>trusted.some(t=>s.name===t.name&&s.filePath===t.path))}),
