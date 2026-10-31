@@ -21,12 +21,16 @@ const limits:Limits={concurrency:1,queue:16,sessionUsd:0,globalUsd:0,sessionToke
 const mcp=(value:unknown)=>({structuredContent:{result:value},content:[{type:'text',text:JSON.stringify(value)}]});
 const projectList=[{id:projectId,name:'Atlas <script>'},{id:otherId,name:'Portfolio'}];
 const checkoutList=[{id:checkoutId,projectId,logicalWorkspaceId:logicalId,nodeId,name:'Atlas Mac',status:'active'}];
+const otherCheckoutId='95769f0d-5ee1-41f4-afb8-c1c9fbc4d175';
+const otherCheckout={id:otherCheckoutId,projectId:otherId,logicalWorkspaceId:logicalId,nodeId,name:'Portfolio checkout',status:'active'};
+// The Atlas MCP may return both physical checkouts of a shared logical Workspace.
+const sharedWorkspaceRows=[...checkoutList,otherCheckout];
 function mockAtlas():AtlasTransport&{requests:string[]} {
   const requests:string[]=[];
   return {requests,list:async()=>[],close:async()=>{},call:async(name,args)=>{
     requests.push(name);
     if(name==='list_projects')return mcp(projectList);
-    if(name==='list_project_workspaces')return mcp(args.projectId===projectId?checkoutList:[]);
+    if(name==='list_project_workspaces')return mcp(args.projectId===projectId||args.projectId===otherId?sharedWorkspaceRows:[]);
     throw Error('Only selector reads are allowed in this fixture');
   }};
 }
@@ -43,6 +47,11 @@ test('MCP structured array contract, validation, project membership, and untrust
   assert.equal(checkouts[0].checkoutId,checkoutId);
   assert.equal(checkouts[0].logicalWorkspaceId,logicalId);
   assert.equal(checkouts[0].nodeId,nodeId);
+  assert.deepEqual(checkouts.map(c=>c.checkoutId),[checkoutId],'mixed-project results must expose only selected project');
+  assert.equal(checkouts[0].projectId,projectId,'membership must come from the original checkout row');
+  const otherCheckouts=await svc.checkouts(otherId);
+  assert.deepEqual(otherCheckouts.map(c=>c.checkoutId),[otherCheckoutId]);
+  assert.equal(otherCheckouts[0].projectId,otherId);
   const pinned=await svc.validate(projectId,checkoutId);
   assert.equal(pinned?.checkoutName,'Atlas Mac');
   assert.match(formatAtlasContext(pinned),/physicalCheckout/);
@@ -50,6 +59,8 @@ test('MCP structured array contract, validation, project membership, and untrust
   assert.equal(await svc.validate(null,null),null);
   assert.equal(atlas.requests.includes('get_node'),false,'selection cannot imply live node status');
   await assert.rejects(svc.validate(otherId,checkoutId),(e:unknown)=>e instanceof AtlasContextError&&e.status===409);
+  await assert.rejects(svc.validate(projectId,otherCheckoutId),(e:unknown)=>e instanceof AtlasContextError&&e.status===409);
+  assert.equal((await svc.validate(otherId,otherCheckoutId))?.checkoutId,otherCheckoutId);
   await assert.rejects(svc.validate('bad',null),(e:unknown)=>e instanceof AtlasContextError&&e.status===400);
   await assert.rejects(svc.validate(null,checkoutId),(e:unknown)=>e instanceof AtlasContextError&&e.status===400);
   assert.equal(atlasList(mcp([])).length,0);
@@ -61,8 +72,11 @@ test('MCP structured array contract, validation, project membership, and untrust
   const denied=mockAtlas();denied.call=async()=>{throw Error('403 Forbidden');};
   await assert.rejects(new AtlasContextService(denied).projects(),(e:unknown)=>e instanceof AtlasContextError&&e.status===403&&e.message==='Atlas access denied');
   assert.throws(()=>atlasList({isError:true,content:[{type:'text',text:'Permission denied'}]}),(e:unknown)=>e instanceof AtlasContextError&&e.status===403);
-  const liar=mockAtlas();liar.call=async name=>name==='list_projects'?mcp(projectList):mcp([{...checkoutList[0],projectId:otherId}]);
-  await assert.rejects(new AtlasContextService(liar).checkouts(projectId),/inconsistent project membership/);
+  const foreignOnly=mockAtlas();
+  foreignOnly.call=async name=>name==='list_projects'?mcp(projectList):mcp([{...checkoutList[0],projectId:otherId}]);
+  assert.deepEqual(await new AtlasContextService(foreignOnly).checkouts(projectId),[]);
+  await assert.rejects(new AtlasContextService(foreignOnly).validate(projectId,checkoutId),
+    (e:unknown)=>e instanceof AtlasContextError&&e.status===409);
   const unavailable=mockAtlas();unavailable.call=async()=>{throw Error('Bearer secret PRIVATE');};
   await assert.rejects(new AtlasContextService(unavailable).projects(),(e:unknown)=>
     e instanceof AtlasContextError&&e.status===503&&!e.message.includes('secret'));
@@ -141,9 +155,19 @@ test('authenticated Atlas context routes reject invalid and cross-project state,
     const projects=await request('/atlas/context/projects');
     assert.equal(projects.status,200);assert.equal(((await projects.json()) as {projects:unknown[]}).projects.length,2);
     const list=await request('/atlas/context/projects/'+projectId+'/checkouts');
-    assert.equal(list.status,200);assert.equal(((await list.json()) as {checkouts:unknown[]}).checkouts.length,1);
+    assert.equal(list.status,200);
+    const own=(await list.json()) as {checkouts:Array<{checkoutId:string;projectId:string}>};
+    assert.deepEqual(own.checkouts.map(c=>c.checkoutId),[checkoutId]);
+    assert.ok(own.checkouts.every(c=>c.projectId===projectId));
+    const otherList=await request('/atlas/context/projects/'+otherId+'/checkouts');
+    assert.equal(otherList.status,200);
+    const others=(await otherList.json()) as {checkouts:Array<{checkoutId:string;projectId:string}>};
+    assert.deepEqual(others.checkouts.map(c=>c.checkoutId),[otherCheckoutId]);
+    assert.ok(others.checkouts.every(c=>c.projectId===otherId));
     const path='/sessions/'+c.id+'/context';
     assert.equal((await request(path,'PATCH',{projectId,checkoutId:otherId})).status,409);
+    assert.equal((await request(path,'PATCH',{projectId,checkoutId:otherCheckoutId})).status,409);
+    assert.equal((await request(path,'PATCH',{projectId:otherId,checkoutId})).status,409);
     assert.equal((await request(path,'PATCH',{projectId:null,checkoutId})).status,400);
     assert.equal((await request(path,'PATCH',{projectId,checkoutId,token:'secret'})).status,400);
     const saved=await request(path,'PATCH',{projectId,checkoutId});
