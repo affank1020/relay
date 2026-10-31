@@ -3,12 +3,26 @@ import { renderMarkdown } from './markdown.js';
 import { mountTaskConsole } from './task-console.js';
 import { AtlasContextPicker } from './atlas-picker.js';
 import type { AtlasContext } from './atlas-context.js';
+import { readLiveChatEvents } from './live-chat.js';
 interface Summary { id:string; title:string; modelKey?:string; atlasContext?:AtlasContext|null; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
 interface Snapshot { session:Summary; tasks:Task[]; approvals:Approval[]; }
 function $<T extends HTMLElement=HTMLElement>(id:string):T { const n=document.getElementById(id);if(!n)throw new Error('Missing element '+id);return n as T; }
 const hosted=window.location.protocol==='https:';
 let token='',current:string|null=null,busy=false,polling=false,timer:ReturnType<typeof setTimeout>|undefined,cursor=0,epoch=0,lastView='',submitting=false;
 let pending:{conversationId:string;message:string;requestId:string}|null=null;
+// A live stream owns the cursor during an active connection; snapshots are
+// authoritative for lifecycle/usage, not for every generated text fragment.
+let liveController:AbortController|null=null,liveConnected=false,streamRetries=0;
+let reconnectTimer:ReturnType<typeof setTimeout>|undefined;
+let snapshotTimer:ReturnType<typeof setTimeout>|undefined;
+const canStream=typeof AbortController!=='undefined'&&typeof TextDecoder!=='undefined';
+function disconnectStream(){
+  liveController?.abort();liveController=null;liveConnected=false;
+  if(reconnectTimer)clearTimeout(reconnectTimer);
+  if(snapshotTimer)clearTimeout(snapshotTimer);
+  reconnectTimer=undefined;snapshotTimer=undefined;streamRetries=0;
+}
+
 const activity:ExecutionEvent[]=[];
 // Separate durable-in-session receipt index from the capped activity inspector.
 // One latest event per tool invocation is retained for each task, including old
@@ -74,6 +88,7 @@ function openSessionMenu(id:string,anchor:HTMLButtonElement){
   $<HTMLButtonElement>('menuRename').focus();
 }
 function resetSelection(){
+  disconnectStream();
   epoch++;current=null;cursor=0;resetConversationView();activity.length=0;toolReceipts.clear();receiptVersion=0;
   if(timer)clearTimeout(timer);timer=undefined;
   $('activity').replaceChildren();$('approvals').replaceChildren();$('messages').replaceChildren(emptyConversation());
@@ -267,18 +282,21 @@ function render(data:Snapshot){
       const terminal=['completed','failed','interrupted','cancelled'].includes(task.state);
       // During generation, reuse a single text node instead of reparsing and
       // remounting all Markdown on every poll. Format once at completion.
-      if(task.result!==row.result || terminal!==row.terminal){
-        if(task.result){
+      // A snapshot may have been fetched just before a live delta arrived.
+      // Never roll the in-progress response back to older snapshot text.
+      const result=!terminal&&row.result.startsWith(task.result)?row.result:task.result;
+      if(result!==row.result || terminal!==row.terminal){
+        if(result){
           if(!terminal && row.content?.className==='streaming-text'){
-            row.content.textContent=task.result;
+            row.content.textContent=result;
           }else{
-            const next=terminal?renderMarkdown(task.result):el('div','streaming-text',task.result);
+            const next=terminal?renderMarkdown(result):el('div','streaming-text',result);
             row.assistant.insertBefore(next,row.status);
             row.content?.remove();
             row.content=next;
           }
         }else {row.content?.remove();row.content=null;}
-        row.result=task.result;row.terminal=terminal;
+        row.result=result;row.terminal=terminal;
       }
       const activeTool=[...events].reverse().find(event=>['started','validating','running','awaiting_approval'].includes(event.state));
       const phase=taskPhases.get(task.id);
@@ -359,7 +377,7 @@ async function poll(){
       if(event.type==='phase'&&event.taskId)taskPhases.set(event.taskId,event.state);
       activity.push(event);
     }
-    cursor=replay.nextCursor;
+    cursor=Math.max(cursor,replay.nextCursor);
     if(activity.length>300)activity.splice(0,activity.length-300);
     renderActivity();
     render(snapshot);
@@ -380,15 +398,104 @@ async function poll(){
   finally{
     polling=false;
     if(timer)clearTimeout(timer);
-    if(current)timer=setTimeout(()=>{void poll();},busy?250:850);
+    if(current&&generation===epoch&&!liveConnected)timer=setTimeout(()=>{void poll();},busy?250:850);
+  }
+}
+function scheduleSnapshot(){
+  if(snapshotTimer||!current)return;
+  const generation=epoch;
+  snapshotTimer=setTimeout(()=>{
+    snapshotTimer=undefined;
+    if(generation!==epoch)return;
+    // Avoid dropping refreshes while a previous snapshot request is in flight.
+    if(polling){scheduleSnapshot();return;}
+    void poll();
+  },60);
+}
+function applyLiveBatch(events:ExecutionEvent[]){
+  let needsSnapshot=false,activityChanged=false;
+  const messages=$('messages');
+  const nearBottom=messages.scrollHeight-messages.scrollTop-messages.clientHeight<120;
+  for(const event of events){
+    if(!Number.isSafeInteger(event.sequence)||event.sequence<=cursor)continue;
+    // Reject non-contiguous event sequences only when the transport supplies
+    // an explicit gap? Global SQLite sequence IDs are shared by conversations,
+    // so gaps are normal and must not be treated as loss.
+    cursor=event.sequence;
+    if(event.type==='delta'){
+      const row=event.taskId?messageRows.get(event.taskId):undefined;
+      const delta=event.text,offset=event.textOffset;
+      if(row&&!row.terminal&&typeof delta==='string'&&Number.isSafeInteger(offset)&&
+         typeof offset==='number'&&offset>=delta.length){
+        const start=offset-delta.length;
+        if(row.result.length>=offset&&row.result.slice(start,offset)===delta)continue;
+        if(row.result.length===start){
+          row.result+=delta;
+          if(row.content?.className==='streaming-text')row.content.textContent=row.result;
+          else{
+            const content=el('div','streaming-text',row.result);
+            row.assistant.insertBefore(content,row.status);
+            row.content?.remove();
+            row.content=content;
+          }
+          row.status.textContent='Responding…';
+          continue;
+        }
+      }
+      // An old event lacks an absolute text offset, or a snapshot/result
+      // raced with replay. Reconcile with the server rather than duplicate it.
+      needsSnapshot=true;
+      continue;
+    }
+    indexToolReceipt(event);
+    if(event.type==='phase'&&event.taskId)taskPhases.set(event.taskId,event.state);
+    activity.push(event);activityChanged=true;
+    needsSnapshot=true;
+  }
+  if(activityChanged){
+    if(activity.length>300)activity.splice(0,activity.length-300);
+    renderActivity();
+  }
+  if(nearBottom)messages.scrollTop=messages.scrollHeight;
+  if(needsSnapshot)scheduleSnapshot();
+}
+async function connectStream(id:string,generation:number){
+  if(generation!==epoch||current!==id||!canStream)return;
+  const controller=new AbortController();
+  liveController=controller;
+  try{
+    const response=await api('/sessions/'+id+'/stream?after='+cursor,{signal:controller.signal});
+    if(generation!==epoch||controller.signal.aborted)return;
+    liveConnected=true;streamRetries=0;
+    if(timer)clearTimeout(timer);
+    timer=undefined;
+    await readLiveChatEvents(response,events=>{
+      if(generation===epoch&&!controller.signal.aborted)applyLiveBatch(events);
+    });
+  }catch{
+    // Transport interruptions are expected on laptop sleep or proxy expiry.
+    // The durable cursor and ordinary polling recover without prompt replay.
+  }finally{
+    if(liveController!==controller)return;
+    liveController=null;
+    liveConnected=false;
+    if(generation!==epoch||current!==id||controller.signal.aborted)return;
+    // Recover state immediately and continue polling until reconnected.
+    void poll();
+    const delay=Math.min(1000*2**Math.min(streamRetries++,4),15000);
+    reconnectTimer=setTimeout(()=>{reconnectTimer=undefined;void connectStream(id,generation);},delay);
   }
 }
 async function select(id:string){
   closeTaskConsole();
+  disconnectStream();
   epoch++;current=id;cursor=0;resetConversationView();activity.length=0;toolReceipts.clear();receiptVersion=0;$('activity').replaceChildren();remember('relay.conversation',id);
   const generation=epoch;const data=await get<Snapshot>('/sessions/'+id);
   if(generation!==epoch)return;
-  render(data);await refresh();void poll();
+  render(data);await refresh();
+  // Rehydrate durable receipts first, then subscribe from that cursor.
+  // A reconnect fetches all missed events and ignores repeated sequences.
+  void poll().then(()=>{if(generation===epoch&&canStream)void connectStream(id,generation);});
 }
 async function create(){closeTaskConsole();const picker=$<HTMLSelectElement>('modelPicker');if(picker.selectedOptions[0]?.disabled)throw new Error('Local model offline. Start Ollama or choose another model.');const modelKey=picker.value;const result=await (await api('/sessions',{method:'POST',body:JSON.stringify(modelKey?{modelKey}:{})})).json() as {session:Summary};await select(result.session.id);$<HTMLTextAreaElement>('prompt').focus();}
 async function submit(event:Event){
@@ -493,7 +600,7 @@ $<HTMLFormElement>('deleteForm').onsubmit=event=>{
       $<HTMLDialogElement>('deleteDialog').close();
       if(pending?.conversationId===id){pending=null;remember('relay.pending','');}
       const wasCurrent=current===id;
-      if(wasCurrent){epoch++;current=null;if(timer)clearTimeout(timer);}
+      if(wasCurrent){disconnectStream();epoch++;current=null;if(timer)clearTimeout(timer);}
       const sessions=await refresh();
       $('notice').textContent='';
       if(wasCurrent){
