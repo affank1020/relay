@@ -610,3 +610,71 @@ test('completion between replay and snapshot cannot leave live chat stuck runnin
   assert.ok(assistant.children.find(x=>x.className.startsWith('status-line'))!.hidden,
     'completed message must not keep a thinking status');
 });
+
+test('connected parent SSE keeps refreshing active children without new parent events, then stops when terminal',async()=>{
+  const nodes=new Map<string,Element>();
+  const element=(id:string):Element=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id)!;};
+  const scheduled=new Map<number,{fn:()=>void;delay:number}>();
+  let nextTimer=0,streamConnects=0,snapshotReads=0,eventReads=0;
+  const root={id:'root',conversationId:'c1',prompt:'Delegate the review',
+    state:'waiting_children',result:'',error:null,usage:[]};
+  const child={id:'child',parentId:'root',agentRunId:'run-1',depth:1,role:'reviewer',
+    prompt:'Review the patch',state:'running',dependencies:[],modelKey:null,tokens:null,
+    costUsd:null,reportedSummary:null,lastTool:null};
+  // A deliberately silent, still-open SSE stream reproduces child-only state
+  // changes: the child has its own conversation, not this parent's event feed.
+  const stream=new ReadableStream<Uint8Array>({start(){}});
+  const context={
+    window:{location:{protocol:'https:'},sessionStorage:{getItem:()=>null,setItem:()=>{}}},
+    document:{getElementById:element,createElement:(tag:string)=>new Element(tag)},
+    Headers,Response,URL,AbortController,TextDecoder,
+    setTimeout:(fn:()=>void,delay:number)=>{
+      const id=++nextTimer;scheduled.set(id,{fn,delay});return id;
+    },
+    clearTimeout:(id:number)=>{scheduled.delete(id);},
+    fetch:async(url:string)=>{
+      if(url==='/api/status')
+        return new Response(JSON.stringify({provider:'OpenRouter',model:'test-free',atlas:'configured'}));
+      if(url==='/api/sessions')
+        return new Response(JSON.stringify({sessions:[{id:'c1',title:'Child progress'}]}));
+      if(url==='/api/sessions/c1'){
+        snapshotReads++;
+        return new Response(JSON.stringify({session:{id:'c1',title:'Child progress',
+          busy:child.state!=='completed',costUsd:0,usage:{tokens:0,unknown:false}},
+          tasks:[root],agents:{root:[child]},approvals:[]}));
+      }
+      if(url.startsWith('/api/sessions/c1/events?after=')){
+        eventReads++;
+        return new Response(JSON.stringify({events:[],nextCursor:0,hasMore:false}));
+      }
+      if(url.startsWith('/api/sessions/c1/stream?after=')){
+        streamConnects++;
+        return new Response(stream,{headers:{'Content-Type':'text/event-stream'}});
+      }
+      throw Error('unexpected fetch '+url);
+    }
+  };
+  runInNewContext(source,context,{filename:'dist/public/app.js'});
+  await flush();
+  assert.equal(streamConnects,1,'parent SSE must connect');
+  assert.ok([...scheduled.values()].some(t=>t.delay===1800),
+    'SSE connection must re-arm bounded polling for an active child');
+  const initialSnapshots=snapshotReads;
+  for(let i=0;i<2;i++){
+    const entry=[...scheduled].find(([,t])=>t.delay===1800);
+    assert.ok(entry,'active child should retain refresh timer after each poll');
+    scheduled.delete(entry[0]);entry[1].fn();
+    await flush();
+  }
+  assert.ok(snapshotReads>=initialSnapshots+2,
+    'child state remains fresh despite no parent SSE events');
+  assert.ok(eventReads>=2,'poll uses the existing durable event and snapshot path');
+  child.state='completed';
+  root.state='completed';
+  const finalTimer=[...scheduled].find(([,t])=>t.delay===1800);
+  assert.ok(finalTimer);
+  scheduled.delete(finalTimer[0]);finalTimer[1].fn();
+  await flush();
+  assert.equal([...scheduled.values()].filter(t=>t.delay===1800).length,0,
+    'a completed child must stop periodic parent re-fetches');
+});
