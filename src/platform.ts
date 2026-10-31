@@ -53,7 +53,7 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         if(!engine.atlasContext)return send(res,503,{error:'Atlas not configured'});
         return send(res,200,{projects:await engine.atlasContext.projects()});
       }
-      const atlasCheckouts=path.match(/^\\/api\\/atlas\\/context\\/projects\\/([a-f0-9-]+)\\/checkouts$/);
+      const atlasCheckouts=path.match(/^\/api\/atlas\/context\/projects\/([a-f0-9-]+)\/checkouts$/);
       if(atlasCheckouts&&req.method==='GET') {
         if(!engine.atlasContext)return send(res,503,{error:'Atlas not configured'});
         await engine.atlasContext.validate(atlasCheckouts[1],null);
