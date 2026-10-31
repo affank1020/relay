@@ -12,7 +12,11 @@ const time=(date?:string)=>date&&Number.isFinite(Date.parse(date))
 const counts=(values:SeverityCounts)=>Object.entries(values)
   .filter(([,n])=>n>0).map(([severity,n])=>severity.toUpperCase()+' '+n).join(' · ')||'No findings in this result';
 
-export function atlasDetailSummary(detail:AtlasDetail):{title:string;status:string;rows:string[]} {
+/**
+ * Saved review receipts are historical evidence, never a live GitHub head.
+ * A fresh invocation is required to verify the current PR head again.
+ */
+export function atlasDetailSummary(detail:AtlasDetail,nowMs=Date.now()):{title:string;status:string;rows:string[]} {
   switch(detail.kind){
     case 'project':return {title:detail.label??'Atlas project',status:'Project read',
       rows:['Project ID: '+detail.projectId]};
@@ -32,10 +36,16 @@ export function atlasDetailSummary(detail:AtlasDetail):{title:string;status:stri
         'On this page: '+counts(detail.counts)]};
     case 'review_pr':{
       const latest=detail.latest;
-      const freshness=detail.latestReviewHead==='current'?'Current recorded review':
-        detail.latestReviewHead==='outdated'?'Review is outdated':
-        detail.latestReviewHead==='no_stored_review'?'No saved review':'Review freshness unknown';
-      const rows=['Recorded rounds: '+detail.recordedRounds,
+      const checkedAt=detail.currentHead.checkedAt;
+      const checkedMs=checkedAt?Date.parse(checkedAt):NaN;
+      const historical=!Number.isFinite(checkedMs)||nowMs-checkedMs>5*60_000;
+      const when=checkedAt?' at '+time(checkedAt):' (check time unknown)';
+      const verdict=detail.latestReviewHead==='current'?'Head matched':
+        detail.latestReviewHead==='outdated'?'Head differed':
+        detail.latestReviewHead==='no_stored_review'?'No saved review':'Freshness unknown';
+      const freshness=(historical?'Historical · ':'')+verdict+when;
+      const rows=['Historical snapshot · rerun the Atlas review read to verify the PR now',
+        'Recorded rounds: '+detail.recordedRounds,
         'PR status: '+detail.currentHead.state+
           (detail.currentHead.checkedAt?' · checked '+time(detail.currentHead.checkedAt):'')];
       if(latest){

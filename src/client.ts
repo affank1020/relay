@@ -300,7 +300,12 @@ function render(data:Snapshot){
       const matching=observedViews.filter(view=>view.taskId===task.id);
       const details=observedDetails.filter(view=>view.taskId===task.id);
       const awarenessKey=JSON.stringify(matching)+'|'+JSON.stringify(details)+'|'+matching.map(view=>
-        view.gitObservedAt&&Date.now()-Date.parse(view.gitObservedAt)>5*60_000?'stale':'recent').join(',');
+        view.gitObservedAt&&Date.now()-Date.parse(view.gitObservedAt)>5*60_000?'stale':'recent').join(',')+
+        '|'+details.map(view=>{
+          const at=view.detail.kind==='review_pr'?view.detail.currentHead.checkedAt:undefined;
+          return !at||!Number.isFinite(Date.parse(at))||Date.now()-Date.parse(at)>5*60_000
+            ?'historical':'recent';
+        }).join(',');
       if(row.awarenessKey!==awarenessKey){
         renderAtlasCheckoutViews(row.awareness,matching);
         renderAtlasDetailViews(row.awareness,details);

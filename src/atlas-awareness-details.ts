@@ -38,7 +38,6 @@ const repository=(value:unknown):string|undefined=>
   !value.split('/').some(part=>part==='.'||part==='..'||part.includes('..'))?value.toLowerCase():undefined;
 const verdicts=new Set(['changes_requested','concerns_to_verify','non_blocking','no_findings','inconclusive']);
 const heads=new Set(['current','outdated','unknown','no_stored_review']);
-const reviewProjectId='008b191b-96c2-4a5f-92f6-1f13d6d790d5';
 function counts(value:unknown):SeverityCounts|undefined {
   const v=object(value);
   const sev1=count(v?.sev1),sev2=count(v?.sev2),sev3=count(v?.sev3),sev4=count(v?.sev4);
@@ -77,7 +76,9 @@ export function observeAtlasDetailResult(toolName:string,args:Record<string,unkn
       {type:'record',id:recordId}],{kind:'record',projectId,storeId,recordId});
   }
   if(toolName==='code_reviews_overview'){
-    if(uuid(data.projectId)!==reviewProjectId)return null;
+    // This trusted Code Reviews operation reports its own installation's Project ID.
+    const reviewProjectId=uuid(data.projectId);
+    if(!reviewProjectId)return null;
     const reviewRuns=count(data.reviewRuns),findingObservations=count(data.findingObservations);
     if(reviewRuns===undefined||findingObservations===undefined)return null;
     return observed(toolName,[{type:'application',id:'code-reviews'},{type:'project',id:reviewProjectId}],
@@ -158,9 +159,14 @@ export function projectAtlasDetails(events:ReadonlyArray<AtlasAwarenessEvent>):A
     const id=d.kind==='project'?d.projectId:d.kind==='store'?d.storeId:
       d.kind==='record'?d.recordId:d.kind==='review_overview'?d.projectId:
       d.kind==='review_pr'?d.repository+'#'+d.prNumber:d.runId+':'+d.offset;
-    map.set(event.taskId+':'+d.kind+':'+id,{taskId:event.taskId,
+    const key=event.taskId+':'+d.kind+':'+id;
+    // Updating a Map does not move its insertion order. The bounded projection
+    // must keep recently refreshed resources, not just recently created ones.
+    map.delete(key);
+    map.set(key,{taskId:event.taskId,
       agentRunId:event.agentRunId??undefined,invocationId:event.invocationId??undefined,
       observedAt:event.timestamp,detail:d,resources:fact.resources});
+    if(map.size>32)map.delete(map.keys().next().value!);
   }
   return [...map.values()].slice(-32);
 }

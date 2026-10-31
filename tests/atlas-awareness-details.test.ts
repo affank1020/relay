@@ -76,7 +76,7 @@ test('unknown and outdated review freshness never become a false clean claim',()
   const unknown=observeAtlasDetailResult('code_reviews_pr_summary',args,{
     ...fixtureSummary(),currentHead:{state:'unavailable'},latestReviewHead:'unknown'});
   assert.equal(unknown?.detail?.kind,'review_pr');
-  assert.equal(unknown?.detail&&atlasDetailSummary(unknown.detail).status,'Review freshness unknown');
+  assert.match(unknown?.detail?atlasDetailSummary(unknown.detail).status:'',/Freshness unknown/);
   assert.equal(observeAtlasDetailResult('code_reviews_pr_summary',args,{
     ...fixtureSummary(),currentHead:{state:'unavailable'},latestReviewHead:'outdated'}),null,
     'outdated review cannot be asserted when GitHub is unavailable');
@@ -86,11 +86,11 @@ test('unknown and outdated review freshness never become a false clean claim',()
   const outdated=observeAtlasDetailResult('code_reviews_pr_summary',args,{
     ...fixtureSummary(),currentHead:{state:'open',sha:'a'.repeat(40)},
     latestReviewHead:'outdated'});
-  assert.equal(outdated?.detail&&atlasDetailSummary(outdated.detail).status,'Review is outdated');
+  assert.match(outdated?.detail?atlasDetailSummary(outdated.detail).status:'',/Head differed/);
   const noStored=observeAtlasDetailResult('code_reviews_pr_summary',args,{
     ...fixtureSummary(),recordedRounds:0,latest:null,
     latestReviewHead:'no_stored_review'});
-  assert.equal(noStored?.detail&&atlasDetailSummary(noStored.detail).status,'No saved review');
+  assert.match(noStored?.detail?atlasDetailSummary(noStored.detail).status:'',/No saved review/);
   assert.equal(observeAtlasDetailResult('code_reviews_pr_summary',args,{
     ...fixtureSummary(),recordedRounds:0}),null,'count and saved-review payload conflict');
 });
@@ -99,10 +99,16 @@ test('Code Reviews overview and findings count only supplied bounded facts',()=>
   const overview=observeAtlasDetailResult('code_reviews_overview',{},
     {projectId:project,reviewRuns:47,findingObservations:28,private:'NO_LEAK'});
   assert.equal(overview?.detail?.kind,'review_overview');
+  const otherDeployment='55555555-5555-4555-8555-555555555555';
+  const migrated=observeAtlasDetailResult('code_reviews_overview',{},
+    {projectId:otherDeployment,reviewRuns:9,findingObservations:4});
+  assert.equal(migrated?.detail?.kind==='review_overview'&&migrated.detail.projectId,otherDeployment);
+  assert.equal(migrated?.resources.find(x=>x.type==='project')?.id,otherDeployment,
+    'trusted tool response supplies the deployment-specific canonical project identity');
   assert.deepEqual(overview?.resources.map(x=>x.type),['application','project']);
   assert.doesNotMatch(JSON.stringify(overview),/NO_LEAK/);
   assert.equal(observeAtlasDetailResult('code_reviews_overview',{},
-    {projectId:runId,reviewRuns:47,findingObservations:28}),null);
+    {projectId:'invalid-project',reviewRuns:47,findingObservations:28}),null);
   const args={reviewRunId:runId,limit:20,offset:0};
   const page={total:17,items:[
     {id:recordId,data:{reviewRunId:runId,severity:'sev3',title:'SECRET_FINDING',description:'SECRET_DESCRIPTION'}},
@@ -155,6 +161,60 @@ test('successful MCP receipts produce durable task-scoped review and record view
     await gateway.invoke(task('A'),'review','code_reviews_pr_summary',
       {repository:'affank1020/relay',prNumber:33},new AbortController().signal);
     assert.equal(db.events('conv').length,events.length,'idempotent invocation replay');
+  }finally{db.close();}
+});
+
+test('persisted current-at-check PR review is historical after the head changes',()=>{
+  const stored=observeAtlasDetailResult('code_reviews_pr_summary',
+    {repository:'affank1020/relay',prNumber:33},fixtureSummary());
+  assert.ok(stored?.detail?.kind==='review_pr');
+  const db=new Store(':memory:');
+  db.save('conversations',{id:'conv'});
+  try{
+    db.event('conv',{taskId:'A',agentRunId:'run-A',type:'atlas_resource',
+      state:'completed',atlasResource:stored});
+    const replayed=projectAtlasDetails(db.events('conv'));
+    assert.equal(replayed.length,1);
+    const latest=replayed[0].detail;
+    // No new Atlas read was issued after another developer pushed a commit.
+    // The persisted assertion is bounded to its original verified check time.
+    const later=atlasDetailSummary(latest,Date.parse('2026-11-01T12:00:00Z'));
+    assert.match(later.status,/Historical · Head matched at/);
+    assert.doesNotMatch(later.status,/Current recorded review|Currently verified/);
+    assert.match(later.rows[0],/rerun the Atlas review read/);
+    const justChecked=atlasDetailSummary(latest,Date.parse('2026-10-31T21:22:00Z'));
+    assert.match(justChecked.status,/Head matched at/);
+    assert.doesNotMatch(justChecked.status,/Current recorded review/);
+  }finally{db.close();}
+});
+
+test('projection retains the 32 most recently observed unique resources on replay',()=>{
+  const db=new Store(':memory:');
+  db.save('conversations',{id:'conv'});
+  try{
+    const ids:string[]=[];
+    for(let i=1;i<=33;i++){
+      const recordId='00000000-0000-4000-8000-'+i.toString(16).padStart(12,'0');
+      ids.push(recordId);
+      const observation=observeAtlasDetailResult('get_record',
+        {projectId:project,storeId,recordId},{id:recordId,projectId:project,storeId});
+      assert.ok(observation);
+      db.event('conv',{taskId:'A',agentRunId:'run-A',type:'atlas_resource',
+        state:'completed',atlasResource:observation});
+    }
+    // Resource 1 was inserted earliest, but refreshed most recently.
+    const refreshed=observeAtlasDetailResult('get_record',
+      {projectId:project,storeId,recordId:ids[0]},
+      {id:ids[0],projectId:project,storeId});
+    db.event('conv',{taskId:'A',agentRunId:'run-A',type:'atlas_resource',
+      state:'completed',atlasResource:refreshed!});
+    const events=db.events('conv');
+    const projected=projectAtlasDetails([...events,...events]);
+    assert.equal(projected.length,32);
+    const records=projected.map(v=>v.detail.kind==='record'?v.detail.recordId:'');
+    assert.ok(records.includes(ids[0]),'refreshed earliest record must survive');
+    assert.ok(!records.includes(ids[1]),'least recently observed record is pruned');
+    assert.equal(records.at(-1),ids[0],'newest evidence appears last');
   }finally{db.close();}
 });
 
