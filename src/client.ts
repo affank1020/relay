@@ -239,4 +239,29 @@ $<HTMLFormElement>('loginForm').onsubmit=async event=>{
   try{await api('/status');$<HTMLDialogElement>('login').close();$<HTMLInputElement>('token').value='';$('error').textContent='';await bootstrap();}
   catch(e){$('error').textContent=text(e);}
 };
-$('settings').onclick=()=>{if(hosted){void bootstrap();
+$('settings').onclick=()=>{if(hosted){void bootstrap();return;}token='';$<HTMLDialogElement>('login').showModal();};
+$('new').onclick=()=>{void create().then(closeSidebar).catch(notify);};
+$<HTMLInputElement>('sessionSearch').oninput=renderSessions;
+$('openSidebar').onclick=()=>{document.body?.classList?.add('sidebar-open');};
+$('closeSidebar').onclick=closeSidebar;
+$('closeInspector').onclick=()=>{const panel=$('inspector');panel.hidden=true;$('toggleInspector').setAttribute('aria-expanded','false');};
+$<HTMLSelectElement>('modelPicker').onchange=()=>{void create().catch(notify);};
+$<HTMLFormElement>('form').onsubmit=event=>{void submit(event);};
+$('stop').onclick=()=>{if(current)void api('/sessions/'+current+'/abort',{method:'POST',body:'{}'}).then(()=>poll()).catch(notify);};
+$<HTMLTextAreaElement>('prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$<HTMLFormElement>('form').requestSubmit();}};
+$('toggleInspector').onclick=()=>{const panel=$('inspector');panel.hidden=!panel.hidden;$('toggleInspector').setAttribute('aria-expanded',String(!panel.hidden));};
+$('showTasks').onclick=async()=>{
+  const list=$('taskList');list.hidden=!list.hidden;
+  $('showTasks').setAttribute('aria-expanded',String(!list.hidden));
+  if(list.hidden)return;
+  try{
+    const data=await get<{tasks:Task[]}>('/tasks');list.replaceChildren();
+    for(const t of data.tasks.slice(0,35)){
+      const button=el('button','session','') as HTMLButtonElement;
+      button.append(el('span','session-icon',t.state==='completed'?'✓':t.state==='failed'?'!':'◷'),el('span','session-title',t.prompt.slice(0,70)));
+      button.title=t.state+' · '+t.prompt;button.onclick=()=>{void select(t.conversationId).then(closeSidebar).catch(notify);};list.append(button);
+    }
+    if(!data.tasks.length)list.append(el('span','sidebar-empty','No recent tasks.'));
+  }catch(e){notify(e);}
+};
+void bootstrap();
