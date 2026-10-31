@@ -5,7 +5,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { Engine } from './engine.js';
 import type { Conversation, Task, Approval } from './store.js';
 import { terminal } from './store.js';
-import type { RelayModels } from './models.js';
+import { refreshOllamaModels, type RelayModels } from './models.js';
 
 export function createPlatform(engine:Engine, token:string, staticDir:string, model:string, modelRegistry?:RelayModels) {
   if(token.length<24)throw new Error('RELAY_ACCESS_TOKEN must be 24+ characters');
@@ -34,11 +34,15 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
       const expected=Buffer.from(token);
       if(got.length!==expected.length||!timingSafeEqual(got,expected))return send(res,401,{error:'Invalid Relay token'});
       if(req.headers.origin && new URL(req.headers.origin).host!==req.headers.host)return send(res,403,{error:'Origin not permitted'});
-      if(path==='/api/status'&&req.method==='GET')return send(res,200,{harness:'Pi',provider:modelRegistry?.ollama?'OpenRouter + Ollama':'OpenRouter',model,models:modelRegistry?.models??[],defaultModelKey:modelRegistry?.defaultKey,atlas:engine.gateway?'configured':'not configured',active:engine.tasks().filter(t=>['running','awaiting_approval'].includes(t.state)).length,maxActive:engine.limits.concurrency,usage:engine.usage(),limits:engine.limits});
+      if(path==='/api/status'&&req.method==='GET'){
+        if(modelRegistry)await refreshOllamaModels(modelRegistry);
+        return send(res,200,{harness:'Pi',provider:modelRegistry?.ollama?'OpenRouter + Ollama':'OpenRouter',model,models:modelRegistry?.models??[],defaultModelKey:modelRegistry?.defaultKey,ollamaOnline:modelRegistry?.ollama?.online,atlas:engine.gateway?'configured':'not configured',active:engine.tasks().filter(t=>['running','awaiting_approval'].includes(t.state)).length,maxActive:engine.limits.concurrency,usage:engine.usage(),limits:engine.limits});
+      }
       if(path==='/api/sessions'&&req.method==='GET')return send(res,200,{sessions:engine.store.all<Conversation>('conversations').reverse().map(summary)});
       if(path==='/api/sessions'&&req.method==='POST'){
         const data=await body(req);
         if(data.modelKey!==undefined&&typeof data.modelKey!=='string')throw new Error('Invalid model selection');
+        if(typeof data.modelKey==='string'&&data.modelKey.startsWith('ollama/')&&modelRegistry)await refreshOllamaModels(modelRegistry);
         return send(res,201,{session:summary(engine.conversation(data.modelKey as string|undefined))});
       }
       if(path==='/api/tasks'&&req.method==='GET')return send(res,200,{tasks:engine.tasks().slice(-200).reverse()});
