@@ -166,21 +166,21 @@ export class ConnectionManager {
        !Value.Check(Type.Unsafe(tool.inputSchema),args)) {
       emit('denied');throw new Error('MCP arguments failed schema validation');
     }
-    store.save('invocations',{id:key,digest,state:'validating'});
+    store.save('invocations',{id:key,digest,state:'validating'} as {id:string});
     emit('validating');
     try{
       signal.throwIfAborted();
-      store.save('invocations',{id:key,digest,state:'dispatched'});
+      store.save('invocations',{id:key,digest,state:'dispatched'} as {id:string});
       emit('started');
       const result=await this.transport(config).call(tool.name,args,signal);
       if(JSON.stringify(result).length>100_000)throw new Error('MCP response exceeds limit');
       if(result && typeof result==='object' && 'isError' in result && result.isError)
         throw new Error('MCP provider reported an error');
-      store.save('invocations',{id:key,digest,state:'completed'});
+      store.save('invocations',{id:key,digest,state:'completed'} as {id:string});
       emit('completed');
       return result;
     }catch{
-      store.save('invocations',{id:key,digest,state:'uncertain'});
+      store.save('invocations',{id:key,digest,state:'uncertain'} as {id:string});
       emit(signal.aborted?'cancelled':'failed');
       throw new Error('MCP call failed; verify provider state before retrying');
     }

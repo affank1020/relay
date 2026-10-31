@@ -547,14 +547,15 @@ async function drawCapabilities(snapshot:CapabilitySnapshot){
       const label=document.createElement('label');
       const check=document.createElement('input');
       check.type='checkbox';check.checked=item.enabled;
-      const available=kind==='skills'?item.installed:item.configured;
-      check.disabled=!available;check.setAttribute('aria-label','Enable '+(kind==='skills'?item.name:item.label));
-      const description=kind==='skills'?item.description:(item.availableTools.length?item.availableTools.length+' approved read tools':'Read-only MCP');
+      const isSkill='name' in item;
+      const available=isSkill?item.installed:item.configured;
+      check.disabled=!available;check.setAttribute('aria-label','Enable '+(isSkill?item.name:item.label));
+      const description=isSkill?item.description:(item.availableTools.length?item.availableTools.length+' approved read tools':'Read-only MCP');
       const info=el('span','','');
-      info.append(el('span','capability-name',kind==='skills'?item.name:item.label),
+      info.append(el('span','capability-name',isSkill?item.name:item.label),
         el('div','capability-description',description));
       label.append(check,info);
-      const state=kind==='skills'?(item.loadFailure??'v'+item.version):item.state;
+      const state=isSkill?(item.loadFailure??'v'+item.version):item.state;
       row.append(label,el('span','capability-state',state));
       check.onchange=()=>{
         check.disabled=true;

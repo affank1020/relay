@@ -44,7 +44,7 @@ test('configured remote endpoints require explicit host allowlists and GitHub is
 test('MCP admission, correlated receipts and disable-in-flight are enforced',async()=>{
   const store=new Store(':memory:');
   const conversationId=crypto.randomUUID();
-  store.save('conversations',{id:conversationId,title:'test',createdAt:new Date().toISOString()});
+  store.save('conversations',{id:conversationId,title:'test',createdAt:new Date().toISOString()} as {id:string});
   const task={id:crypto.randomUUID(),conversationId} as Task;
   let enabled=true,calls=0;
   const provider=configuredProviders({RELAY_GITHUB_TOKEN:'do-not-persist'})[0];

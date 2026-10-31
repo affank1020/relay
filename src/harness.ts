@@ -23,7 +23,7 @@ export class PiHarness implements Harness {
   readonly version=1 as const;
   readonly capabilities={persistence:true,cancellation:true,tools:true};
   private runtime?:Promise<ModelRuntime>;
-  constructor(private root:string,private modelId:string,private registry?:RelayModels,private capabilities?:CapabilityRegistry) {
+  constructor(private root:string,private modelId:string,private registry?:RelayModels,private capabilityRegistry?:CapabilityRegistry) {
     if(!modelId.endsWith(':free'))throw new Error('Only explicit free OpenRouter variants are permitted');
   }
   async deleteConversationSessions(conversationId:string):Promise<void> {
@@ -87,7 +87,7 @@ export class PiHarness implements Harness {
     }
     onPhase?.('loading_resources');
     const settingsManager=SettingsManager.inMemory();
-    const trusted=await this.capabilities?.skillPaths()??[];
+    const trusted=await this.capabilityRegistry?.skillPaths()??[];
     const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager,noExtensions:true,disabledBuiltinExtensions:['mcp'],
       noSkills:false,additionalSkillPaths:trusted.map(s=>s.path),
       skillsOverride:current=>({...current,skills:current.skills.filter(s=>trusted.some(t=>s.name===t.name&&s.filePath===t.path))}),
