@@ -768,7 +768,7 @@ function clearGitSkillReview(){
   $<HTMLButtonElement>('gitSkillInstall').disabled=true;
 }
 for(const id of ['gitSkillOwner','gitSkillRepo','gitSkillCommit','gitSkillPath'])
-  $<HTMLInputElement>(id).addEventListener('input',clearGitSkillReview);
+  $<HTMLInputElement>(id).oninput=clearGitSkillReview;
 $<HTMLInputElement>('gitSkillAcknowledge').onchange=()=>{
   $<HTMLButtonElement>('gitSkillInstall').disabled=
     !stagedGitSkill||!$<HTMLInputElement>('gitSkillAcknowledge').checked;

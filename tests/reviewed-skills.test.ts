@@ -67,7 +67,9 @@ test('pinned Skill remains disabled until reviewed, is verified on every load, a
     assert.equal(await registry.skills.promptContent(),'');
     await assert.rejects(registry.installGitSkill(preview.previewId,preview.sha256,false),/Confirm/);
     await assert.rejects(registry.installGitSkill(preview.previewId,'f'.repeat(64),true),/fingerprint/);
-    const installed=await registry.installGitSkill(preview.previewId,preview.sha256,true);
+    // Mismatched attestations consume the staged review token. Start a fresh review.
+    const reviewedAgain=await registry.previewGitSkill(source);
+    const installed=await registry.installGitSkill(reviewedAgain.previewId,reviewedAgain.sha256,true);
     assert.equal(installed.name,'fixture-review');
     assert.equal(installed.sha256,digest(skillText));
     assert.ok(installed.id.startsWith('git-'));
