@@ -1,7 +1,7 @@
 import type { Engine } from './engine.js';
 import type { Approval, Conversation, State, Task } from './store.js';
 
-const states = new Set<State>(['queued','running','awaiting_approval','completed','failed','cancelled','interrupted']);
+const states = new Set<State>(['queued','running','awaiting_approval','waiting_children','completed','failed','cancelled','interrupted']);
 const conversationId = /^[a-f0-9-]{1,80}$/;
 
 function params(url: URL) {
@@ -67,5 +67,8 @@ export function taskConsoleDetail(engine:Engine,id:string) {
     .map(({id,tool,state,args})=>({id,tool,state,args:safeArgs(args)}));
   const children=engine.store.db.prepare("SELECT data FROM tasks WHERE json_extract(data, '$.parentId')=? ORDER BY rowid DESC LIMIT 20")
     .all(id).map(row=>JSON.parse(String(row.data)) as Task);
-  return {task,conversation:conversation?{id:conversation.id,title:conversation.title,modelKey:conversation.modelKey??null}:null,approvals,children};
+  return {task,conversation:conversation?{id:conversation.id,title:conversation.title,modelKey:conversation.modelKey??null,
+    internal:!!conversation.internalParentConversationId ||
+      engine.store.db.prepare("SELECT id FROM tasks WHERE conversation_id=? AND json_extract(data, '$.parentId') IS NOT NULL LIMIT 1")
+        .get(conversation.id)!==undefined}:null,approvals,children};
 }
