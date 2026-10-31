@@ -661,3 +661,5 @@ dialog #deleteName { color: var(--text); overflow-wrap: anywhere; }
 .atlas-observed-muted { color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
 .atlas-observed-path { color: var(--text-secondary); font: 11px/1.55 ui-monospace, SFMono-Regular, monospace; overflow-wrap: anywhere; }
 .atlas-observed-worktrees { display: grid; gap: 4px; }
+.atlas-observed-link { color: var(--accent); width: fit-content; font-size: 11px; text-decoration: none; }
+.atlas-observed-link:hover { text-decoration: underline; }
