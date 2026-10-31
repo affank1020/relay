@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { CapabilityRegistry } from '../src/capabilities.js';
 import { Engine, type Limits } from '../src/engine.js';
-import { configuredProviders } from '../src/integrations/manager.js';
+import { ConnectionManager, configuredProviders } from '../src/integrations/manager.js';
 import { Store, type Task } from '../src/store.js';
 import type { Harness, HarnessRequest } from '../src/harness.js';
 
@@ -21,14 +21,14 @@ async function delegate(request:HarnessRequest,prompt:string,args:Record<string,
 test('child profiles use only explicitly selected MCP read tools and persist structured handoffs',async()=>{
   const folder=await mkdtemp(join(tmpdir(),'relay-profile-mcp-'));
   const store=new Store(':memory:');
-  let dispatched=0;
+  let dispatched=0, discovered=0;
   const registry=new CapabilityRegistry(folder,join(process.cwd(),'skills'),
     configuredProviders({RELAY_GITHUB_TOKEN:'private-secret'}),()=>({
-      list:async()=>[
+      list:async()=>{discovered++;return [
         {name:'issue_read',inputSchema:{type:'object',additionalProperties:false}},
         {name:'get_file_contents',inputSchema:{type:'object',additionalProperties:false}},
         {name:'create_issue',inputSchema:{type:'object',additionalProperties:false}}
-      ],
+      ];},
       call:async()=>{dispatched++;return {content:[{type:'text',text:'fixture read'}]};},
       close:async()=>{}
     }));
@@ -85,6 +85,7 @@ test('child profiles use only explicitly selected MCP read tools and persist str
     assert.deepEqual(children.map(t=>t.handoff?.structured),[true,true]);
     assert.ok(children.every(t=>t.handoff?.provenance==='agent_reported'));
     assert.equal(dispatched,1,'revoked invocation must never reach MCP provider');
+    assert.equal(discovered,2,'only root and explicitly scoped child should discover MCP tools');
     const read=store.events(children[0].conversationId).filter(e=>e.tool==='github:issue_read');
     assert.ok(read.length>=3);
     assert.ok(read.every(e=>e.agentRunId===children[0].agentRunId));
@@ -110,5 +111,89 @@ test('delegated profile tool requests are rejected when only an unauthorized MCP
     await until(()=>store.get<Task>('tasks',root.id)?.state==='completed');
     assert.equal(engine.tasks().length,1);
     assert.equal(store.all('conversations').length,1);
+  }finally{await engine.stop();store.close();}
+});
+
+test('a delegated agent without MCP grants never discovers configured providers',async()=>{
+  const store=new Store(':memory:');
+  const github=configuredProviders({RELAY_GITHUB_TOKEN:'private'})[0];
+  const other={...github,id:'other',label:'Other',readTools:['get_file_contents']};
+  const visited:string[]=[];
+  const manager=new ConnectionManager([github,other],()=>true,config=>({
+    list:async()=>{visited.push(config.id);return [
+      {name:'issue_read',inputSchema:{type:'object'}},
+      {name:'get_file_contents',inputSchema:{type:'object'}}
+    ];},
+    call:async()=>{throw Error('not expected');},
+    close:async()=>{}
+  }));
+  const delegation={schemaVersion:1 as const,toolNames:[] as string[],modelKey:null,
+    context:'',maxTokens:null,maxCostUsd:null};
+  const task:Task={id:crypto.randomUUID(),conversationId:crypto.randomUUID(),
+    parentId:crypto.randomUUID(),requestId:'no-tools-test',prompt:'test',
+    createdAt:new Date().toISOString(),state:'running',dependencies:[],
+    attemptOf:null,result:'',error:null,usage:[],delegation};
+  try{
+    assert.deepEqual(await manager.tools(task,store,new AbortController().signal),[]);
+    assert.deepEqual(visited,[],'unscoped child must make no provider network calls');
+    delegation.toolNames=['atlas_get_atlas_status'];
+    assert.deepEqual(await manager.tools(task,store,new AbortController().signal),[]);
+    assert.deepEqual(visited,[],'Atlas-only delegation must not discover any MCP provider');
+    delegation.toolNames=['mcp_github_issue_read'];
+    assert.deepEqual((await manager.tools(task,store,new AbortController().signal))
+      .map(tool=>tool.name),['mcp_github_issue_read']);
+    assert.deepEqual(visited,['github'],'unrelated configured providers are not contacted');
+  }finally{await manager.close();store.close();}
+});
+
+test('nested child handoff is parsed from final synthesized join output rather than initial text',async()=>{
+  const store=new Store(':memory:');
+  const initial='X'.repeat(8500);
+  const finalReport=JSON.stringify({relayHandoff:{summary:'Nested final evidence',
+    evidence:[{label:'Source of truth',url:'https://example.org/final'}],
+    artifacts:[],openQuestions:['Is confirmation necessary?']},notes:'N'.repeat(8200)});
+  const seen:string[]=[];
+  const engine=new Engine(store,{version:1,capabilities:{persistence:true,cancellation:true,tools:true},
+    run:async request=>{
+      if(request.task.prompt==='root'){
+        await delegate(request,'nested reviewer',{profile:'reviewer'});
+        return 'Root awaiting child.';
+      }
+      if(request.task.prompt.startsWith('nested reviewer')){
+        await delegate(request,'grandchild result');
+        return initial;
+      }
+      if(request.task.prompt==='grandchild result')
+        return 'Grandchild observed evidence.';
+      if(request.task.kind==='join'){
+        const parent=store.get<Task>('tasks',request.task.continuationOf!)!;
+        if(parent.parentId){
+          assert.match(request.task.prompt,/Delegated role \(Reviewer\)/,
+            'nested join must request the selected role output contract');
+          request.onText(finalReport.slice(0,100));
+          return finalReport;
+        }
+        seen.push(request.task.prompt);
+        assert.match(request.task.prompt,/Nested final evidence/);
+        assert.match(request.task.prompt,/example.org\/final/);
+        assert.match(request.task.prompt,/"structured":true/);
+        assert.doesNotMatch(request.task.prompt,/X{200}/,
+          'pre-join output must not displace the final handoff');
+        return 'Root answer includes nested final report';
+      }
+      throw Error('Unexpected '+request.task.prompt);
+    }},limits);
+  try{
+    const c=engine.conversation(),root=engine.enqueue(c.id,'root','nested-handoff-root-1');
+    await until(()=>store.get<Task>('tasks',root.id)?.state==='completed');
+    const nested=engine.tasks().find(t=>t.parentId===root.id)!;
+    const nestedJoin=engine.tasks().find(t=>t.continuationOf===nested.id)!;
+    assert.equal(nestedJoin.result,finalReport);
+    assert.ok(store.get<Task>('tasks',nested.id)!.result.startsWith(initial));
+    assert.equal(store.get<Task>('tasks',nested.id)!.handoff?.structured,true);
+    assert.equal(store.get<Task>('tasks',nested.id)!.handoff?.summary,'Nested final evidence');
+    assert.equal(store.get<Task>('tasks',nested.id)!.handoff?.evidence[0].url,'https://example.org/final');
+    assert.equal(seen.length,1);
+    assert.match(store.get<Task>('tasks',root.id)!.result,/Root answer includes nested final report/);
   }finally{await engine.stop();store.close();}
 });

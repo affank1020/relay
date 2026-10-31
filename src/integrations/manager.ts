@@ -165,8 +165,14 @@ export class ConnectionManager {
   }
   async tools(task:Task,store:Store,signal:AbortSignal):Promise<ToolDefinition[]> {
     const result:ToolDefinition[]=[];
+    const delegated=!!task.parentId||!!task.delegation;
+    const admittedNames=task.delegation?.toolNames??[];
+    // No delegated MCP permission means no remote discovery. A child with
+    // only Atlas access should not contact unrelated configured providers.
+    if(delegated&&!admittedNames.some(name=>name.startsWith('mcp_')))return result;
     for(const config of this.configs){
-      if(!this.enabled(config.id)||!config.token)continue;
+      if(!this.enabled(config.id)||!config.token||
+         (delegated&&!admittedNames.some(name=>name.startsWith('mcp_'+config.id+'_'))))continue;
       try{
         const available=await this.transport(config).list(signal);
         signal.throwIfAborted();

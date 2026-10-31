@@ -374,7 +374,10 @@ export class Engine {
           // The parent result contains the synthesis, not an extra synthetic user turn.
           if(state==='completed'&&task.result&&!parent.result.includes(task.result))
             parent.result+=(parent.result?'\n\n':'')+task.result;
-          if(parent.parentId&&parent.state==='completed')parent.handoff=agentHandoff(parent.result);
+          // Use the completed synthesis attempt, not the accumulated transcript:
+          // the pre-join answer and streamed continuation are not one JSON.
+          if(parent.parentId&&parent.state==='completed')
+            parent.handoff=agentHandoff(task.result);
           this.store.save('tasks',parent);
           this.store.event(parent.conversationId,{taskId:parent.id,agentId:parent.agentId??null,
             agentRunId:parent.agentRunId??null,type:'task',state:parent.state});
@@ -489,7 +492,11 @@ export class Engine {
         ...deps.map(d=>({id:d.id,state:d.state,result:d.result.slice(0,12000)})),
         ...(task.retryDependencyResults??[]).map(d=>({id:d.taskId,state:'completed',result:d.result}))
       ];
-      const prompt=parent?handoffPrompt(parent,joinedChildren):
+      const prompt=parent?
+        handoffPrompt(parent,joinedChildren)+
+        (parent.delegation?.profile&&parent.delegation.profile!=='general'
+          ?profilePrompt(parent.delegation.profile):''):
+
         task.prompt+
         (task.delegation?.profile && task.delegation.profile!=='general'
           ?profilePrompt(task.delegation.profile):'')+
