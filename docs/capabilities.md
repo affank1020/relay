@@ -153,3 +153,35 @@ without the transcript, arguments, tool output, or invocation IDs. The endpoint 
 interrupted or unknown operations and never reconciles Atlas tool actions or
 unclassified invocation records. This acknowledges uncertain *read receipts*,
 not successful execution, and it does not silently reissue a tool call.
+
+
+## GitHub write approvals (issue creation and issue/PR comments)
+
+GitHub mutation is **disabled by default**, regardless of the credential's scope.
+An operator must configure a minimally scoped RELAY_GITHUB_TOKEN and set
+RELAY_GITHUB_WRITE_REPOS to up to eight exact comma-separated owner/repo entries.
+No wildcard, browser endpoint, organization-wide or model-provided permission
+is accepted. The user must also enable GitHub under Skills & integrations.
+
+Only GitHub's discovered create_issue and add_issue_comment MCP tools are
+eligible. The server rechecks exact repository, operation, argument shape,
+body/title limits and current integration enablement on invocation and after
+approval. No other GitHub mutations, and no third-party provider mutations,
+are admitted. Only root agent sessions can receive these write tools; children
+and inference-only join continuations do not inherit mutation permissions.
+
+For every operation, the task pauses and the existing authenticated approval
+interface shows the exact repository, issue number/title and content. No
+lasting grant is established. A rejected, cancelled or revoked operation
+before dispatch is recorded as denied_before_dispatch and never sent; this
+known terminal denial does not prevent chat deletion. Approved requests are
+marked dispatched before calling GitHub. A successful returned response
+produces a terminal receipt without persisting raw response content in event
+telemetry. A transport timeout, provider error, cancellation or ambiguous
+outcome after dispatch is *uncertain*: no automatic replay or retry. Such
+records block conversation deletion and require operator investigation of the
+actual GitHub issue before any further action. No automatic write-side-effect
+reconciliation is provided in this slice.
+
+Production credential smoke is **not** implied by fixture tests. Verify with a
+restricted test repository and a deliberately scoped operator credential.

@@ -720,7 +720,7 @@ void bootstrap();
 
 type CapabilitySnapshot={
   skills:Array<{id:string;name:string;description:string;version:string;revision:string|null;installed:boolean;enabled:boolean;loadFailure:string|null;source:'bundled'|'git';sourceRef?:string}>;
-  integrations:Array<{id:string;label:string;enabled:boolean;configured:boolean;state:string;availableTools:string[]}>;
+  integrations:Array<{id:string;label:string;enabled:boolean;configured:boolean;state:string;availableTools:string[];availableWriteTools?:string[]}>;
 };
 async function drawCapabilities(snapshot:CapabilitySnapshot){
   const parent=$('capabilitiesContent');
@@ -739,7 +739,10 @@ async function drawCapabilities(snapshot:CapabilitySnapshot){
       const isSkill='name' in item;
       const available=isSkill?item.installed:item.configured;
       check.disabled=!available;check.setAttribute('aria-label','Enable '+(isSkill?item.name:item.label));
-      const description=isSkill?item.description:(item.availableTools.length?item.availableTools.length+' approved read tools':'Read-only MCP');
+      const writes=isSkill?0:item.availableWriteTools?.length??0;
+      const description=isSkill?item.description:
+        (item.availableTools.length?item.availableTools.length+' read tools':'Read-only MCP')+
+        (writes?' · '+writes+' writes requiring approval':'');
       const info=el('span','','');
       info.append(el('span','capability-name',isSkill?item.name:item.label),
         el('div','capability-description',description));

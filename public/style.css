@@ -688,3 +688,5 @@ dialog #deleteName { color: var(--text); overflow-wrap: anywhere; }
 
 .atlas-observed-link { color: var(--accent); width: fit-content; font-size: 11px; text-decoration: none; }
 .atlas-observed-link:hover { text-decoration: underline; }
+
+.approval-warning {font-size:12px;line-height:1.5;color:var(--text-secondary);margin:8px 0;}
