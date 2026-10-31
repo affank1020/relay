@@ -67,6 +67,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   let cursor:string|null=null;
   let hasMore=false;
   let paginationInitialized=false;
+  let newestBoundary:number|null=null;
+  let pagingRevision=0;
   let initialPageLoaded=false;
   let olderCheckOffset=0;
   let newestIds=new Set<string>();
@@ -167,28 +169,38 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       if(generation!==listEpoch||!visible)return;
       const incoming=new Set(response.tasks.map(task=>task.id));
       if(!response.hasMore) {
-        // The whole filtered set fits on one page, so absence is authoritative.
+        // An exhaustive filtered page is authoritative, including for any
+        // previously loaded older rows.
         for(const id of tasks.keys())if(!incoming.has(id))tasks.delete(id);
         olderIds.clear();
         if(selected&&!incoming.has(selected))clearSelection();
-        cursor=null;hasMore=false;paginationInitialized=true;
+        if(cursor!==null||hasMore)pagingRevision++;
+        cursor=null;hasMore=false;paginationInitialized=true;newestBoundary=null;
       } else {
-        // A missing first-page row may have been displaced by an insertion OR
-        // moved out of a state filter. Reconcile its persisted state instead of
-        // assuming displacement and presenting stale queue/approval rows.
+        const boundary=Number(response.nextCursor);
+        if(!Number.isSafeInteger(boundary)||boundary<1)
+          throw new Error('Invalid newest-page cursor');
         const missing=[...newestIds].filter(id=>!incoming.has(id));
-        const older=[...olderIds].filter(id=>!incoming.has(id)&&!missing.includes(id));
-        const capacity=50-missing.length;
+        const pinned=selected&&missing.includes(selected)&&!olderIds.has(selected)?selected:null;
+
+        // Automatically displaced rows are not automatically loaded history.
+        // Drop them from the DOM and cache; pagination is rebased to include
+        // them again on demand. Keep only one actively selected/pinned row.
+        for(const id of missing)if(!olderIds.has(id)&&id!==pinned)tasks.delete(id);
+
+        // Manually paged older rows are retained by user choice. Periodically
+        // reconcile their states with a bounded read-only projection.
+        const older=[...olderIds].filter(id=>!incoming.has(id));
+        const capacity=50-(pinned?1:0);
         const checkOlder:string[]=[];
         if(capacity>0&&older.length) {
           for(let i=0;i<Math.min(capacity,older.length);i++)
             checkOlder.push(older[(olderCheckOffset+i)%older.length]);
           olderCheckOffset=(olderCheckOffset+checkOlder.length)%older.length;
         }
-        const check=[...missing,...checkOlder];
+        const check=pinned?[pinned,...checkOlder]:checkOlder;
         if(check.length) {
-          if(selected&&missing.includes(selected)&&status!=='all') {
-            // No mutations while selected state is being checked.
+          if(pinned&&status!=='all') {
             selectedFingerprint='';
             detail.replaceChildren(node('p','task-feedback','Checking task state…'));
             eventList=null;eventMoreButton=null;
@@ -205,18 +217,20 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
             } else {
               const cached=tasks.get(id);
               if(cached)tasks.set(id,{...cached,state:state.state});
-              if(missing.includes(id))olderIds.add(id);
             }
           }
         }
-        // Cursor belongs to the oldest originally loaded page, not to each
-        // newest-page poll. A fully exhausted cursor remains exhausted unless
-        // a burst of inserts leaves a gap with no overlap to loaded history.
-        if(!paginationInitialized||
-            (!hasMore&&!response.tasks.some(task=>tasks.has(task.id)))) {
-          cursor=response.nextCursor;hasMore=response.hasMore;
+
+        // The newest page's oldest rowid is a cursor into all remaining
+        // history. When new inserts move this boundary forward, reset the
+        // paging cursor to bridge the gap on the NEXT explicit older click.
+        // A stable boundary never reopens exhausted pagination.
+        if(!paginationInitialized||newestBoundary===null||boundary>newestBoundary) {
+          cursor=response.nextCursor;hasMore=true;
+          pagingRevision++;
           paginationInitialized=true;
         }
+        newestBoundary=Math.max(newestBoundary??boundary,boundary);
       }
       newestIds=incoming;
       for(const task of response.tasks) {
@@ -234,11 +248,11 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   async function older() {
     if(!cursor||!hasMore||!visible||pendingEpoch===listEpoch)return;
     more.disabled=true;
-    const generation=listEpoch;
+    const generation=listEpoch,revision=pagingRevision;
     try {
       const url=taskUrl(status as State,conversation)+'&cursor='+encodeURIComponent(cursor);
       const response=await read<Page>(url);
-      if(generation!==listEpoch||!visible)return;
+      if(generation!==listEpoch||revision!==pagingRevision||!visible)return;
       for(const task of response.tasks){tasks.set(task.id,task);olderIds.add(task.id);}
       cursor=response.nextCursor;hasMore=response.hasMore;
       renderRows();
@@ -256,7 +270,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   async function reset() {
     listEpoch++;
     clearSelection();
-    cursor=null;hasMore=false;paginationInitialized=false;initialPageLoaded=false;olderCheckOffset=0;
+    cursor=null;hasMore=false;paginationInitialized=false;newestBoundary=null;pagingRevision++;
+    initialPageLoaded=false;olderCheckOffset=0;
     newestIds.clear();olderIds.clear();tasks.clear();rows.clear();list.replaceChildren();
     message('Loading tasks…');
     if(!visible)return;
