@@ -263,9 +263,7 @@ $<HTMLFormElement>('loginForm').onsubmit=async event=>{
   try{await api('/status');$<HTMLDialogElement>('login').close();$<HTMLInputElement>('token').value='';$('error').textContent='';await bootstrap();}
   catch(e){$('error').textContent=text(e);}
 };
-$('settings').onclick=()=>{if(hosted){// Keep discovery fresh even if the model picker stays open while Ollama downloads finish.
-setInterval(()=>{if(document.visibilityState!=='hidden')void refresh().catch(()=>{});},60_000);
-void bootstrap();return;}token='';$<HTMLDialogElement>('login').showModal();};
+$('settings').onclick=()=>{if(hosted){void bootstrap();return;}token='';$<HTMLDialogElement>('login').showModal();};
 $('new').onclick=()=>{void create().then(closeSidebar).catch(notify);};
 $<HTMLInputElement>('sessionSearch').oninput=renderSessions;
 $('openSidebar').onclick=()=>{document.body?.classList?.add('sidebar-open');};
@@ -292,4 +290,6 @@ $('showTasks').onclick=async()=>{
     if(!data.tasks.length)list.append(el('span','sidebar-empty','No recent tasks.'));
   }catch(e){notify(e);}
 };
+// Refresh local model availability while Relay is visible, without restarting a conversation.
+setInterval(()=>{if(document.visibilityState!=='hidden')void refresh().catch(()=>{});},60_000);
 void bootstrap();
