@@ -297,3 +297,36 @@ test('running filter automatically clears completed selection after a foreground
     globalThis.clearTimeout=originalClearTimeout;
   }
 });
+
+
+test('a complete filtered page evicts nonselected tasks that left the filter',async()=>{
+  let primary=task(one,A,'running');
+  const remaining=task(two,A,'running');
+  let scheduled:(()=>void)|undefined;
+  const previousTimeout=globalThis.setTimeout,previousClear=globalThis.clearTimeout;
+  globalThis.setTimeout=((callback:()=>void)=>{scheduled=callback;return 1;}) as unknown as typeof setTimeout;
+  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
+  try {
+    await fixture(async(get)=>{
+      const running=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Running');
+      assert.ok(running);running.onclick?.();await flush();
+      assert.equal(get('taskRows').children.filter(row=>row.className.split(' ').includes('task-row')).length,2);
+      primary=task(one,A,'completed');
+      assert.ok(scheduled);scheduled();await flush();
+      const names=get('taskRows').children.filter(row=>row.className.split(' ').includes('task-row'))
+        .map(row=>row.children[0]?.textContent);
+      assert.deepEqual(names,['Work '+two],'the completed task must not remain as a stale running row');
+    },async url=>{
+      if(url==='/sessions')return response({sessions:[sessions[0]]});
+      if(url.startsWith('/task-console/tasks?')) {
+        const state=new URL(url,'http://relay.local').searchParams.get('state');
+        const tasks=[primary,remaining].filter(item=>!state||item.state===state);
+        return response({tasks,counts:{running:tasks.length},hasMore:false,nextCursor:null});
+      }
+      throw Error('Unexpected URL '+url);
+    });
+  } finally {
+    globalThis.setTimeout=previousTimeout;
+    globalThis.clearTimeout=previousClear;
+  }
+});
