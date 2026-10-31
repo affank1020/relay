@@ -12,7 +12,7 @@ export interface AtlasContext {
   logicalWorkspaceId:string|null; nodeId:string|null;
 }
 export class AtlasContextError extends Error {
-  constructor(readonly status: 400|409|503, message:string){super(message);}
+  constructor(readonly status: 400|403|409|503, message:string){super(message);}
 }
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isAtlasId=(id:unknown):id is string=>typeof id==='string'&&uuid.test(id);
@@ -21,7 +21,12 @@ const name=(v:unknown)=>typeof v==='string'&&v.trim()?v.trim().slice(0,160):null
 /** Atlas MCP responds with structuredContent.result (an array). No LLM parsing. */
 export function atlasList(reply:unknown):Record<string,unknown>[] {
   const outer=record(reply);
-  if(!outer||outer.isError===true)throw new AtlasContextError(503,'Atlas is unavailable');
+  if(!outer)throw new AtlasContextError(503,'Atlas is unavailable');
+  if(outer.isError===true) {
+    const messages=Array.isArray(outer.content)?outer.content.map(c=>record(c)?.text).filter(v=>typeof v==='string') as string[]:[];
+    const denied=messages.some(v=>/\\b(401|403|forbidden|unauthori[sz]ed|permission denied)\\b/i.test(v));
+    throw new AtlasContextError(denied?403:503,denied?'Atlas access denied':'Atlas is unavailable');
+  }
   const structured=record(outer.structuredContent);
   let items=structured?.result;
   // Compatibility with older, text-only MCP servers; still deterministic JSON.
@@ -39,7 +44,13 @@ export class AtlasContextService {
     const controller=new AbortController();
     const timeout=setTimeout(()=>controller.abort(),12000);
     try {return atlasList(await this.transport.call(tool,args,controller.signal));}
-    catch(e){if(e instanceof AtlasContextError)throw e;throw new AtlasContextError(503,'Atlas is unavailable');}
+    catch(e){
+      if(e instanceof AtlasContextError)throw e;
+      const message=e instanceof Error?e.message:'';
+      if(/\\b(401|403|forbidden|unauthori[sz]ed|permission denied)\\b/i.test(message))
+        throw new AtlasContextError(403,'Atlas access denied');
+      throw new AtlasContextError(503,'Atlas is unavailable');
+    }
     finally{clearTimeout(timeout);}
   }
   async projects():Promise<AtlasProject[]> {
@@ -52,12 +63,12 @@ export class AtlasContextService {
   async checkouts(projectId:string):Promise<AtlasCheckout[]> {
     if(!isAtlasId(projectId))throw new AtlasContextError(400,'Invalid Atlas project ID');
     const all=await this.read('list_project_workspaces',{projectId,includeArchived:false});
-    if(all.some(w=>!isAtlasId(w.id)||!isAtlasId(w.projectId)||!name(w.name)||w.status!=='active'||
+    if(all.some(w=>!isAtlasId(w.id)||!isAtlasId(w.projectId)||!name(w.name)||!name(w.status)||
       (w.logicalWorkspaceId!=null&&!isAtlasId(w.logicalWorkspaceId))||(w.nodeId!=null&&!isAtlasId(w.nodeId))))
       throw new AtlasContextError(503,'Atlas returned an unsupported response');
     // An inconsistent project association must never be surfaced to the user.
     if(all.some(w=>w.projectId!==projectId))throw new AtlasContextError(503,'Atlas returned inconsistent project membership');
-    return all.map(w=>({checkoutId:w.id as string,name:name(w.name)!,projectId,
+    return all.filter(w=>w.status==='active').map(w=>({checkoutId:w.id as string,name:name(w.name)!,projectId,
       logicalWorkspaceId:typeof w.logicalWorkspaceId==='string'?w.logicalWorkspaceId:null,
       nodeId:typeof w.nodeId==='string'?w.nodeId:null}))
       .sort((a,b)=>a.name.localeCompare(b.name)||a.checkoutId.localeCompare(b.checkoutId));
