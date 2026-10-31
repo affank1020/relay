@@ -22,7 +22,7 @@ Only rows explicitly loaded by the user can increase the history DOM. A historic
 
 Task selection is independent of list pagination. Details refresh while visible even in history mode and can continue showing a task that has left the current status filter or was opened through a parent, dependency, child or previous-attempt link. The detail view always uses fresh server state to decide which actions to show; if a refresh fails, action controls are hidden instead of presenting stale controls.
 
-The task timeline scans up to four 500-event pages per foreground refresh, automatically advancing through unrelated conversation events; up to 120 selected-task entries are displayed. The full persisted task result is available in a scrollable pane. A selected Node is never represented as an executing Node without an execution receipt.
+The task timeline scans up to four 500-event pages per foreground refresh, automatically advancing through unrelated conversation events; up to 120 selected-task entries are displayed. The full persisted task result is available in a scrollable pane. During visible detail refreshes, new result text and usage receipts update existing DOM nodes in place, retaining the user's output scroll position, focused controls and open approval disclosures. State/relationship changes may rebuild controls, while restoring the result scroll position. A selected Node is never represented as an executing Node without an execution receipt.
 
 ## Tests and limitations
 
