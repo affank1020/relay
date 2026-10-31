@@ -14,10 +14,12 @@ class Element {
   parent:Element|null=null;
   textContent='';className='';value='';hidden=false;disabled=false;
   title='';open=false;scrollHeight=0;scrollTop=0;clientHeight=0;
+  style={left:'',top:''}; attributes:Record<string,string>={};
   onclick?:()=>void;
   onsubmit?:()=>void;
   onkeydown?:()=>void;
   oninput?:()=>void;
+  onclose?:()=>void;
   constructor(readonly tag='div'){}
   append(...nodes:Element[]){for(const node of nodes)this.insertBefore(node,null);}
   insertBefore(node:Element,before:Element|null) {
@@ -31,9 +33,11 @@ class Element {
   get lastElementChild():Element|null{return this.children.at(-1)??null;}
   remove(){if(this.parent){const index=this.parent.children.indexOf(this);if(index>=0)this.parent.children.splice(index,1);this.parent=null;}}
   focus(){}
-  showModal(){}
-  close(){}
-  setAttribute(_name:string,_value:string){}
+  select(){}
+  getBoundingClientRect(){return {right:215,bottom:120};}
+  showModal(){this.open=true;}
+  close(){this.open=false;this.onclose?.();}
+  setAttribute(name:string,value:string){this.attributes[name]=value;}
 }
 
 const event=(id:string,sequence:number)=>({
@@ -220,4 +224,85 @@ test('Atlas receipts survive >500 event replay, 300-event inspector eviction and
     assert.equal(pills.children[0].children.at(-1)?.textContent,'completed');
     assert.equal(element('activity').children.length,100,'inspector remains capped at latest 100 visible rows');
   }
+});
+
+test('conversation menu renames and deletes only after confirmation; failed requests keep dialog state',async()=>{
+  const nodes=new Map<string,Element>();
+  const element=(id:string):Element=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id)!;};
+  let sessions=[{id:'c1',title:'First',modelKey:'free'}, {id:'c2',title:'Second',modelKey:'free'}];
+  let deleted=false,blocked=true,patches=0,deletes=0;
+  const context={
+    window:{location:{protocol:'https:'},innerWidth:1000,innerHeight:600,sessionStorage:{getItem:()=>null,setItem:()=>{}}},
+    document:{getElementById:element,createElement:(name:string)=>new Element(name)},
+    Headers,Response,URL,
+    setTimeout:(_fn:()=>void)=>1, clearTimeout:()=>{},
+    fetch:async(url:string,opts?:RequestInit)=>{
+      if(url==='/api/status')return new Response(JSON.stringify({provider:'OpenRouter',model:'free',atlas:'configured'}));
+      if(url==='/api/sessions')return new Response(JSON.stringify({sessions}));
+      if(url==='/api/sessions/c1' && opts?.method==='PATCH'){
+        patches++;
+        const title=(JSON.parse(opts.body as string) as {title:string}).title;
+        sessions=sessions.map(s=>s.id==='c1'?{...s,title}:s);
+        return new Response(JSON.stringify({session:{...sessions[0],busy:false,costUsd:0,usage:{tokens:0,unknown:false}}}));
+      }
+      if(url==='/api/sessions/c1' && opts?.method==='DELETE'){
+        deletes++;
+        if(blocked)return new Response(JSON.stringify({error:'Conversation has active or uncertain tasks'}),{status:409});
+        deleted=true;sessions=sessions.filter(s=>s.id!=='c1');
+        return new Response(null,{status:204});
+      }
+      const match=url.match(/^\/api\/sessions\/(c[12])$/);
+      if(match) {
+        const selected=sessions.find(s=>s.id===match[1]);
+        return new Response(JSON.stringify({session:{...selected,busy:false,costUsd:0,usage:{costKind:'estimated',tokens:0,unknown:false}},tasks:[],approvals:[]}));
+      }
+      if(url.startsWith('/api/sessions/c1/events?after=')||url.startsWith('/api/sessions/c2/events?after='))
+        return new Response(JSON.stringify({events:[],nextCursor:0,hasMore:false}));
+      throw Error('Unexpected '+url);
+    }
+  };
+  runInNewContext(source,context,{filename:'dist/public/app.js'});
+  await flush();
+  const firstRow=element('sessions').children[0];
+  const more=firstRow.children.find(e=>e.className==='session-more')!;
+  assert.ok(more,'chat actions button present');
+  (more.onclick as unknown as ((e:{stopPropagation():void})=>void))({stopPropagation(){}});
+  assert.equal(element('sessionMenu').hidden,false);
+  element('menuRename').onclick?.();
+  assert.equal(element('renameDialog').open,true);
+  assert.equal(element('renameInput').value,'First');
+  element('renameInput').value='  ';
+  (element('renameForm').onsubmit as unknown as ((e:{preventDefault():void})=>void))({preventDefault(){}});
+  assert.equal(patches,0);
+  assert.match(element('renameError').textContent,/1–120/);
+  element('renameInput').value='  Renamed  ';
+  (element('renameForm').onsubmit as unknown as ((e:{preventDefault():void})=>void))({preventDefault(){}});
+  await flush();
+  assert.equal(patches,1);
+  assert.equal(sessions[0].title,'Renamed');
+  assert.equal(element('renameDialog').open,false);
+  assert.equal(element('title').textContent,'Renamed');
+
+  const renamedRow=element('sessions').children[0];
+  const renamedMore=renamedRow.children.find(e=>e.className==='session-more')!;
+  (renamedMore.onclick as unknown as ((e:{stopPropagation():void})=>void))({stopPropagation(){}});
+  element('menuDelete').onclick?.();
+  assert.equal(element('deleteDialog').open,true);
+  assert.equal(element('deleteName').textContent,'Renamed');
+  assert.equal(deletes,0,'opening the menu/dialog must not delete');
+  (element('deleteForm').onsubmit as unknown as ((e:{preventDefault():void})=>void))({preventDefault(){}});
+  await flush();
+  assert.equal(deletes,1);
+  assert.equal(deleted,false);
+  assert.equal(element('deleteDialog').open,true);
+  assert.match(element('deleteError').textContent,/active or uncertain tasks/);
+  blocked=false;
+  (element('deleteForm').onsubmit as unknown as ((e:{preventDefault():void})=>void))({preventDefault(){}});
+  await flush();
+  assert.equal(deletes,2);
+  assert.equal(deleted,true);
+  assert.equal(element('deleteDialog').open,false);
+  assert.equal(sessions.length,1);
+  assert.equal(element('title').textContent,'Second');
+  assert.equal(element('sessions').children.length,1);
 });
