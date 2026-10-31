@@ -7,8 +7,13 @@ import { Engine } from './engine.js';
 import { McpTransport } from './gateway.js';
 import { createPlatform } from './platform.js';
 import { loadRelayModels } from './models.js';
+import { startOllamaProxy } from './ollama-proxy.js';
 
 const modelRegistry=loadRelayModels(process.env);
+// Pi's fetch ignores an overridden Host; the local-only proxy fixes Ollama's
+// reverse-proxy Host restriction without weakening TLS or opening any ports.
+const ollamaProxy=modelRegistry.ollama?await startOllamaProxy(modelRegistry.ollama.baseUrl):undefined;
+if(ollamaProxy&&modelRegistry.ollama)modelRegistry.ollama.baseUrl=ollamaProxy.baseUrl;
 const model=modelRegistry.models[0].id;
 const token=process.env.RELAY_ACCESS_TOKEN || '';
 if(token.length<24)throw new Error('RELAY_ACCESS_TOKEN must be 24+ characters');
@@ -41,6 +46,6 @@ let stopping=false;
 async function stop(){
   if(stopping)return;stopping=true;server.close();
   const force=setTimeout(()=>process.exit(1),10000);force.unref();
-  await engine.stop();await atlas?.close().catch(()=>{});store.close();clearTimeout(force);
+  await engine.stop();await atlas?.close().catch(()=>{});await ollamaProxy?.close();store.close();clearTimeout(force);
 }
 process.on('SIGTERM',()=>{void stop();});process.on('SIGINT',()=>{void stop();});
