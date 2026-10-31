@@ -277,7 +277,7 @@ test('running filter automatically clears completed selection after a foreground
         'completed task disappears from running list');
       assert.equal(get('taskDetail').querySelector('.task-actions'),null,
         'the stale cancel action is no longer rendered');
-      assert.ok(get('taskDetail').textContent.includes('') || get('taskDetail').children[0]?.textContent.includes('Select a task'),
+      assert.ok(get('taskDetail').children[0]?.textContent.includes('Select a task'),
         'detail returns to empty selected state');
       assert.ok(calls.some(url=>url==='/task-console/tasks/'+one),
         'selection is reconciled against authoritative detail after task leaves page');
