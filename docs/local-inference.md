@@ -66,15 +66,16 @@ The server persists all chat prompts/outputs on the VPS even for local inference
    If the container cannot reach MagicDNS, inspect the VPS DNS and Tailscale
    routing from Docker rather than making Ollama public.
 
-4. Add to the VPS-only `~/relay/.env`:
+4. Add the private Ollama endpoint to the VPS-only `~/relay/.env`:
 
    ```dotenv
    RELAY_OLLAMA_URL=https://<mac-name>.<tailnet-name>.ts.net:10000/v1
-   RELAY_OLLAMA_MODELS=qwen3:4b,qwen3:8b
    ```
 
-   These two Qwen models were confirmed installed on the Mac on
-   31 October 2026. Add other installed IDs comma-separated when ready. Do not commit the private tailnet name or credentials.
+   Relay now discovers installed models from Ollama's private `/v1/models` endpoint.
+   **No `RELAY_OLLAMA_MODELS` edits or deployments are required when you download Coding Qwen or other models.**
+   The old optional list may still seed a catalog when the Mac is offline, but live discovery replaces it.
+   Do not commit the private tailnet name or credentials.
    The URL validator accepts tailnet HTTPS on standard port 443 or
    Tailscale Serve ports 8443 and 10000, and loopback HTTP for development. Existing `RELAY_MODEL` and OpenRouter key remain in place.
 
@@ -84,6 +85,7 @@ The server persists all chat prompts/outputs on the VPS even for local inference
 
 ## Validation
 
+- Reload Relay or leave the tab open for up to a minute after installing a new model. Relay refreshes the model catalog on authenticated status requests (cached for 15 seconds), and the UI refreshes it every minute while visible. Offline local models are shown as unavailable instead of falling back to a cloud model.
 - Choose `MacBook · <model>` in the Relay model selector. Changing the
   selection creates a **new** conversation, preventing accidental model
   switches in existing Pi session history.
@@ -95,8 +97,7 @@ The server persists all chat prompts/outputs on the VPS even for local inference
 - Also test Mac sleep/wake. Tailscale may reconnect automatically, but
   **never auto-retry a failed Atlas task** after reconnection because a
   previous operation could have partially succeeded.
-- The request-start probe has a bounded timeout; it does not poll models
-  in the background. Network loss during inference may still yield a
+- The server makes bounded, on-demand discovery requests; the visible UI refreshes its model list periodically. Network loss during inference may still yield a
   generic Pi provider error; that is separate follow-up work.
 
 ## Security notes
@@ -104,6 +105,6 @@ The server persists all chat prompts/outputs on the VPS even for local inference
 Ollama local HTTP endpoints have no dedicated API authentication. Treat
 Tailscale access controls and the VPS as the trust boundary. Do not publish
 port 11434 to the internet. Proxy requests remain server-side and only
-configured model keys are exposed to browsers; no user-controlled inference
+validated model IDs from the configured private endpoint are exposed to browsers; no user-controlled inference
 URLs are accepted. Local inference isn't equivalent to local-only storage,
 because the Relay conversation database lives on the VPS.
