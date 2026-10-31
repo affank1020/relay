@@ -79,7 +79,7 @@ export class PiHarness implements Harness {
       onPhase?.('finalizing_response');
       const last=session.messages.at(-1);
       if(last?.role==='assistant' && (last.stopReason==='error' || last.stopReason==='aborted')) {
-        if(last.stopReason==='error' && isPiRateLimited(last.errorMessage))throw new ProviderRateLimitError();
+        if(last.stopReason==='error' && provider==='openrouter' && isPiRateLimited(last.errorMessage))throw new ProviderRateLimitError();
         throw new Error('Provider did not complete the response');
       }
       return session.getLastAssistantText() || '';
