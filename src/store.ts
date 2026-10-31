@@ -11,7 +11,7 @@ export interface ExecutionEvent {
   taskId: string | null; agentRunId: string | null; invocationId: string | null;
   type: string; state: string; tool: string | null; atlasOperationId: string | null;
   projectId: string | null; workspaceId: string | null; selectedNodeId: string | null;
-  executingNodeId: string | null; text?: string;
+  executingNodeId: string | null; text?: string; textOffset?: number;
 }
 export interface Approval { id: string; taskId: string; invocationId: string; tool: string; args: Record<string, unknown>; state: 'pending' | 'approved' | 'rejected'; }
 export const terminal = (state: State) => ['completed','failed','cancelled','interrupted'].includes(state);
