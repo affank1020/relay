@@ -5,7 +5,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { Engine } from './engine.js';
 import type { Conversation, Task, Approval } from './store.js';
 import { terminal } from './store.js';
-import { taskConsolePage, taskConsoleDetail, taskConsoleStates } from './task-console-api.js';
+import { taskConsolePage, taskConsoleDetail } from './task-console-api.js';
 import { refreshOllamaModels, type RelayModels } from './models.js';
 
 export function createPlatform(engine:Engine, token:string, staticDir:string, model:string, modelRegistry?:RelayModels) {
@@ -50,7 +50,6 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         return send(res,201,{session:summary(engine.conversation(data.modelKey as string|undefined))});
       }
       if(path==='/api/task-console/tasks'&&req.method==='GET')return send(res,200,taskConsolePage(engine,url));
-      if(path==='/api/task-console/task-states'&&req.method==='GET')return send(res,200,taskConsoleStates(engine,url));
       const consoleDetail=path.match(/^\/api\/task-console\/tasks\/([a-f0-9-]+)$/);
       if(consoleDetail&&req.method==='GET'){
         const detail=taskConsoleDetail(engine,consoleDetail[1]);
