@@ -62,7 +62,7 @@ export class Gateway {
     // reads. They remain on READ_TOOLS and never enter the child's Pi tool list.
     if(internalRead && name!=='get_workspace' && name!=='get_node')
       throw new Error('Invalid internal verification tool');
-    if(task.parentId && (!READ_TOOLS.has(name) ||
+    if((task.parentId || task.delegation) && (!READ_TOOLS.has(name) ||
       (!internalRead && !task.delegation?.toolNames.includes('atlas_'+name))))
       throw new Error('Child agent capability denied');
     const key=task.id+':'+callId;

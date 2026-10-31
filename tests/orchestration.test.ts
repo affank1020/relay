@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { once } from 'node:events';
+import { createPlatform } from '../src/platform.js';
 import { Engine, type Limits } from '../src/engine.js';
 import { Store, type Task } from '../src/store.js';
 import type { Harness, HarnessRequest } from '../src/harness.js';
@@ -275,4 +277,129 @@ test('family caps include earlier root turns, child joins, and per-family reserv
       assert.throws(()=>other.enqueue(rootConversation.id,'next','nested-budget-002'),/budget/);
     }finally{await other.stop();otherStore.close();}
   }finally{await engine.stop();store.close();}
+});
+
+test('retired child usage stays charged to its original session after synthesis, deletion and reopen',async()=>{
+  const store=new Store(':memory:');
+  const record=(input:number,costUsd:number)=>({input,output:0,cacheRead:0,cacheWrite:0,costUsd,costKind:'estimated' as const});
+  const harness=fixture(async r=>{
+    if(r.task.kind==='join'){r.onUsage(record(1,0.1));return 'combined';}
+    if(r.task.prompt==='root'){r.onUsage(record(2,0.2));await delegate(r,'child work');return 'delegated';}
+    r.onUsage(record(4,0.4));return 'child work done';
+  });
+  harness.deleteConversationSessions=async()=>{};
+  const engine=new Engine(store,harness,{...limits,sessionUsd:0.73,reserveUsd:0.04});
+  try {
+    const c=engine.conversation(),parent=engine.enqueue(c.id,'root','retire-root-001');
+    await until(()=>store.get<Task>('tasks',parent.id)?.state==='completed');
+    const child=engine.tasks().find(t=>t.parentId===parent.id)!;
+    assert.equal(child.state,'completed');
+    assert.equal(store.retiredFamilyUsage(c.id).costUsd,0);
+    await engine.stop();
+    await engine.deleteConversation(child.conversationId);
+    assert.equal(store.get<Task>('tasks',child.id),undefined);
+    assert.equal(Math.round(store.retiredFamilyUsage(c.id).costUsd*100),40);
+    assert.equal(Math.round(store.retiredFamilyUsage(c.id).tokens),4);
+    assert.equal(Math.round(engine.usage().costUsd*100),70);
+    assert.throws(()=>engine.enqueue(c.id,'new expensive turn','retire-root-002'),/Inference budget/);
+    // The new ledger holds numeric amounts, not the child prompt or result.
+    assert.doesNotMatch(JSON.stringify(store.retiredFamilyUsage(c.id)),/child work/);
+  } finally {await engine.stop();store.close();}
+});
+
+test('reconciled child retry is independent after parent synthesis and retains least-privilege restrictions',async()=>{
+  const store=new Store(':memory:');
+  let childRuns=0;
+  const atlas={list:async()=>[
+    {name:'get_atlas_status',inputSchema:{type:'object'}},
+    {name:'workspace_run_dev_task',inputSchema:{type:'object'}}
+  ],call:async()=>({structuredContent:{result:{ok:true}}}),close:async()=>{}};
+  const engine=new Engine(store,fixture(async request=>{
+    if(request.task.prompt==='parent'){await delegate(request,'failing child',{tools:['atlas_get_atlas_status']});return 'parent delegated';}
+    if(request.task.kind==='join')return 'parent synthesis (child failed)';
+    if(request.task.prompt==='failing child'){
+      childRuns++;
+      assert.deepEqual(request.tools.map(t=>t.name),['atlas_get_atlas_status','relay_delegate']);
+      if(childRuns===1)throw new Error('expected child failure');
+      return 'standalone retry succeeded';
+    }
+    return 'unexpected';
+  }),limits,atlas,{'configured':['verify']});
+  try{
+    const c=engine.conversation(),parent=engine.enqueue(c.id,'parent','retry-child-parent-001');
+    await until(()=>store.get<Task>('tasks',parent.id)?.state==='completed');
+    const original=engine.tasks().find(t=>t.parentId===parent.id)!;
+    assert.equal(original.state,'failed');
+    const originalResult=store.get<Task>('tasks',parent.id)!.result;
+    const retry=engine.retry(original.id,true);
+    assert.equal(retry.parentId,null);
+    assert.equal(retry.retryDetachedFromParentId,parent.id);
+    assert.equal(retry.attemptOf,original.id);
+    assert.equal(engine.isInternalConversation(store.get('conversations',retry.conversationId)!),false);
+    await until(()=>store.get<Task>('tasks',retry.id)?.state==='completed');
+    assert.equal(store.get<Task>('tasks',retry.id)?.result,'standalone retry succeeded');
+    assert.equal(store.get<Task>('tasks',parent.id)?.result,originalResult);
+    assert.equal(engine.tasks().filter(t=>t.parentId===parent.id).length,1);
+    assert.equal(engine.tasks().filter(t=>t.continuationOf===parent.id).length,1);
+  }finally{await engine.stop();store.close();}
+});
+
+test('reconciled retry cannot change a queued synthesis child set',async()=>{
+  const store=new Store(':memory:');
+  const engine=new Engine(store,fixture(async()=> 'combined'),limits);
+  try{
+    const root=engine.conversation(),childSession=engine.conversation();
+    const parent:Task={id:crypto.randomUUID(),conversationId:root.id,requestId:'queued-parent-001',
+      prompt:'parent',state:'waiting_children',createdAt:new Date().toISOString(),parentId:null,
+      dependencies:[],attemptOf:null,result:'',error:null,usage:[]};
+    const child:Task={...parent,id:crypto.randomUUID(),conversationId:childSession.id,
+      requestId:'queued-child-001',parentId:parent.id,prompt:'child',state:'failed',error:'failed'};
+    const join:Task={...parent,id:crypto.randomUUID(),requestId:'queued-join-001',
+      parentId:null,continuationOf:parent.id,kind:'join',state:'queued',prompt:'synthesize'};
+    parent.joinTaskId=join.id;
+    store.save('tasks',parent);store.save('tasks',child);store.save('tasks',join);
+    const retry=engine.retry(child.id,true);
+    assert.equal(retry.parentId,null);
+    assert.equal(engine.tasks().filter(t=>t.parentId===parent.id).length,1);
+    assert.equal(store.get<Task>('tasks',parent.id)?.joinTaskId,join.id);
+    await until(()=>store.get<Task>('tasks',parent.id)?.state==='completed');
+    assert.equal(store.get<Task>('tasks',parent.id)?.result,'combined');
+  }finally{await engine.stop();store.close();}
+});
+
+test('delegated Pi conversations do not appear in sidebar sessions, remain inspectable through task API',async()=>{
+  const store=new Store(':memory:');
+  const engine=new Engine(store,fixture(async r=>{
+    if(r.task.prompt==='root'){await delegate(r,'internal child');return 'delegated';}
+    return r.task.kind==='join'?'combined':'internal result';
+  }),limits);
+  const token='relay-orchestration-test-token-123';
+  const server=createPlatform(engine,token,'.','cohere/north-mini-code:free');
+  server.listen(0,'127.0.0.1');
+  await once(server,'listening');
+  const address=server.address();assert.ok(address&&typeof address==='object');
+  const base='http://127.0.0.1:'+address.port+'/api';
+  const api=(path:string,init:RequestInit={})=>fetch(base+path,{...init,
+    headers:{Authorization:'Bearer '+token,...init.headers}});
+  try{
+    const c=engine.conversation(),parent=engine.enqueue(c.id,'root','hidden-agent-001');
+    await until(()=>store.get<Task>('tasks',parent.id)?.state==='completed');
+    const child=engine.tasks().find(t=>t.parentId===parent.id)!;
+    const record=store.get<{internalParentConversationId?:string}>('conversations',child.conversationId)!;
+    assert.equal(record.internalParentConversationId,c.id);
+    const listed=await api('/sessions');
+    assert.equal(listed.status,200);
+    const sessions=(await listed.json() as {sessions:Array<{id:string}>}).sessions;
+    assert.deepEqual(sessions.map(x=>x.id),[c.id]);
+    assert.equal((await api('/sessions/'+child.conversationId)).status,200);
+    const detail=await api('/task-console/tasks/'+child.id);
+    assert.equal(detail.status,200);
+    assert.equal((await detail.json() as {conversation:{internal:boolean}}).conversation.internal,true);
+    assert.equal((await api('/sessions/'+child.conversationId+'/messages',{method:'POST',
+      body:JSON.stringify({message:'inject',requestId:'injected-request-1'})})).status,409);
+    // Legacy child records had no provenance; fallback inference also hides them.
+    store.save('conversations',{...record,id:child.conversationId,internalParentConversationId:undefined} as
+      {id:string;internalParentConversationId?:string});
+    assert.deepEqual((await (await api('/sessions')).json() as {sessions:Array<{id:string}>}).sessions.map(x=>x.id),[c.id]);
+  }finally{await new Promise<void>(resolve=>server.close(()=>resolve()));await engine.stop();store.close();}
 });

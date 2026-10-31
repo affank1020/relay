@@ -41,7 +41,7 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         if(modelRegistry)await refreshOllamaModels(modelRegistry);
         return send(res,200,{harness:'Pi',provider:modelRegistry?.ollama?'OpenRouter + Ollama':'OpenRouter',model,models:modelRegistry?.models??[],defaultModelKey:modelRegistry?.defaultKey,ollamaOnline:modelRegistry?.ollama?.online,atlas:engine.gateway?'configured':'not configured',active:engine.tasks().filter(t=>['running','awaiting_approval'].includes(t.state)).length,maxActive:engine.limits.concurrency,usage:engine.usage(),limits:engine.limits});
       }
-      if(path==='/api/sessions'&&req.method==='GET')return send(res,200,{sessions:engine.store.all<Conversation>('conversations').reverse().map(summary)});
+      if(path==='/api/sessions'&&req.method==='GET')return send(res,200,{sessions:engine.store.all<Conversation>('conversations').filter(c=>!engine.isInternalConversation(c)).reverse().map(summary)});
       if(path==='/api/sessions'&&req.method==='POST'){
         const data=await body(req);
         if(data.modelKey!==undefined&&typeof data.modelKey!=='string')throw new Error('Invalid model selection');
@@ -118,6 +118,7 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
           return streamConversationEvents(req,res,engine.store,c.id,after);
         }
         if(conversation[2]==='/messages'&&req.method==='POST'){
+          if(engine.isInternalConversation(c))return send(res,409,{error:'Internal agent conversation is read-only'});
           const data=await body(req);
           if(typeof data.message!=='string'||typeof data.requestId!=='string')throw new Error('message and requestId required');
           if(data.dependencies!==undefined && (!Array.isArray(data.dependencies)||data.dependencies.some(d=>typeof d!=='string')))throw new Error('Invalid dependencies');
@@ -131,7 +132,12 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         const task=engine.store.get<Task>('tasks',taskRoute[1]);if(!task)return send(res,404,{error:'Task not found'});
         if(req.method==='GET'&&!taskRoute[2])return send(res,200,{task});
         if(req.method==='POST'&&taskRoute[2]==='/cancel')return send(res,200,{task:await engine.cancel(task.id)});
-        if(req.method==='POST'&&taskRoute[2]==='/retry'){const data=await body(req);return send(res,202,{task:engine.retry(task.id,data.reconciled===true)});}
+        if(req.method==='POST'&&taskRoute[2]==='/retry'){
+          const data=await body(req);
+          const next=engine.retry(task.id,data.reconciled===true);
+          return send(res,202,{task:next,
+            ...(next.retryDetachedFromParentId?{notice:'Independent retry; original parent synthesis will not change.'}:{})});
+        }
       }
       const approval=path.match(/^\/api\/approvals\/([a-f0-9-]+)$/);
       if(approval&&req.method==='POST'){const data=await body(req);if(typeof data.approved!=='boolean')throw new Error('approved must be boolean');return send(res,200,{approval:engine.decide(approval[1],data.approved)});}

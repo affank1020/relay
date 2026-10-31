@@ -3,7 +3,7 @@ import type { Approval, ExecutionEvent, State, Task } from './store.js';
 type Request = (path:string,options?:RequestInit)=>Promise<Response>;
 type Counts = Partial<Record<State,number>>;
 type Page = {tasks:Task[];nextCursor:string|null;hasMore:boolean;counts:Counts};
-type Conversation = {id:string;title:string;modelKey?:string|null};
+type Conversation = {id:string;title:string;modelKey?:string|null;internal?:boolean};
 type Detail = {task:Task;conversation:Conversation|null;children:Task[];approvals:Array<Pick<Approval,'id'|'tool'|'state'> & {args:unknown}>};
 const states:State[]=['running','queued','awaiting_approval','waiting_children','failed','interrupted','completed','cancelled'];
 const actionable=new Set<State>(['running','queued','awaiting_approval','waiting_children']);
@@ -268,7 +268,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   function detailStructureVersion(data:Detail) {
     const task=data.task;
     return JSON.stringify([task.id,task.prompt,task.state,task.error,task.createdAt,
-      task.parentId,task.dependencies,task.attemptOf,task.agentId,task.agentRunId,task.joinTaskId,task.continuationOf,
+      task.parentId,task.dependencies,task.attemptOf,task.retryDetachedFromParentId,task.agentId,task.agentRunId,task.joinTaskId,task.continuationOf,
       data.conversation?.id,data.conversation?.modelKey,
       data.approvals,data.children.map(child=>[child.id,child.prompt,child.state])]);
   }
@@ -319,7 +319,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     if(task.agentRunId)meta.append(node('span','','Run '+task.agentRunId.slice(0,8)));
     detail.append(meta);
     const actions=node('div','task-actions','');
-    if(data.conversation)actions.append(button('Open conversation',()=>{void openConversation(task.conversationId).catch(error=>message(errorText(error)));}));
+    if(data.conversation&&!data.conversation.internal)actions.append(button('Open conversation',()=>{void openConversation(task.conversationId).catch(error=>message(errorText(error)));}));
     if(actionable.has(task.state)) {
       actions.append(button('Cancel task',()=>{
         if(!window.confirm('Cancel this task? A dispatched operation may not be reversible.'))return;
@@ -333,6 +333,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       }));
     }
     detail.append(actions);
+    if(task.retryDetachedFromParentId)detail.append(node('p','task-feedback',
+      'Independent retry. The original parent answer will not be updated by this run.'));
     if(task.error)detail.append(node('p','task-error',task.error));
     const resultHeading=node('h3','task-section-heading task-result-heading','Result');
     resultHeading.hidden=!task.result;
@@ -347,6 +349,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     relation('Dependencies',task.dependencies);
     relation('Child tasks',data.children.map(child=>child.id));
     relation('Previous attempt',task.attemptOf?[task.attemptOf]:[]);
+    relation('Original parent (not updated)',task.retryDetachedFromParentId?[task.retryDetachedFromParentId]:[]);
     relation('Synthesis',task.joinTaskId?[task.joinTaskId]:[]);
     relation('Continuation of',task.continuationOf?[task.continuationOf]:[]);
     if(data.approvals.length) {

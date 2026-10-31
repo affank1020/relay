@@ -3,7 +3,10 @@ import { randomUUID } from 'node:crypto';
 import type { AtlasContext } from './atlas-context.js';
 
 export type State = 'queued' | 'running' | 'awaiting_approval' | 'waiting_children' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
-export interface Conversation { id: string; title: string; createdAt: string; modelKey?: string; manualTitle?: boolean; atlasContext?: AtlasContext|null; }
+export interface Conversation { id: string; title: string; createdAt: string; modelKey?: string; manualTitle?: boolean; atlasContext?: AtlasContext|null;
+  /** Internal Pi child session; never a user chat. Direct task URLs still permit inspection. */
+  internalParentConversationId?: string;
+}
 export interface Usage { input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; costUsd: number | null; costKind: 'estimated' | 'measured' | 'unknown'; }
 export interface Task { id: string; conversationId: string; requestId: string; prompt: string; state: State; createdAt: string; parentId: string | null; dependencies: string[]; attemptOf: string | null; result: string; error: string | null; usage: Usage[]; atlasContext?: AtlasContext|null;
   /** Absent on legacy tasks, never fabricated during migration. */
@@ -12,6 +15,8 @@ export interface Task { id: string; conversationId: string; requestId: string; p
   kind?: 'agent' | 'join'; continuationOf?: string; joinTaskId?: string;
   /** Snapshot retained when a failed dependent task is retried in a new conversation. */
   retryDependencyResults?: import('./orchestration.js').DependencyReceipt[];
+  /** A reconciled child retry is an independent run, never a late parent handoff. */
+  retryDetachedFromParentId?: string;
 }
 export interface ExecutionEvent {
   schemaVersion: 1 | 2; id: string; sequence: number; timestamp: string; conversationId: string;
@@ -48,8 +53,8 @@ export class Store {
     // historical WAL frames below before reporting completed deletion.
     this.db.exec('PRAGMA foreign_keys=ON; PRAGMA locking_mode=EXCLUSIVE; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;');
     const version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-    if (version > 2) throw new Error('Database schema is newer than this Relay version');
-    // V1 -> V2 is additive. Migrate within one SQLite transaction; a failed
+    if (version > 3) throw new Error('Database schema is newer than this Relay version');
+    // V1 -> V3 is additive. Migrate within one SQLite transaction; a failed
     // upgrade leaves the existing conversations and version intact.
     this.db.exec(`BEGIN;
       CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -59,8 +64,10 @@ export class Store {
       CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS invocations(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS retired_usage(conversation_id TEXT PRIMARY KEY, cost_usd REAL NOT NULL, tokens INTEGER NOT NULL, unknown INTEGER NOT NULL, measured INTEGER NOT NULL, usage_count INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS retired_family_usage(conversation_id TEXT PRIMARY KEY, root_conversation_id TEXT NOT NULL, cost_usd REAL NOT NULL, tokens INTEGER NOT NULL, unknown INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS retired_family_root ON retired_family_usage(root_conversation_id);
       CREATE TABLE IF NOT EXISTS pending_session_deletions(conversation_id TEXT PRIMARY KEY);
-      PRAGMA user_version=2; COMMIT;`);
+      PRAGMA user_version=3; COMMIT;`);
   }
   transaction<T>(fn: () => T): T { this.db.exec('BEGIN IMMEDIATE'); try { const value=fn(); this.db.exec('COMMIT'); return value; } catch(e) { this.db.exec('ROLLBACK'); throw e; } }
   all<T>(table: 'conversations'|'tasks'|'approvals'): T[] { return this.db.prepare('SELECT data FROM '+table+' ORDER BY rowid').all().map(r=>JSON.parse(String(r.data)) as T); }
@@ -84,6 +91,11 @@ export class Store {
   retiredUsage(): RetiredUsage {
     const row=this.db.prepare('SELECT COALESCE(SUM(cost_usd),0) AS cost, COALESCE(SUM(tokens),0) AS tokens, COALESCE(MAX(unknown),0) AS unknown, COALESCE(MIN(measured),1) AS measured, COALESCE(SUM(usage_count),0) AS count FROM retired_usage').get() as {cost:number;tokens:number;unknown:number;measured:number;count:number};
     return {costUsd:row.cost,tokens:row.tokens,unknown:row.unknown!==0,measured:row.measured!==0,count:row.count};
+  }
+  retiredFamilyUsage(rootConversationId:string): Pick<RetiredUsage,'costUsd'|'tokens'|'unknown'> {
+    const row=this.db.prepare('SELECT COALESCE(SUM(cost_usd),0) AS cost, COALESCE(SUM(tokens),0) AS tokens, COALESCE(MAX(unknown),0) AS unknown FROM retired_family_usage WHERE root_conversation_id=?')
+      .get(rootConversationId) as {cost:number;tokens:number;unknown:number};
+    return {costUsd:row.cost,tokens:row.tokens,unknown:row.unknown!==0};
   }
   invocationStates(taskId:string): string[] {
     return this.db.prepare('SELECT data FROM invocations WHERE substr(id,1,?)=?').all(taskId.length+1,taskId+':')
@@ -110,7 +122,7 @@ export class Store {
   // Caller verifies execution states and cross-conversation references first.
   // This entire purge and budget retirement is one durable SQLite transaction;
   // no message, result, tool args or transcript is copied into the usage ledger.
-  purgeConversation(id:string,tasks:Task[]):void {
+  purgeConversation(id:string,tasks:Task[],rootConversationId:string=id):void {
     this.transaction(()=>{
       const usage=tasks.flatMap(t=>t.usage);
       const cost=usage.reduce((sum,u)=>sum+(u.costUsd??0),0);
@@ -118,6 +130,11 @@ export class Store {
       const unknown=usage.some(u=>u.costUsd===null||u.input===null||u.output===null)?1:0;
       const measured=usage.every(u=>u.costKind==='measured')?1:0;
       this.db.prepare('INSERT INTO retired_usage(conversation_id,cost_usd,tokens,unknown,measured,usage_count) VALUES(?,?,?,?,?,?)').run(id,cost,tokens,unknown,measured,usage.length);
+      // Deleted child spend remains charged to its originating session. The
+      // global retired ledger above still counts it exactly once globally.
+      if(rootConversationId!==id)this.db.prepare('INSERT INTO retired_family_usage(conversation_id,root_conversation_id,cost_usd,tokens,unknown) VALUES(?,?,?,?,?)')
+        .run(id,rootConversationId,cost,tokens,unknown);
+      else this.db.prepare('DELETE FROM retired_family_usage WHERE root_conversation_id=?').run(id);
       const deleteApproval=this.db.prepare('DELETE FROM approvals WHERE id=?');
       const ids=new Set(tasks.map(t=>t.id));
       for(const approval of this.all<Approval>('approvals'))if(ids.has(approval.taskId))deleteApproval.run(approval.id);

@@ -67,5 +67,6 @@ export function taskConsoleDetail(engine:Engine,id:string) {
     .map(({id,tool,state,args})=>({id,tool,state,args:safeArgs(args)}));
   const children=engine.store.db.prepare("SELECT data FROM tasks WHERE json_extract(data, '$.parentId')=? ORDER BY rowid DESC LIMIT 20")
     .all(id).map(row=>JSON.parse(String(row.data)) as Task);
-  return {task,conversation:conversation?{id:conversation.id,title:conversation.title,modelKey:conversation.modelKey??null}:null,approvals,children};
+  return {task,conversation:conversation?{id:conversation.id,title:conversation.title,modelKey:conversation.modelKey??null,
+    internal:engine.isInternalConversation(conversation)}:null,approvals,children};
 }

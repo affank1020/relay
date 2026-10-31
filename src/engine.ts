@@ -99,10 +99,13 @@ export class Engine {
       throw new ConversationConflictError('Conversation has pending approvals');
     if(owned.some(t=>this.store.invocationStates(t.id).some(state=>state!=='completed')))
       throw new ConversationConflictError('Conversation has uncertain tool invocations');
-    // Checks, ledger retirement, record purge and tombstone creation are all
-    // synchronous with no event-loop yield. No task can be scheduled between
-    // validation and the transaction.
-    this.store.purgeConversation(id,owned);
+    // Every task in a child conversation must belong to one originating
+    // session. Retire spend into that family's ledger before purging transcripts.
+    const roots=new Set(owned.map(task=>originatingConversation(task,byId)));
+    if(roots.size>1)throw new ConversationConflictError('Conversation has mixed task origins');
+    const family=roots.values().next().value??id;
+    // Validation, retirement and tombstone creation have no event-loop yield.
+    this.store.purgeConversation(id,owned,family);
     try {
       // A committed SQLite purge alone can leave old message bytes in the
       // live WAL. Verify TRUNCATE before acknowledging a full purge.
@@ -115,11 +118,21 @@ export class Engine {
       throw new SessionCleanupError('Conversation deleted; durable cleanup pending');
     }
   }
-  conversation(modelKey?:string) {
-    if(this.store.all('conversations').length>=1000)throw new Error('Conversation limit reached');
+  conversation(modelKey?:string,internalParentConversationId?:string) {
+    const conversations=this.store.all<Conversation>('conversations');
+    // Recognise pre-provenance child records when applying the user-chat cap.
+    const legacyChildIds=new Set(this.tasks().filter(t=>!!t.parentId).map(t=>t.conversationId));
+    const isInternal=(c:Conversation)=>!!c.internalParentConversationId||legacyChildIds.has(c.id);
+    // Internal sessions have an independent safety cap; user chats retain 1,000.
+    if(internalParentConversationId) {
+      if(conversations.filter(isInternal).length>=10000)
+        throw new Error('Internal conversation limit reached');
+    } else if(conversations.filter(c=>!isInternal(c)).length>=1000)
+      throw new Error('Conversation limit reached');
     if(modelKey!==undefined && (!this.modelRegistry || !this.modelRegistry.models.some(m=>m.key===modelKey)))throw new Error('Invalid model selection');
     const key=modelKey??this.modelRegistry?.defaultKey;
-    const c:Conversation={id:randomUUID(),title:'New conversation',createdAt:new Date().toISOString(),...(key?{modelKey:key}:{})}; this.store.save('conversations',c);return c;
+    const c:Conversation={id:randomUUID(),title:'New conversation',createdAt:new Date().toISOString(),
+      ...(key?{modelKey:key}:{}),...(internalParentConversationId?{internalParentConversationId}:{})}; this.store.save('conversations',c);return c;
   }
   async updateContext(conversationId:string,projectId:unknown,checkoutId:unknown):Promise<Conversation> {
     const initial=this.store.get<Conversation>('conversations',conversationId);
@@ -139,6 +152,11 @@ export class Engine {
     return current;
   }
   tasks(conversationId?:string) { return this.store.all<Task>('tasks').filter(t=>!conversationId||t.conversationId===conversationId); }
+  isInternalConversation(c:Conversation):boolean {
+    // Legacy children lacked provenance. Recover their internal status from
+    // durable task parent IDs rather than exposing them after an upgrade.
+    return !!c.internalParentConversationId || this.tasks(c.id).some(t=>!!t.parentId);
+  }
   usage(conversationId?:string) {
     const all=this.tasks(conversationId).flatMap(t=>t.usage);
     const retired=conversationId?null:this.store.retiredUsage();
@@ -155,8 +173,10 @@ export class Engine {
     // continuations share one session. Each record is counted exactly once.
     const family=all.filter(task=>originatingConversation(task,byId)===rootConversation);
     const usage=used(family.flatMap(task=>task.usage));
+    const retired=this.store.retiredFamilyUsage(rootConversation);
     const reserved=family.filter(task=>this.active.has(task.id)).length*this.limits.reserveUsd;
-    return {costUsd:usage.usd,tokens:usage.tokens,unknown:usage.unknown,reserved};
+    return {costUsd:usage.usd+retired.costUsd,tokens:usage.tokens+retired.tokens,
+      unknown:usage.unknown||retired.unknown,reserved};
   }
   private budget(conversationId:string,parentId:string|null=null,delegation?:DelegationSnapshot) {
     const family=this.familyUsage(conversationId,parentId),global=this.usage();
@@ -168,7 +188,7 @@ export class Engine {
       throw new Error('Inference budget exhausted or usage unavailable');
   }
   enqueue(conversationId:string,prompt:string,requestId:string,dependencies:string[]=[],parentId:string|null=null,
-    attemptOf:string|null=null,options:{delegation?:DelegationSnapshot;kind?:'agent'|'join';continuationOf?:string;agentId?:string;modelKey?:string;retryDependencyResults?:DependencyReceipt[]}={}) {
+    attemptOf:string|null=null,options:{delegation?:DelegationSnapshot;kind?:'agent'|'join';continuationOf?:string;agentId?:string;modelKey?:string;retryDependencyResults?:DependencyReceipt[];retryDetachedFromParentId?:string}={}) {
     if(typeof prompt!=='string'||!prompt.trim()||prompt.length>6000)throw new Error('Message length must be 1–6000');
     if(typeof requestId!=='string'||!requestId.match(/^[a-zA-Z0-9_-]{8,100}$/))throw new Error('A stable requestId is required');
     const c=this.store.get<Conversation>('conversations',conversationId);if(!c)throw new Error('Conversation not found');
@@ -195,7 +215,8 @@ export class Engine {
       ...(options.delegation?{delegation:options.delegation}:{}),
       ...(options.kind?{kind:options.kind}:{}),
       ...(options.continuationOf?{continuationOf:options.continuationOf}:{}),
-      ...(options.retryDependencyResults?.length?{retryDependencyResults:options.retryDependencyResults}: {})};
+      ...(options.retryDependencyResults?.length?{retryDependencyResults:options.retryDependencyResults}: {}),
+      ...(options.retryDetachedFromParentId?{retryDetachedFromParentId:options.retryDetachedFromParentId}:{})};
     this.store.transaction(()=>{
       this.store.save('tasks',task);
       if(!c.manualTitle && c.title==='New conversation') { c.title=prompt.slice(0,55);this.store.save('conversations',c); }
@@ -305,7 +326,9 @@ export class Engine {
         catch { controller.signal.throwIfAborted();atlasAvailable=false;tools=[]; }
       }
       const admitted=tools.filter(tool=>READ_TOOLS.has(tool.name.replace(/^atlas_/,''))).map(tool=>tool.name);
-      if(task.parentId) {
+      if(task.parentId || task.delegation) {
+        // Detached child retries are still children of the *capability*
+        // policy even though they no longer join their previous parent.
         const allowed=new Set(task.delegation?.toolNames??[]);
         tools=tools.filter(tool=>allowed.has(tool.name)&&admitted.includes(tool.name));
       }
@@ -343,7 +366,7 @@ export class Engine {
           const policy=delegationPolicy(args,admitted,inheritedModel,
             this.modelRegistry?.models.map(m=>m.key)??null,task.delegation);
           this.budget(task.conversationId,task.id,policy);
-          const conversation=this.conversation(policy.modelKey??undefined);
+          const conversation=this.conversation(policy.modelKey??undefined,task.conversationId);
           // Only the enqueue-time Atlas context is copied. There is no
           // inherited transcript, prior private chat or arbitrary MCP credential.
           conversation.atlasContext=task.atlasContext??null;
@@ -454,8 +477,12 @@ export class Engine {
     conversation.atlasContext=old.atlasContext??null;
     this.store.save('conversations',conversation);
     try {
-      return this.enqueue(conversation.id,old.prompt,randomUUID(),[],old.parentId,old.id,
-        {agentId:old.agentId,modelKey:old.modelKey,delegation:old.delegation,retryDependencyResults:snapshots});
+      // Explicit reconciliation starts an independent root attempt. Never
+      // reattach it to the original parent: its join may already be running
+      // or terminal, and a late child would invalidate the frozen handoff.
+      return this.enqueue(conversation.id,old.prompt,randomUUID(),[],null,old.id,
+        {agentId:old.agentId,modelKey:old.modelKey,delegation:old.delegation,
+          retryDependencyResults:snapshots,retryDetachedFromParentId:old.parentId??undefined});
     } catch(error) {
       // A failed retry admission must not leave an empty conversation.
       this.store.db.prepare('DELETE FROM conversations WHERE id=?').run(conversation.id);
