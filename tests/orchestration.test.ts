@@ -612,7 +612,7 @@ test('nested delegated token ceiling includes both sibling children and blocks s
       await delegate(request,'coordinator',{maxTokens:12,profile:'researcher'});
       return 'Delegated coordinator';
     }
-    if(task.prompt==='coordinator'){
+    if(task.prompt.startsWith('coordinator')){
       await delegate(request,'worker A',{maxTokens:12});
       await delegate(request,'worker B',{maxTokens:12});
       return 'Delegated both workers';
