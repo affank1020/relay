@@ -96,3 +96,21 @@ validated instructions of each enabled Skill are included in the trusted
 agent prompt, while the Pi resource loader still verifies the Skill metadata.
 The `loaded` event means instructions were made available, **not** that a
 particular Skill was used or that any underlying action succeeded.
+
+## Read-only MCP failure and deletion semantics
+
+A remote MCP `isError` response or an oversized response means the request
+returned; the invocation is recorded as a known `failed_read`. A connection
+loss or timeout after dispatch is `uncertain` and Relay does not retry the
+request automatically. Transport failures close and invalidate the connection
+so **the next** discovery can establish a new MCP session.
+
+A conversation can be deleted after known read failures. If the only remaining
+blockers are uncertain MCP reads, the delete dialog presents an explicit
+acknowledgement; the authenticated POST
+`/api/sessions/:id/reconcile-mcp-reads` with `{"confirmed":true}` retires
+those read-only invocation ledger entries, preserving an audit event, after
+which the user can delete the conversation. The endpoint rejects running,
+interrupted or unknown operations and never reconciles Atlas tool actions or
+unclassified invocation records. This acknowledges uncertain *read receipts*,
+not successful execution, and it does not silently reissue a tool call.

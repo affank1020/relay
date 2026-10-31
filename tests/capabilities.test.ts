@@ -147,6 +147,13 @@ test('capability settings API is authenticated, validated and durable',async()=>
     assert.equal(changed.status,200);
     assert.equal((await (await fetch(url,{headers})).json() as {skills:Array<{enabled:boolean}>}).skills[0].enabled,true);
     assert.ok((await readFile(join(root,'capabilities.json'),'utf8')).includes('"prepare-pr":true'));
+    const session=engine.conversation();
+    const reconcileUrl='http://127.0.0.1:'+address.port+'/api/sessions/'+session.id+'/reconcile-mcp-reads';
+    assert.equal((await fetch(reconcileUrl,{method:'POST',body:JSON.stringify({confirmed:true})})).status,401);
+    assert.equal((await fetch(reconcileUrl,{method:'POST',headers,body:JSON.stringify({confirmed:false})})).status,400);
+    const confirmed=await fetch(reconcileUrl,{method:'POST',headers,body:JSON.stringify({confirmed:true})});
+    assert.equal(confirmed.status,200);
+    assert.deepEqual(await confirmed.json(),{reconciled:0});
   }finally{
     await new Promise<void>(resolve=>server.close(()=>resolve()));
     await engine.stop();store.close();await registry.close();
