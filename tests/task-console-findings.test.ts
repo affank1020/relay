@@ -646,3 +646,150 @@ test('interleaved manual pagination and new arrivals never rewind deep-history p
     globalThis.clearTimeout=originalClear;
   }
 });
+
+
+test('pagination becomes available when an initially exhaustive 50-task page grows to 51 and 52',async()=>{
+  const make=(id:number)=>({
+    ...task(String(id).padStart(8,'0')+'-7777-7777-7777-777777777777',A,'queued'),
+    rowid:id,prompt:'Boundary '+id,
+    createdAt:new Date(Date.parse(when)+id*1000).toISOString()
+  });
+  const items=Array.from({length:50},(_,index)=>make(index+1));
+  let scheduled:(()=>void)|undefined;
+  const original=globalThis.setTimeout,originalClear=globalThis.clearTimeout;
+  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
+  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
+  try {
+    await fixture(async(get,_ui,calls)=>{
+      assert.equal(get('taskRows').children.length,50);
+      assert.equal(get('taskMore').hidden,true);
+      items.push(make(51));
+      assert.ok(scheduled);scheduled();await flush();
+      assert.equal(get('taskRows').children.length,50);
+      assert.equal(get('taskMore').hidden,false,'51st item must enable pagination');
+      items.push(make(52));
+      assert.ok(scheduled);scheduled();await flush();
+      get('taskMore').onclick?.();await flush();
+      const titles=get('taskRows').children.map(row=>row.children[0]?.textContent);
+      assert.equal(titles.length,52);
+      assert.equal(new Set(titles).size,52);
+      for(let id=1;id<=52;id++)assert.ok(titles.includes('Boundary '+id),'missing item '+id);
+      assert.equal(get('taskMore').hidden,true);
+      const olderCursors=calls.filter(url=>url.includes('cursor=')).map(url=>Number(new URL(url,'http://relay.local').searchParams.get('cursor')));
+      assert.deepEqual(olderCursors,[3],'the first deep cursor begins below the newest 50');
+    },async url=>{
+      if(url==='/sessions')return response({sessions:[sessions[0]]});
+      if(url.startsWith('/task-console/tasks?')){
+        const search=new URL(url,'http://relay.local').searchParams;
+        const eligible=items.filter(item=>!search.get('cursor')||item.rowid<Number(search.get('cursor')))
+          .sort((a,b)=>b.rowid-a.rowid);
+        const page=eligible.slice(0,50);
+        return response({tasks:page,counts:{queued:items.length},hasMore:eligible.length>50,
+          nextCursor:eligible.length>50?String(page.at(-1)?.rowid):null});
+      }
+      throw Error('Unexpected request '+url);
+    });
+  } finally {globalThis.setTimeout=original;globalThis.clearTimeout=originalClear;}
+});
+
+test('an older previously running task becomes reachable when the completed filter is fully paginated',async()=>{
+  const make=(id:number,state:'completed'|'running')=>({
+    ...task(String(id).padStart(8,'0')+'-8888-8888-8888-888888888888',A,state),
+    rowid:id,prompt:'Membership '+id,
+    createdAt:new Date(Date.parse(when)+id*1000).toISOString()
+  });
+  const items=[make(1,'running'),...Array.from({length:60},(_,i)=>make(i+2,'completed'))];
+  let scheduled:(()=>void)|undefined;
+  const original=globalThis.setTimeout,originalClear=globalThis.clearTimeout;
+  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
+  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
+  try {
+    await fixture(async(get,_ui,calls)=>{
+      const completed=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Completed');
+      assert.ok(completed);completed.onclick?.();await flush();
+      assert.equal(get('taskRows').children.length,50);
+      get('taskMore').onclick?.();await flush();
+      assert.equal(get('taskRows').children.length,60);
+      assert.equal(get('taskMore').hidden,true);
+      items[0].state='completed';
+      assert.ok(scheduled);scheduled();await flush();
+      assert.equal(get('taskMore').hidden,false,'a newly eligible older task reopens deliberate pagination');
+      let attempts=0;
+      while(!get('taskMore').hidden&&attempts++<5) {
+        get('taskMore').onclick?.();await flush();
+      }
+      assert.equal(get('taskRows').children.length,61);
+      assert.equal(get('taskMore').hidden,true);
+      const displayed=get('taskRows').children.map(row=>row.children[0]?.textContent);
+      assert.ok(displayed.includes('Membership 1'),'older task that just finished is inspectable');
+      assert.equal(new Set(displayed).size,61);
+      assert.ok(calls.filter(url=>url.includes('cursor=')).length>=2,'rescan is explicit and server-backed');
+      assert.ok(scheduled);scheduled();await flush();
+      assert.equal(get('taskMore').hidden,true,'matching counts now reconcile');
+    },async url=>{
+      if(url==='/sessions')return response({sessions:[sessions[0]]});
+      if(url.startsWith('/task-console/task-states?')){
+        const ids=new URL(url,'http://relay.local').searchParams.get('ids')?.split(',')??[];
+        return response({states:Object.fromEntries(items.filter(item=>ids.includes(item.id))
+          .map(item=>[item.id,{state:item.state,conversationId:item.conversationId}]))});
+      }
+      if(url.startsWith('/task-console/tasks?')){
+        const search=new URL(url,'http://relay.local').searchParams;
+        const eligible=items.filter(item=>(!search.get('state')||item.state===search.get('state'))&&
+          (!search.get('cursor')||item.rowid<Number(search.get('cursor'))))
+          .sort((a,b)=>b.rowid-a.rowid);
+        const page=eligible.slice(0,50);
+        return response({tasks:page,counts:{
+          completed:items.filter(item=>item.state==='completed').length,
+          running:items.filter(item=>item.state==='running').length
+        },hasMore:eligible.length>50,nextCursor:eligible.length>50?String(page.at(-1)?.rowid):null});
+      }
+      throw Error('Unexpected request '+url);
+    });
+  } finally {globalThis.setTimeout=original;globalThis.clearTimeout=originalClear;}
+});
+
+test('following an out-of-filter parent keeps its detail open across polling',async()=>{
+  const parent={...task(one,B,'completed','Completed parent result'),prompt:'Parent detail'};
+  const child={...task(two,A,'running'),parentId:one,prompt:'Active child'};
+  const changes:string[]=[];
+  let scheduled:(()=>void)|undefined;
+  const original=globalThis.setTimeout,originalClear=globalThis.clearTimeout;
+  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
+  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
+  try {
+    await fixture(async(get,_ui,calls)=>{
+      const running=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Running');
+      assert.ok(running);running.onclick?.();await flush();
+      const conversation=get('taskConversationFilter');
+      conversation.value=A;conversation.onchange?.();await flush();
+      assert.equal(get('taskRows').children.length,1);
+      get('taskRows').children[0].onclick?.();await flush();
+      const link=get('taskDetail').querySelector('.task-relation-link');
+      assert.ok(link);link.onclick?.();await flush();
+      const heading=get('taskDetail').querySelector('.task-detail-head');
+      assert.equal(heading?.children[0]?.textContent,'Parent detail');
+      assert.ok(scheduled);scheduled();await flush();
+      assert.equal(get('taskDetail').querySelector('.task-detail-head')?.children[0]?.textContent,'Parent detail',
+        'following a relation is deliberate navigation outside active filters');
+      assert.ok(get('taskDetail').querySelector('.task-result')?.textContent.includes('Completed parent'));
+      assert.ok(!get('taskDetail').children[0]?.textContent.includes('Select a task'));
+      assert.ok(calls.filter(path=>path==='/task-console/tasks/'+one).length>=2,
+        'out-of-filter related task continues receiving detail refreshes');
+      assert.equal(changes.length,0);
+    },async(url,options)=>{
+      if(options?.method==='POST'){changes.push(url);return response({});}
+      if(url==='/sessions')return response({sessions});
+      if(url.startsWith('/task-console/tasks?')){
+        const search=new URL(url,'http://relay.local').searchParams;
+        const filtered=[child,parent].filter(t=>(!search.get('state')||t.state===search.get('state'))&&
+          (!search.get('conversationId')||t.conversationId===search.get('conversationId')));
+        return response({tasks:filtered,counts:{running:1,completed:1},nextCursor:null,hasMore:false});
+      }
+      if(url==='/task-console/tasks/'+one)return response({task:parent,conversation:sessions[1],children:[],approvals:[]});
+      if(url==='/task-console/tasks/'+two)return response({task:child,conversation:sessions[0],children:[],approvals:[]});
+      if(url.includes('/events?'))return response({events:[],nextCursor:0,hasMore:false});
+      throw Error('Unexpected request '+url);
+    });
+  } finally {globalThis.setTimeout=original;globalThis.clearTimeout=originalClear;}
+});
