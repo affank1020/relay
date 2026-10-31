@@ -13,7 +13,7 @@ export function loadRelayModels(env:Record<string,string|undefined>):RelayModels
   if(!rawUrl||!requested)throw new Error('RELAY_OLLAMA_URL and RELAY_OLLAMA_MODELS must be configured together');
   let url:URL;
   try { url=new URL(rawUrl); } catch { throw new Error('Invalid Ollama URL'); }
-  const tailnet=url.protocol==='https:'&&url.hostname.endsWith('.ts.net')&&!url.port;
+  const tailnet=url.protocol==='https:'&&url.hostname.endsWith('.ts.net')&&(!url.port||['8443','10000'].includes(url.port));
   const loopback=url.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(url.hostname);
   if((!tailnet&&!loopback)||url.username||url.password||url.search||url.hash||!['/v1','/v1/'].includes(url.pathname))
     throw new Error('Ollama URL must use private Tailscale HTTPS or localhost HTTP with /v1');
