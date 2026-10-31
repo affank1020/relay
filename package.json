@@ -10,7 +10,8 @@
     "build": "bash scripts/build.sh",
     "test": "npm run build && node --import tsx --test --test-timeout=65000 tests/*.test.ts",
     "typecheck": "npm run check",
-    "verify": "npm run check && npm test"
+    "verify": "npm run check && npm test",
+    "atlas:smoke": "node --import tsx scripts/atlas-smoke.ts"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",

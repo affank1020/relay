@@ -7,6 +7,7 @@ import { projectAtlasCheckouts } from './atlas-awareness.js';
 import { renderAtlasCheckoutViews } from './atlas-awareness-ui.js';
 import { projectAtlasDetails } from './atlas-awareness-details.js';
 import { renderAtlasDetailViews } from './atlas-awareness-details-ui.js';
+import { parseAtlasWebOrigin } from './atlas-navigation.js';
 import { readLiveChatEvents } from './live-chat.js';
 interface Summary { id:string; title:string; modelKey?:string; atlasContext?:AtlasContext|null; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
 interface Snapshot { session:Summary; tasks:Task[]; approvals:Approval[]; }
@@ -64,6 +65,7 @@ function indexAtlasObservation(event:ExecutionEvent){
   if(atlasObservations.size>3000)atlasObservations.delete(atlasObservations.keys().next().value!);
 }
 let configuredModels:{key:string;label:string}[]=[];
+let atlasWebOrigin:string|undefined;
 let knownSessions:Summary[]=[];
 let sendRecoveryNotice='';
 function clearPendingForDeletedConversation(id:string){
@@ -213,8 +215,9 @@ function emptyConversation(){
 }
 
 async function refresh(){
-  const [state,list]=await Promise.all([get<{provider:string;model:string;atlas:string;ollamaOnline?:boolean;defaultModelKey?:string;models?:{key:string;label:string}[]}>('/status'),get<{sessions:Summary[]}>('/sessions')]);
+  const [state,list]=await Promise.all([get<{provider:string;model:string;atlas:string;ollamaOnline?:boolean;defaultModelKey?:string;atlasWebOrigin?:string;models?:{key:string;label:string}[]}>('/status'),get<{sessions:Summary[]}>('/sessions')]);
   configuredModels=state.models??[];
+  atlasWebOrigin=parseAtlasWebOrigin(state.atlasWebOrigin);
   if(configuredModels.length){
     const picker=$<HTMLSelectElement>('modelPicker'),previous=picker.value;
     picker.replaceChildren();
@@ -309,8 +312,8 @@ function render(data:Snapshot){
             ?'historical':'recent';
         }).join(',');
       if(row.awarenessKey!==awarenessKey){
-        renderAtlasCheckoutViews(row.awareness,matching);
-        renderAtlasDetailViews(row.awareness,details);
+        renderAtlasCheckoutViews(row.awareness,matching,atlasWebOrigin);
+        renderAtlasDetailViews(row.awareness,details,atlasWebOrigin);
         row.awarenessKey=awarenessKey;
       }
       const terminal=['completed','failed','interrupted','cancelled'].includes(task.state);
