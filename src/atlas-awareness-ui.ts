@@ -1,4 +1,5 @@
 import type { AtlasCheckoutView } from './atlas-awareness.js';
+import { atlasCheckoutLink, atlasNodeLink, type AtlasNavigationLink } from './atlas-navigation.js';
 
 function element(tag:string,className:string,text?:string):HTMLElement {
   const node=document.createElement(tag);
@@ -23,8 +24,15 @@ export function gitChangeLabel(view:Pick<AtlasCheckoutView,'dirty'|'changedFiles
   return view.changedFiles+(view.changedFilesTruncated?'+':'')+' changed '+(view.changedFiles===1&&!view.changedFilesTruncated?'file':'files');
 }
 
+function appendLink(parent:HTMLElement,value:AtlasNavigationLink|undefined):void {
+  if(!value)return;
+  const a=document.createElement('a');
+  a.className='atlas-observed-link';a.href=value.href;a.target='_blank';
+  a.rel='noopener noreferrer';a.textContent=value.label;
+  parent.append(a);
+}
 /** Context is optional, read-only and scoped to the observed task. */
-export function renderAtlasCheckoutViews(parent:HTMLElement,views:AtlasCheckoutView[]):void {
+export function renderAtlasCheckoutViews(parent:HTMLElement,views:AtlasCheckoutView[],atlasWebOrigin?:string):void {
   parent.replaceChildren();
   for(const view of views){
     const card=element('details','atlas-observed');
@@ -62,6 +70,8 @@ export function renderAtlasCheckoutViews(parent:HTMLElement,views:AtlasCheckoutV
         (view.nodeStatus?' · '+view.nodeStatus+' at '+time(view.nodeObservedAt):' · state unknown')));
     }
     if(view.rootPath)body.append(element('div','atlas-observed-path',view.rootPath));
+    appendLink(body,atlasCheckoutLink(atlasWebOrigin,view));
+    appendLink(body,atlasNodeLink(atlasWebOrigin,view.nodeId));
     if(view.worktrees?.length){
       const list=element('div','atlas-observed-worktrees');
       for(const tree of view.worktrees){

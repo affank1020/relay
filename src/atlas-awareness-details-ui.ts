@@ -1,5 +1,6 @@
 import type { AtlasDetail, AtlasDetailView, SeverityCounts } from './atlas-awareness-details.js';
 import { reviewPullRequestUrl } from './atlas-awareness-details.js';
+import { atlasDetailLink } from './atlas-navigation.js';
 
 const node=(tag:string,klass:string,text?:string):HTMLElement=>{
   const element=document.createElement(tag);
@@ -62,7 +63,7 @@ export function atlasDetailSummary(detail:AtlasDetail,nowMs=Date.now()):{title:s
  * Append-only relative to checkout cards; caller remounts only when receipt
  * state changes. Browser links are constructed from validated PR references.
  */
-export function renderAtlasDetailViews(parent:HTMLElement,views:AtlasDetailView[]):void {
+export function renderAtlasDetailViews(parent:HTMLElement,views:AtlasDetailView[],atlasWebOrigin?:string):void {
   for(const view of views){
     const summary=atlasDetailSummary(view.detail);
     const card=node('details','atlas-observed');
@@ -73,6 +74,14 @@ export function renderAtlasDetailViews(parent:HTMLElement,views:AtlasDetailView[
     const body=node('div','atlas-observed-body');
     for(const line of summary.rows)body.append(node('div','atlas-observed-muted',line));
     body.append(node('div','atlas-observed-muted','Atlas read-only · '+time(view.observedAt)));
+    const atlas=atlasDetailLink(atlasWebOrigin,view.detail);
+    if(atlas){
+      const anchor=document.createElement('a');
+      anchor.href=atlas.href;
+      anchor.target='_blank';anchor.rel='noopener noreferrer';
+      anchor.className='atlas-observed-link';anchor.textContent=atlas.label;
+      body.append(anchor);
+    }
     const url=reviewPullRequestUrl(view.detail);
     if(url){
       const anchor=document.createElement('a');
