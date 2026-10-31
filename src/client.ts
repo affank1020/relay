@@ -121,6 +121,8 @@ function openDelete(id:string){
   closeSessionMenu();dialogTarget=id;
   $('deleteName').textContent=session.title;
   $('deleteError').textContent='';
+  $('deleteReadReconcileRow').hidden=true;
+  $<HTMLInputElement>('deleteReadReconcile').checked=false;
   $<HTMLDialogElement>('deleteDialog').showModal();
   $<HTMLButtonElement>('deleteCancel').focus();
 }
@@ -631,6 +633,9 @@ $<HTMLFormElement>('deleteForm').onsubmit=event=>{
   const confirm=$<HTMLButtonElement>('deleteConfirm');confirm.disabled=true;
   void (async()=>{
     try{
+      if($<HTMLInputElement>('deleteReadReconcile').checked){
+        await api('/sessions/'+id+'/reconcile-mcp-reads',{method:'POST',body:JSON.stringify({confirmed:true})});
+      }
       await api('/sessions/'+id,{method:'DELETE'});
       $<HTMLDialogElement>('deleteDialog').close();
       if(pending?.conversationId===id){pending=null;remember('relay.pending','');}
@@ -642,7 +647,13 @@ $<HTMLFormElement>('deleteForm').onsubmit=event=>{
         if(sessions.length)await select(sessions[0].id);
         else resetSelection();
       }
-    }catch(e){$('deleteError').textContent=text(e);}
+    }catch(e){
+      const reason=text(e);
+      if(reason==='Conversation has uncertain read-only MCP invocations'){
+        $('deleteReadReconcileRow').hidden=false;
+        $('deleteError').textContent='Some read-only MCP requests may have completed without a receipt. Acknowledge them and try again to delete.';
+      }else $('deleteError').textContent=reason;
+    }
     finally{confirm.disabled=false;}
   })();
 };
@@ -670,3 +681,58 @@ $('toggleInspector').onclick=()=>{const panel=$('inspector');panel.hidden=!panel
 // Refresh optional Ollama availability without changing conversations.
 window.setInterval?.(()=>{if(document.visibilityState!=='hidden')void refresh().catch(()=>{});},60_000);
 void bootstrap();
+
+type CapabilitySnapshot={
+  skills:Array<{id:string;name:string;description:string;version:string;revision:string|null;installed:boolean;enabled:boolean;loadFailure:string|null}>;
+  integrations:Array<{id:string;label:string;enabled:boolean;configured:boolean;state:string;availableTools:string[]}>;
+};
+async function drawCapabilities(snapshot:CapabilitySnapshot){
+  const parent=$('capabilitiesContent');
+  parent.replaceChildren();
+  for(const [title,kind,items] of [
+    ['Skills','skills',snapshot.skills],
+    ['Integrations','integrations',snapshot.integrations]
+  ] as const){
+    const group=el('section','capabilities-group','');
+    group.append(el('h3','',title));
+    for(const item of items){
+      const row=el('div','capability-row','');
+      const label=document.createElement('label');
+      const check=document.createElement('input');
+      check.type='checkbox';check.checked=item.enabled;
+      const isSkill='name' in item;
+      const available=isSkill?item.installed:item.configured;
+      check.disabled=!available;check.setAttribute('aria-label','Enable '+(isSkill?item.name:item.label));
+      const description=isSkill?item.description:(item.availableTools.length?item.availableTools.length+' approved read tools':'Read-only MCP');
+      const info=el('span','','');
+      info.append(el('span','capability-name',isSkill?item.name:item.label),
+        el('div','capability-description',description));
+      label.append(check,info);
+      const state=isSkill?(item.loadFailure??'v'+item.version):item.state;
+      row.append(label,el('span','capability-state',state));
+      check.onchange=()=>{
+        check.disabled=true;
+        void (async()=>{
+          try{
+            const response=await api('/capabilities/'+kind+'/'+item.id,{method:'PATCH',body:JSON.stringify({enabled:check.checked})});
+            $('capabilitiesError').textContent='';
+            await drawCapabilities(await response.json() as CapabilitySnapshot);
+          }catch(e){
+            $('capabilitiesError').textContent=text(e);
+            check.checked=!check.checked;check.disabled=false;
+          }
+        })();
+      };
+      group.append(row);
+    }
+    parent.append(group);
+  }
+}
+$<HTMLButtonElement>('openCapabilities').onclick=()=>{
+  $<HTMLDialogElement>('capabilitiesDialog').showModal();
+  $('capabilitiesContent').textContent='Loading…';
+  $('capabilitiesError').textContent='';
+  void get<CapabilitySnapshot>('/capabilities').then(drawCapabilities).catch(e=>{$('capabilitiesError').textContent=text(e);});
+  closeSidebar();
+};
+$<HTMLButtonElement>('closeCapabilities').onclick=()=>$<HTMLDialogElement>('capabilitiesDialog').close();
