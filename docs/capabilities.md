@@ -26,8 +26,10 @@ Admitted Skill text is charged by UTF-8 bytes, not an optimistic average
 tokens-per-character estimate. Oversized Skills are skipped (not truncated)
 for that inference, and the activity stream records `skill/skipped_context`
 with the Skill name; skipped Skills are never advertised as loaded. Users
-can disable Skills or select a model with a larger window. A skipped Skill
-remains installed and enabled for future runs that have sufficient context.
+can disable Skills or select a model with a larger window. There is no fixed
+16 KiB instruction ceiling: a reviewed 20–32 KiB Skill can be admitted by a
+sufficiently large-context model. A skipped Skill remains installed and
+enabled for future runs that have sufficient context.
 The limit cannot prevent otherwise normal chats from continuing.
 
 A task loads its current authorised Skill set when it begins. Child tasks

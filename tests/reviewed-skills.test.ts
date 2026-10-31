@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { CapabilityRegistry } from '../src/capabilities.js';
 import { fetchPinnedGitSkill, validSource } from '../src/skills/git.js';
 import { PiHarness, skillInstructionBudget } from '../src/harness.js';
+import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Store, type Task } from '../src/store.js';
 import { Engine } from '../src/engine.js';
 import { createPlatform } from '../src/platform.js';
@@ -196,6 +197,8 @@ test('aggregate Skill context admission is model-bounded, skips excess instructi
     await registry.update('skills','prepare-pr',true);
     assert.equal(skillInstructionBudget(8192,4096),1024);
     assert.equal(skillInstructionBudget(32768,4096),8192);
+    assert.equal(skillInstructionBudget(131072,8192),32768);
+    assert.equal(skillInstructionBudget(200000,8192),50000);
     assert.equal(skillInstructionBudget(8192,8192),0);
     assert.equal(skillInstructionBudget(NaN,4096),0);
     const small=await registry.skills.snapshot(skillInstructionBudget(8192,4096));
@@ -206,16 +209,27 @@ test('aggregate Skill context admission is model-bounded, skips excess instructi
     const none=await registry.skills.snapshot(0);
     assert.deepEqual(none.paths,[]);
     assert.deepEqual(none.skipped,['prepare-pr','large-fixture']);
-    const expanded=await registry.skills.snapshot(16_384);
-    assert.deepEqual(expanded.skipped,['large-fixture']);
-    // The full file is still persisted and reviewed; skipping is only for
-    // this inference, so other larger-context models may admit it.
+    const expanded=await registry.skills.snapshot(skillInstructionBudget(131072,8192));
+    assert.deepEqual(expanded.paths.map(p=>p.name),['prepare-pr','large-fixture']);
+    assert.deepEqual(expanded.skipped,[]);
+    assert.match(expanded.instructions,/A{100}/);
+    assert.ok(Buffer.byteLength(expanded.instructions,'utf8')<=32768);
+    // A full 32 KiB package can also be admitted on a sufficiently large
+    // model; packages accepted at install should not be permanently unusable.
+    const wide=await registry.skills.snapshot(skillInstructionBudget(200000,8192));
+    assert.deepEqual(wide.skipped,[]);
+    assert.deepEqual(wide.paths.map(p=>p.name),['prepare-pr','large-fixture']);
+    // The full file is persisted and reviewed; skipping is only per inference.
     assert.equal((await registry.list()).skills.find(s=>s.name==='large-fixture')?.enabled,true);
     // Real Pi resource load must agree with the budgeted snapshot and report
     // omitted Skills instead of silently including them in the system prompt.
     const controller=new AbortController();
     const reported:string[]=[];
     let loaded:string[]=[];
+    const runtime=await ModelRuntime.create({allowModelNetwork:false,modelRefreshTimeoutMs:1000});
+    const selected=runtime.getModel('openrouter','cohere/north-mini-code:free');
+    assert.ok(selected,'The real Pi test model must exist in its catalog');
+    const expected=await registry.skills.snapshot(skillInstructionBudget(selected.contextWindow,selected.maxTokens));
     await assert.rejects(new PiHarness(root,'cohere/north-mini-code:free',undefined,registry).run({
       version:1,task:{id:randomUUID(),conversationId:randomUUID(),prompt:'offline',
         state:'running',createdAt:new Date().toISOString()} as Task,
@@ -223,7 +237,7 @@ test('aggregate Skill context admission is model-bounded, skips excess instructi
       onSkippedSkills:names=>reported.push(...names),
       onSkills:names=>{loaded=names;controller.abort(new Error('budgeted-skill-load-verified'));}
     }),/budgeted-skill-load-verified/);
-    assert.deepEqual(loaded,['prepare-pr']);
-    assert.deepEqual(reported,['large-fixture']);
+    assert.deepEqual(loaded,expected.paths.map(path=>path.name));
+    assert.deepEqual(reported,expected.skipped);
   }finally {await registry.close();await rm(root,{recursive:true,force:true});}
 });

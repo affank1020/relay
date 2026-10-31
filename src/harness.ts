@@ -21,7 +21,7 @@ const count=(n:unknown)=>typeof n==='number' && Number.isFinite(n) && n>=0?n:nul
 export function skillInstructionBudget(contextWindow:number,maxOutputTokens:number):number {
   if(!Number.isFinite(contextWindow)||!Number.isFinite(maxOutputTokens)||
     contextWindow<=0||maxOutputTokens<0)return 0;
-  return Math.max(0,Math.floor(Math.min(16_384,contextWindow/4,
+  return Math.max(0,Math.floor(Math.min(contextWindow/4,
     (contextWindow-maxOutputTokens-2048)/2)));
 }
 export const isPiRateLimited=(detail:unknown):boolean=>typeof detail==='string' && /\b429\b|\brate[\s_-]?limit(?:ed|ing)?\b/i.test(detail);

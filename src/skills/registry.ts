@@ -62,14 +62,16 @@ export class TrustedSkills {
   // One coherent, validated resource snapshot per Pi inference. A concurrent
   // disable/remove cannot make metadata and instructions come from different
   // admission decisions. Running tasks may finish with an earlier snapshot.
-  async snapshot(maxInstructionBytes=16_384):Promise<{
+  async snapshot(maxInstructionBytes=384*1024):Promise<{
     paths:Array<{name:string;path:string}>;instructions:string;skipped:string[];
   }> {
     // UTF-8 byte length is a conservative upper bound for text token usage:
     // never assume a 4-bytes-per-token average for arbitrary Skill content.
-    // The selected model's context reservation is supplied by PiHarness.
+    // PiHarness supplies the selected model's context reservation. The upper
+    // limit here is only a defense-in-depth bound above the combined maximum
+    // for eight 32KiB Git Skills plus bundled Skills, not a per-model ceiling.
     const budget=Number.isFinite(maxInstructionBytes)?
-      Math.max(0,Math.min(16_384,Math.floor(maxInstructionBytes))):0;
+      Math.max(0,Math.min(384*1024,Math.floor(maxInstructionBytes))):0;
     const permitted=this.entries().filter(skill=>this.enabled(skill.id));
     const paths:Array<{name:string;path:string}>=[];
     const parts:string[]=[];
