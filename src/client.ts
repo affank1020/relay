@@ -9,7 +9,6 @@ let pending:{conversationId:string;message:string;requestId:string}|null=null;
 const activity:ExecutionEvent[]=[];
 let configuredModels:{key:string;label:string}[]=[];
 let knownSessions:Summary[]=[];
-let activeSnapshot:Snapshot|undefined;
 const text=(e:unknown)=>e instanceof Error?e.message:String(e);
 function el(tag:string,className:string,value:string){const n=document.createElement(tag);n.className=className;n.textContent=value;return n;}
 function remember(key:string,value:string){try{window.sessionStorage?.setItem(key,value);}catch{}}
@@ -102,7 +101,6 @@ async function refresh(){
   return list.sessions;
 }
 function render(data:Snapshot){
-  activeSnapshot=data;
   const serialized=JSON.stringify({tasks:data.tasks,tools:currentToolEvents().map(e=>[e.id,e.state,e.sequence])});
   if(serialized!==lastView){
     const messages=$('messages');const nearBottom=messages.scrollHeight-messages.scrollTop-messages.clientHeight<120;
@@ -243,6 +241,8 @@ $('settings').onclick=()=>{if(hosted){void bootstrap();return;}token='';$<HTMLDi
 $('new').onclick=()=>{void create().then(closeSidebar).catch(notify);};
 $<HTMLInputElement>('sessionSearch').oninput=renderSessions;
 $('openSidebar').onclick=()=>{document.body?.classList?.add('sidebar-open');};
+// Explicit shortcut, matching the keycap in the sidebar. Do not intercept regular typing.
+document.addEventListener?.('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();void create().catch(notify);}});
 $('closeSidebar').onclick=closeSidebar;
 $('closeInspector').onclick=()=>{const panel=$('inspector');panel.hidden=true;$('toggleInspector').setAttribute('aria-expanded','false');};
 $<HTMLSelectElement>('modelPicker').onchange=()=>{void create().catch(notify);};
