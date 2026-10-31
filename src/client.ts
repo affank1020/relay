@@ -764,11 +764,7 @@ $<HTMLButtonElement>('openCapabilities').onclick=()=>{
   void get<CapabilitySnapshot>('/capabilities').then(drawCapabilities).catch(e=>{$('capabilitiesError').textContent=text(e);});
   closeSidebar();
 };
-$<HTMLButtonElement>('closeCapabilities').onclick=()=>{
-  $<HTMLDialogElement>('capabilitiesDialog').close();
-  // Invalidate a pending preview when the user leaves the manager.
-  if(typeof clearGitSkillReview==='function')clearGitSkillReview();
-};
+$<HTMLButtonElement>('closeCapabilities').onclick=()=>$<HTMLDialogElement>('capabilitiesDialog').close();
 
 type GitSkillPreview={
   previewId:string;source:{owner:string;repo:string;commit:string;path:string};
@@ -776,6 +772,7 @@ type GitSkillPreview={
 };
 let stagedGitSkill:GitSkillPreview|null=null;
 let gitSkillPreviewGeneration=0;
+$<HTMLDialogElement>('capabilitiesDialog').onclose=()=>clearGitSkillReview();
 function gitSkillFormSource(){
   return {
     owner:$<HTMLInputElement>('gitSkillOwner').value.trim(),

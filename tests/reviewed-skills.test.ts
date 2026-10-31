@@ -211,5 +211,19 @@ test('aggregate Skill context admission is model-bounded, skips excess instructi
     // The full file is still persisted and reviewed; skipping is only for
     // this inference, so other larger-context models may admit it.
     assert.equal((await registry.list()).skills.find(s=>s.name==='large-fixture')?.enabled,true);
+    // Real Pi resource load must agree with the budgeted snapshot and report
+    // omitted Skills instead of silently including them in the system prompt.
+    const controller=new AbortController();
+    const reported:string[]=[];
+    let loaded:string[]=[];
+    await assert.rejects(new PiHarness(root,'cohere/north-mini-code:free',undefined,registry).run({
+      version:1,task:{id:randomUUID(),conversationId:randomUUID(),prompt:'offline',
+        state:'running',createdAt:new Date().toISOString()} as Task,
+      tools:[],signal:controller.signal,onText:()=>assert.fail(),onUsage:()=>assert.fail(),
+      onSkippedSkills:names=>reported.push(...names),
+      onSkills:names=>{loaded=names;controller.abort(new Error('budgeted-skill-load-verified'));}
+    }),/budgeted-skill-load-verified/);
+    assert.deepEqual(loaded,['prepare-pr']);
+    assert.deepEqual(reported,['large-fixture']);
   }finally {await registry.close();await rm(root,{recursive:true,force:true});}
 });
