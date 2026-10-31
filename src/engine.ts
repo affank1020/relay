@@ -40,6 +40,20 @@ export class Engine {
         }
       }
       for(const approval of store.all<Approval>('approvals'))if(approval.state==='pending') { approval.state='rejected';store.save('approvals',approval); }
+      // A GitHub write remains strictly pre-dispatch until its ledger state
+      // becomes 'dispatched', synchronously before the network call. Crashes
+      // during user review cannot leave an ambiguous pending write forever.
+      // Dispatched/uncertain records are NEVER downgraded or replayed.
+      for(const row of store.db.prepare('SELECT id,data FROM invocations').all()){
+        const record=JSON.parse(String(row.data)) as {id:string;taskId?:string;kind?:string;state?:string;
+          toolName?:string;invocationId?:string};
+        if(record.kind!=='mcp_write'||record.state!=='validating')continue;
+        store.save('invocations',{...record,state:'denied_before_dispatch'});
+        const task=record.taskId?store.get<Task>('tasks',record.taskId):undefined;
+        if(task)store.event(task.conversationId,{taskId:task.id,agentId:task.agentId??null,
+          agentRunId:task.agentRunId??null,tool:record.toolName??null,
+          invocationId:record.invocationId??null,type:'tool',state:'denied'});
+      }
     });
   }
   start() {

@@ -282,7 +282,7 @@ export class ConnectionManager {
     if(store.get('invocations',key)){emit('denied');throw new Error('MCP invocation already recorded');}
     const digest=createHash('sha256').update(JSON.stringify({
       provider:'github',operation:tool.name,args:safe})).digest('hex');
-    const record={id:key,digest,kind:'mcp_write' as const,providerId:'github',toolName:label,invocationId};
+    const record={id:key,taskId:task.id,digest,kind:'mcp_write' as const,providerId:'github',toolName:label,invocationId};
     store.save('invocations',{...record,state:'validating'});
     emit('validating');
     try{

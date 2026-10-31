@@ -224,3 +224,54 @@ test('a full Relay task requires authenticated approval and confirmed writes are
     await engine.stop();store.close();await registry.close();await rm(root,{recursive:true,force:true});
   }
 });
+
+
+test('restart retires only pre-dispatch writes and never downgrades an uncertain mutation',()=>{
+  const store=new Store(':memory:');
+  const task=taskFixture(store);
+  store.save('tasks',task);
+  store.save('invocations',{id:task.id+':not-sent',taskId:task.id,
+    kind:'mcp_write',state:'validating',toolName:'github:add_issue_comment',invocationId:randomUUID()});
+  store.save('invocations',{id:task.id+':maybe-sent',taskId:task.id,
+    kind:'mcp_write',state:'dispatched',toolName:'github:add_issue_comment',invocationId:randomUUID()});
+  store.save('approvals',{id:randomUUID(),taskId:task.id,invocationId:randomUUID(),
+    tool:'github:add_issue_comment',args:argumentsForComment,state:'pending'} as Approval);
+  const engine=new Engine(store,{version:1,capabilities:{persistence:true,cancellation:true,tools:true},
+    run:async()=>''},{concurrency:1,queue:4,sessionUsd:0,globalUsd:0,sessionTokens:0,
+    reserveUsd:0,maxRunMs:1000});
+  try{
+    assert.equal(store.get<{state:string}>('invocations',task.id+':not-sent')?.state,'denied_before_dispatch');
+    assert.equal(store.get<{state:string}>('invocations',task.id+':maybe-sent')?.state,'dispatched');
+    assert.deepEqual(store.all<Approval>('approvals').map(a=>a.state),['rejected']);
+    assert.ok(store.events(task.conversationId).some(e=>e.tool==='github:add_issue_comment'&&e.state==='denied'));
+  }finally{store.close();void engine;}
+});
+
+test('cancelling a pending GitHub write rejects its approval with no remote dispatch',{timeout:15000},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'relay-write-cancel-'));
+  const store=new Store(':memory:');
+  const provider=configuredProviders({RELAY_GITHUB_TOKEN:'secret',RELAY_GITHUB_WRITE_REPOS:'affank1020/relay'})[0];
+  let calls=0;
+  const registry=new CapabilityRegistry(root,join(process.cwd(),'skills'),[provider],()=>({
+    list:async()=>both,call:async()=>{calls++;return {};},close:async()=>{}
+  }));
+  await registry.update('integrations','github',true);
+  const harness={version:1 as const,capabilities:{persistence:true,cancellation:true,tools:true},
+    run:async(req:HarnessRequest)=>{
+      await req.tools.find(t=>t.name==='mcp_github_add_issue_comment')!
+        .execute('pending-cancel',argumentsForComment,req.signal,undefined,{} as never);
+      return '';
+    }};
+  const engine=new Engine(store,harness,{concurrency:1,queue:8,sessionUsd:0,globalUsd:0,
+    sessionTokens:0,reserveUsd:0,maxRunMs:10000},undefined,{},undefined,registry);
+  try{
+    const conversation=engine.conversation();
+    const job=engine.enqueue(conversation.id,'Comment then cancel','cancel-write');
+    await waitFor(()=>store.all<Approval>('approvals').some(a=>a.state==='pending'),'pending approval');
+    await engine.cancel(job.id);
+    await waitFor(()=>store.all<Approval>('approvals').every(a=>a.state!=='pending'),'approval rejection');
+    await waitFor(()=>store.invocationStates(job.id).includes('denied_before_dispatch'),'terminal denial');
+    assert.equal(calls,0);
+    assert.deepEqual(store.all<Approval>('approvals').map(a=>a.state),['rejected']);
+  }finally{await engine.stop();store.close();await registry.close();await rm(root,{recursive:true,force:true});}
+});
