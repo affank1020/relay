@@ -47,6 +47,10 @@ interface MessageRow {
 const messageRows=new Map<string,MessageRow>();
 const taskPhases=new Map<string,string>();
 const delegatedStates=new Map<string,Map<string,string>>();
+// Child events live in separate authenticated sessions. While children run,
+// refresh the parent projection at a bounded cadence even if its SSE stream
+// has no new parent events; no child credentials or raw events are forwarded.
+let hasActiveAgents=false;
 function indexDelegation(event:ExecutionEvent) {
   if(event.type!=='delegation'||!event.taskId||!event.childTaskId)return;
   let children=delegatedStates.get(event.taskId);
@@ -61,7 +65,7 @@ function indexAtlasObservation(event:ExecutionEvent){
   if(atlasObservations.size>3000)atlasObservations.delete(atlasObservations.keys().next().value!);
 }
 function resetConversationView(){
-  messageRows.clear();taskPhases.clear();delegatedStates.clear();lastView='';
+  messageRows.clear();taskPhases.clear();delegatedStates.clear();hasActiveAgents=false;lastView='';
 }
 function indexToolReceipt(event:ExecutionEvent){
   if(event.type!=='tool'||!event.invocationId||!event.taskId)return;
@@ -264,6 +268,8 @@ async function refresh(){
   return list.sessions;
 }
 function render(data:Snapshot){
+  hasActiveAgents=Object.values(data.agents??{}).some(children=>children.some(
+    child=>['queued','running','awaiting_approval','waiting_children'].includes(child.state)));
   // Enqueue retitles the first message server-side. Keep the searchable
   // sidebar in sync with the authoritative snapshot, not only /sessions.
   const known=knownSessions.find(s=>s.id===data.session.id);
@@ -466,7 +472,8 @@ async function poll(){
   finally{
     polling=false;
     if(timer)clearTimeout(timer);
-    if(current&&generation===epoch&&!liveConnected)timer=setTimeout(()=>{void poll();},busy?250:850);
+    if(current&&generation===epoch&&(!liveConnected||hasActiveAgents))
+      timer=setTimeout(()=>{void poll();},liveConnected?1800:busy?250:850);
   }
 }
 function scheduleSnapshot(){

@@ -64,6 +64,8 @@ export function renderInlineAgents(
     }
     if(body.children[index]!==row)body.insertBefore(row,body.children[index]??null);
   }
-  for(const node of Array.from(body.children))
-    if(!seen.has((node as HTMLElement).dataset.agentId))node.remove();
+  for(const node of Array.from(body.children)) {
+    const id=(node as HTMLElement).dataset.agentId;
+    if(!id||!seen.has(id))node.remove();
+  }
 }
