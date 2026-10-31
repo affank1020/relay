@@ -683,7 +683,7 @@ window.setInterval?.(()=>{if(document.visibilityState!=='hidden')void refresh().
 void bootstrap();
 
 type CapabilitySnapshot={
-  skills:Array<{id:string;name:string;description:string;version:string;revision:string|null;installed:boolean;enabled:boolean;loadFailure:string|null}>;
+  skills:Array<{id:string;name:string;description:string;version:string;revision:string|null;installed:boolean;enabled:boolean;loadFailure:string|null;source:'bundled'|'git';sourceRef?:string}>;
   integrations:Array<{id:string;label:string;enabled:boolean;configured:boolean;state:string;availableTools:string[]}>;
 };
 async function drawCapabilities(snapshot:CapabilitySnapshot){
@@ -707,6 +707,7 @@ async function drawCapabilities(snapshot:CapabilitySnapshot){
       const info=el('span','','');
       info.append(el('span','capability-name',isSkill?item.name:item.label),
         el('div','capability-description',description));
+      if(isSkill&&item.sourceRef)info.append(el('div','capability-description',item.sourceRef));
       label.append(check,info);
       const state=isSkill?(item.loadFailure??'v'+item.version):item.state;
       row.append(label,el('span','capability-state',state));
@@ -723,6 +724,23 @@ async function drawCapabilities(snapshot:CapabilitySnapshot){
           }
         })();
       };
+      if(isSkill&&item.source==='git'){
+        const remove=document.createElement('button');
+        remove.type='button';remove.textContent='Remove';remove.className='capability-remove';
+        remove.setAttribute('aria-label','Remove reviewed Skill '+item.name);
+        remove.onclick=()=>{
+          if(!window.confirm('Remove reviewed Skill '+item.name+'? Its instructions will no longer load in new tasks.'))return;
+          remove.disabled=true;
+          void (async()=>{
+            try{
+              const response=await api('/skills/git/'+item.id,{method:'DELETE'});
+              await drawCapabilities(await response.json() as CapabilitySnapshot);
+              $('capabilitiesError').textContent='';
+            }catch(e){remove.disabled=false;$('capabilitiesError').textContent=text(e);}
+          })();
+        };
+        row.append(remove);
+      }
       group.append(row);
     }
     parent.append(group);
@@ -736,3 +754,64 @@ $<HTMLButtonElement>('openCapabilities').onclick=()=>{
   closeSidebar();
 };
 $<HTMLButtonElement>('closeCapabilities').onclick=()=>$<HTMLDialogElement>('capabilitiesDialog').close();
+
+type GitSkillPreview={
+  previewId:string;source:{owner:string;repo:string;commit:string;path:string};
+  name:string;description:string;version:string;sha256:string;content:string;
+};
+let stagedGitSkill:GitSkillPreview|null=null;
+function clearGitSkillReview(){
+  stagedGitSkill=null;
+  $('gitSkillReview').hidden=true;
+  $('gitSkillReviewText').textContent='';
+  $<HTMLInputElement>('gitSkillAcknowledge').checked=false;
+  $<HTMLButtonElement>('gitSkillInstall').disabled=true;
+}
+for(const id of ['gitSkillOwner','gitSkillRepo','gitSkillCommit','gitSkillPath'])
+  $<HTMLInputElement>(id).addEventListener('input',clearGitSkillReview);
+$<HTMLInputElement>('gitSkillAcknowledge').onchange=()=>{
+  $<HTMLButtonElement>('gitSkillInstall').disabled=
+    !stagedGitSkill||!$<HTMLInputElement>('gitSkillAcknowledge').checked;
+};
+$<HTMLFormElement>('gitSkillPreviewForm').onsubmit=event=>{
+  event.preventDefault();clearGitSkillReview();
+  const button=$<HTMLButtonElement>('gitSkillPreviewButton');button.disabled=true;
+  $('capabilitiesError').textContent='';
+  void (async()=>{
+    try{
+      const payload={
+        owner:$<HTMLInputElement>('gitSkillOwner').value.trim(),
+        repo:$<HTMLInputElement>('gitSkillRepo').value.trim(),
+        commit:$<HTMLInputElement>('gitSkillCommit').value.trim().toLowerCase(),
+        path:$<HTMLInputElement>('gitSkillPath').value.trim()
+      };
+      const response=await api('/skills/git/preview',{method:'POST',body:JSON.stringify(payload)});
+      const snapshot=await response.json() as GitSkillPreview;
+      stagedGitSkill=snapshot;
+      $('gitSkillReviewName').textContent=snapshot.name+' · '+snapshot.version;
+      $('gitSkillReviewSource').textContent=
+        snapshot.source.owner+'/'+snapshot.source.repo+' @ '+snapshot.source.commit+' / '+snapshot.source.path;
+      $('gitSkillReviewDigest').textContent='SHA-256 '+snapshot.sha256;
+      // Untrusted preview is rendered ONLY as text, never as HTML.
+      $('gitSkillReviewText').textContent=snapshot.content;
+      $('gitSkillReview').hidden=false;
+    }catch(e){$('capabilitiesError').textContent=text(e);}
+    finally{button.disabled=false;}
+  })();
+};
+$<HTMLButtonElement>('gitSkillInstall').onclick=()=>{
+  const staged=stagedGitSkill;
+  if(!staged||!$<HTMLInputElement>('gitSkillAcknowledge').checked)return;
+  const button=$<HTMLButtonElement>('gitSkillInstall');button.disabled=true;
+  void (async()=>{
+    try{
+      const response=await api('/skills/git/install',{method:'POST',
+        body:JSON.stringify({previewId:staged.previewId,sha256:staged.sha256,acknowledged:true})});
+      const result=await response.json() as {capabilities:CapabilitySnapshot};
+      await drawCapabilities(result.capabilities);
+      clearGitSkillReview();$<HTMLFormElement>('gitSkillPreviewForm').reset();
+      $('capabilitiesError').textContent='';
+    }catch(e){$('capabilitiesError').textContent=text(e);}
+    finally{button.disabled=!stagedGitSkill||!$<HTMLInputElement>('gitSkillAcknowledge').checked;}
+  })();
+};
