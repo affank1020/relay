@@ -96,704 +96,230 @@ async function fixture(run:(get:(id:string)=>Element,ui:ReturnType<typeof mountT
   return scheduled;
 }
 
-test('switching conversation or status filters removes stale task actions immediately',async()=>{
-  const a=task(one,A,'running');
-  const b=task(two,B,'running');
-  const mutations:string[]=[];
-  await fixture(async(get,ui)=>{
-    const rows=get('taskRows').children;
-    const row=rows.find(item=>item.children[0]?.textContent.includes(one));
-    assert.ok(row);row.onclick?.();
-    await flush();
-    const oldCancel=get('taskDetail').querySelector('.task-actions')?.children.find(item=>item.textContent==='Cancel task');
-    assert.ok(oldCancel,'running task must have a cancel control');
-    const select=get('taskConversationFilter');
-    select.value=B;select.onchange?.();
-    assert.equal(get('taskDetail').querySelector('.task-actions'),null,'changing conversation immediately clears old actions');
-    assert.equal(get('taskDetail').querySelector('.task-timeline'),null);
-    oldCancel.onclick?.();await flush();
-    assert.equal(mutations.length,0,'detached controls must not dispatch mutations');
-    assert.equal(get('taskRows').children.length,1);
-    get('taskRows').children[0].onclick?.();
-    await flush();
-    assert.ok(get('taskDetail').querySelector('.task-actions'));
-    const status=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Completed');
-    assert.ok(status);status.onclick?.();
-    assert.equal(get('taskDetail').querySelector('.task-actions'),null,'changing state immediately clears actions');
-    assert.equal(get('taskRows').children.length,0,'no task matches the completed filter');
-    ui.hide();
-  },async(url,options)=>{
-    if(options?.method==='POST'){mutations.push(url);return response({task:a});}
-    if(url==='/sessions')return response({sessions});
-    if(url.startsWith('/task-console/tasks?')){
-      const search=new URL(url,'http://relay.local').searchParams;
-      const scope=search.get('conversationId'),state=search.get('state');
-      const tasks=[a,b].filter(item=>(!scope||item.conversationId===scope)&&(!state||item.state===state));
-      return response({tasks,counts:{running:scope?1:2},nextCursor:null,hasMore:false});
-    }
-    if(url==='/task-console/tasks/'+one)return response({task:a,conversation:sessions[0],children:[],approvals:[]});
-    if(url==='/task-console/tasks/'+two)return response({task:b,conversation:sessions[1],children:[],approvals:[]});
-    if(url.includes('/events?'))return response({events:[],nextCursor:0,hasMore:false});
-    throw Error('Unexpected URL '+url);
+
+const numbered=(id:number,state='running',conversationId=A)=>({
+  ...task(String(id).padStart(8,'0')+'-1111-1111-1111-111111111111',conversationId,state),
+  prompt:'Task '+id,createdAt:new Date(Date.parse(when)+id*1000).toISOString(),rowid:id
+});
+type Item=ReturnType<typeof numbered>;
+function mock(items:Item[],url:string,options?:RequestInit):Response {
+  if(url==='/sessions')return response({sessions});
+  if(url.startsWith('/task-console/tasks?')){
+    const query=new URL(url,'http://relay.local').searchParams;
+    const conv=query.get('conversationId'),state=query.get('state'),cursor=query.get('cursor');
+    const scoped=items.filter(t=>!conv||t.conversationId===conv);
+    const counts:Record<string,number>={};
+    for(const item of scoped)counts[item.state]=(counts[item.state]??0)+1;
+    const eligible=scoped.filter(t=>(!state||t.state===state)&&(!cursor||t.rowid<Number(cursor)))
+      .sort((a,b)=>b.rowid-a.rowid);
+    const page=eligible.slice(0,50);
+    return response({tasks:page,counts,hasMore:eligible.length>50,
+      nextCursor:eligible.length>50?String(page.at(-1)?.rowid):null});
+  }
+  if(url.startsWith('/task-console/tasks/')){
+    const id=url.split('/').at(-1),value=items.find(item=>item.id===id);
+    if(!value)throw Error('Unknown task detail '+url);
+    return response({task:value,conversation:sessions.find(s=>s.id===value.conversationId),children:[],approvals:[]});
+  }
+  if(url.includes('/events?'))return response({events:[],nextCursor:0,hasMore:false});
+  if(options?.method==='POST')return response({});
+  throw Error('Unexpected URL '+url);
+}
+async function withClock(run:(advance:()=>Promise<void>)=>Promise<void>) {
+  const oldTimeout=globalThis.setTimeout,oldClear=globalThis.clearTimeout;
+  let tick:(()=>void)|undefined;
+  globalThis.setTimeout=((fn:()=>void)=>{tick=fn;return 1;}) as unknown as typeof setTimeout;
+  globalThis.clearTimeout=(()=>{tick=undefined;}) as typeof clearTimeout;
+  try {
+    await run(async()=>{assert.ok(tick,'poll scheduled');tick();await flush();});
+  } finally {globalThis.setTimeout=oldTimeout;globalThis.clearTimeout=oldClear;}
+}
+const titles=(get:(id:string)=>Element)=>get('taskRows').children
+  .filter(x=>x.className.split(' ').includes('task-row')).map(x=>x.children[0]?.textContent);
+const selectStatus=(get:(id:string)=>Element,state:string)=>{
+  const row=get('taskCounts').children.find(x=>x.children[0]?.textContent===state);
+  assert.ok(row);row.onclick?.();
+};
+
+test('live polling remains bounded through many arrivals; history freezes and all old tasks stay reachable',async()=>{
+  await withClock(async tick=>{
+    const items=Array.from({length:60},(_,i)=>numbered(i+1));
+    await fixture(async(get,_ui,calls)=>{
+      assert.equal(titles(get).length,50);
+      for(let id=61;id<=210;id++){
+        items.push(numbered(id));await tick();
+        assert.equal(titles(get).length,50,'live view is bounded at insertion '+id);
+      }
+      get('taskMore').onclick?.();await flush();
+      assert.equal(titles(get).length,100);
+      const before=titles(get);
+      items.push(numbered(211));
+      await tick();
+      assert.deepEqual(titles(get),before,'history rows do not change under polling');
+      assert.match(get('taskFeedback').textContent,/New task updates available/);
+      assert.equal(get('taskCounts').children[0].children[1].textContent,'210',
+        'history counts are frozen until Refresh');
+      let pages=0;
+      while(!get('taskMore').hidden&&pages++<10){get('taskMore').onclick?.();await flush();}
+      assert.equal(pages,3,'three remaining older pages');
+      const loaded=titles(get);
+      assert.equal(loaded.length,210);
+      assert.equal(new Set(loaded).size,210);
+      assert.equal(get('taskMore').hidden,true);
+      assert.ok(!loaded.includes('Task 211'));
+      const cursors=calls.filter(url=>url.includes('&cursor=')).map(url=>Number(new URL(url,'http://relay.local').searchParams.get('cursor')));
+      assert.deepEqual(cursors,[161,111,61,11],'one monotonically decreasing history cursor');
+      get('taskRefresh').onclick?.();await flush();
+      assert.equal(titles(get).length,50);
+      assert.ok(titles(get).includes('Task 211'));
+      assert.equal(get('taskCounts').children[0].children[1].textContent,'211');
+      assert.equal(get('taskMore').hidden,false);
+    },async(url,options)=>mock(items,url,options));
   });
 });
 
-test('task details expose the complete persisted result rather than only its first 2000 characters',async()=>{
-  const full='Start '+('x'.repeat(10000))+' FINAL_RECOMMENDATION';
-  const complete=task(one,A,'completed',full);
-  await fixture(async(get)=>{
+test('50 to 51 tasks enables historical paging without reopening the workspace',async()=>{
+  await withClock(async tick=>{
+    const items=Array.from({length:50},(_,i)=>numbered(i+1));
+    await fixture(async get=>{
+      assert.equal(get('taskMore').hidden,true);
+      items.push(numbered(51));await tick();
+      assert.equal(titles(get).length,50);
+      assert.equal(get('taskMore').hidden,false);
+      get('taskMore').onclick?.();await flush();
+      assert.equal(titles(get).length,51);
+      assert.equal(new Set(titles(get)).size,51);
+      assert.ok(titles(get).includes('Task 1'));
+      assert.equal(get('taskMore').hidden,true);
+    },async(url,options)=>mock(items,url,options));
+  });
+});
+
+test('filters and selected actions are invalidated immediately when changing scope',async()=>{
+  const a=numbered(1,'running',A),b=numbered(2,'running',B);
+  const posts:string[]=[];
+  await fixture(async get=>{
     get('taskRows').children[0].onclick?.();await flush();
-    const result=get('taskDetail').querySelector('.task-result');
-    assert.ok(result);
-    assert.equal(result.textContent,full);
-    assert.ok(result.textContent.endsWith('FINAL_RECOMMENDATION'));
-  },async url=>{
-    if(url==='/sessions')return response({sessions:[sessions[0]]});
-    if(url.startsWith('/task-console/tasks?'))return response({tasks:[{...complete,result:full.slice(0,280)}],counts:{completed:1},nextCursor:null,hasMore:false});
-    if(url==='/task-console/tasks/'+one)return response({task:complete,conversation:sessions[0],children:[],approvals:[]});
-    if(url.includes('/events?'))return response({events:[],nextCursor:0,hasMore:false});
-    throw Error('Unexpected URL '+url);
-  });
-});
-
-test('activity polling advances past 2000 unrelated events to discover late task activity',async()=>{
-  const selected=task(one,A,'running');
-  const many=Array.from({length:2106},(_,index)=>({
-    id:'event-'+index,sequence:index+1,timestamp:when,conversationId:A,
-    taskId:index===2105?one:two,agentRunId:index===2105?one:two,
-    type:'tool',state:'completed',tool:'atlas_status',invocationId:null,
-    projectId:null,workspaceId:null,atlasOperationId:null,selectedNodeId:null,executingNodeId:null
-  }));
-  let scheduled:(()=>void)|undefined;
-  const previous=globalThis.setTimeout,previousClear=globalThis.clearTimeout;
-  // Controlled clock: allow an actual scheduled refresh cycle without waiting.
-  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
-  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
-  try {
-    await fixture(async(get,_ui,calls)=>{
-      get('taskRows').children[0].onclick?.();await flush();
-      const empty=get('taskDetail').querySelector('.task-events-empty');
-      assert.equal(empty?.textContent,'Scanning activity history…','replay backlog is not an empty timeline');
-      assert.equal(calls.filter(path=>path.includes('/events?')).length,4,'one activity pass is capped at four pages');
-      assert.ok(scheduled);
-      scheduled();await flush();
-      const timeline=get('taskDetail').querySelector('.task-timeline');
-      assert.ok(timeline);
-      assert.equal(timeline.children.filter(row=>row.className==='task-event').length,1);
-      assert.ok(calls.some(path=>path.includes('events?after=2000')));
-    },async url=>{
-      if(url==='/sessions')return response({sessions:[sessions[0]]});
-      if(url.startsWith('/task-console/tasks?'))return response({tasks:[selected],counts:{running:1},nextCursor:null,hasMore:false});
-      if(url==='/task-console/tasks/'+one)return response({task:selected,conversation:sessions[0],children:[],approvals:[]});
-      if(url.includes('/events?')){
-        const after=Number(new URL(url,'http://relay.local').searchParams.get('after'));
-        const page=many.filter(event=>event.sequence>after).slice(0,500);
-        return response({events:page,nextCursor:page.at(-1)?.sequence??after,hasMore:page.length===500});
-      }
-      throw Error('Unexpected URL '+url);
-    });
-  } finally {
-    globalThis.setTimeout=previous;
-    globalThis.clearTimeout=previousClear;
-  }
-});
-
-
-test('new tasks cannot strand a displaced first-page row beyond the saved pagination cursor',async()=>{
-  const numbered=(id:number)=>({
-    ...task(String(id).padStart(8,'0')+'-1111-1111-1111-111111111111',A,'running'),
-    prompt:'Number '+id,
-    createdAt:new Date(Date.parse(when)+id*1000).toISOString(),
-    rowid:id
-  });
-  const persisted=Array.from({length:60},(_,i)=>numbered(i+1));
-  let scheduled:(()=>void)|undefined;
-  const originalSetTimeout=globalThis.setTimeout,originalClearTimeout=globalThis.clearTimeout;
-  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
-  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
-  try {
-    await fixture(async(get,_ui,calls)=>{
-      assert.equal(get('taskRows').children.length,50);
-      const displaced=persisted[10]; // rowid 11, original exclusive cursor
-      const target=get('taskRows').children.find(row=>row.children[0]?.textContent==='Number 11');
-      assert.ok(target);
-      target.onclick?.();
-      await flush();
-      assert.ok(get('taskDetail').querySelector('.task-actions'),'the older selection should be actionable');
-      persisted.push(numbered(61));
-      assert.ok(scheduled);
-      scheduled();await flush();
-      // New rowid 61 pushes 11 from the first page. Rowid 11 must remain
-      // present although the next pagination request is only for rowids <11.
-      assert.equal(get('taskRows').children.length,51);
-      assert.ok(get('taskRows').children.some(row=>row.children[0]?.textContent==='Number 11'));
-      assert.ok(get('taskDetail').querySelector('.task-actions'),'displacement alone must not clear a selected older task');
-      assert.ok(calls.some(url=>url.startsWith('/task-console/tasks?')));
-      const latest=get('taskRows').children.find(row=>row.children[0]?.textContent==='Number 61');
-      assert.ok(latest);latest.onclick?.();await flush();
-      assert.equal(get('taskRows').children.length,50,'switching selection drops the displaced pinned row');
-      assert.ok(!get('taskRows').children.some(row=>row.children[0]?.textContent==='Number 11'));
-      get('taskMore').onclick?.();await flush();
-      assert.equal(get('taskRows').children.length,60,'deep history reaches the original oldest task first');
-      assert.ok(calls.some(url=>url.includes('cursor=11')),'deep pagination does not rewind');
-      assert.equal(get('taskMore').hidden,false,'displaced newest-page gap remains available');
-      get('taskMore').onclick?.();await flush();
-      const titles=get('taskRows').children.map(row=>row.children[0]?.textContent);
-      assert.equal(titles.length,61,'the complete 60→61 history remains reachable');
-      assert.equal(new Set(titles).size,61,'no task appears twice');
-      for(let i=1;i<=61;i++)assert.ok(titles.includes('Number '+i),'missing rowid '+i);
-      assert.ok(calls.some(url=>url.includes('cursor=12')),'separate gap cursor recovers displaced rowid 11');
-      assert.equal(displaced.rowid,11);
-    },async url=>{
-      if(url==='/sessions')return response({sessions:[sessions[0]]});
-      if(url.startsWith('/task-console/task-states?')) {
-        const ids=new URL(url,'http://relay.local').searchParams.get('ids')?.split(',')??[];
-        return response({states:Object.fromEntries(persisted.filter(item=>ids.includes(item.id))
-          .map(item=>[item.id,{state:item.state,conversationId:item.conversationId}]))});
-      }
-      if(url.startsWith('/task-console/tasks?')){
-        const query=new URL(url,'http://relay.local').searchParams;
-        const cursor=query.get('cursor'),limit=Number(query.get('limit')??50);
-        const eligible=persisted.filter(item=>cursor===null||item.rowid<Number(cursor)).sort((a,b)=>b.rowid-a.rowid);
-        const page=eligible.slice(0,limit);
-        return response({tasks:page,counts:{running:persisted.length},
-          nextCursor:eligible.length>limit?String(page.at(-1)?.rowid):null,hasMore:eligible.length>limit});
-      }
-      const id=url.split('/task-console/tasks/')[1];
-      const found=persisted.find(item=>item.id===id);
-      if(found)return response({task:found,conversation:sessions[0],children:[],approvals:[]});
-      if(url.includes('/events?'))return response({events:[],nextCursor:0,hasMore:false});
-      throw Error('Unexpected URL '+url);
-    });
-  } finally {
-    globalThis.setTimeout=originalSetTimeout;
-    globalThis.clearTimeout=originalClearTimeout;
-  }
-});
-
-test('running filter automatically clears completed selection after a foreground poll',async()=>{
-  let persisted=task(one,A,'running');
-  let scheduled:(()=>void)|undefined;
-  const originalSetTimeout=globalThis.setTimeout,originalClearTimeout=globalThis.clearTimeout;
-  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
-  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
-  try {
-    await fixture(async(get,_ui,calls)=>{
-      const running=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Running');
-      assert.ok(running);running.onclick?.();await flush();
-      get('taskRows').children[0].onclick?.();await flush();
-      assert.ok(get('taskDetail').querySelector('.task-actions')?.children.some(b=>b.textContent==='Cancel task'));
-      persisted=task(one,A,'completed','Done');
-      assert.ok(scheduled);
-      scheduled();await flush();
-      assert.equal(get('taskRows').children.filter(row=>row.className.split(' ').includes('task-row')).length,0,
-        'completed task disappears from running list');
-      assert.equal(get('taskDetail').querySelector('.task-actions'),null,
-        'the stale cancel action is no longer rendered');
-      assert.ok(get('taskDetail').children[0]?.textContent.includes('Select a task'),
-        'detail returns to empty selected state');
-      assert.ok(calls.some(url=>url==='/task-console/tasks/'+one),
-        'selection is reconciled against authoritative detail after task leaves page');
-    },async url=>{
-      if(url==='/sessions')return response({sessions:[sessions[0]]});
-      if(url.startsWith('/task-console/tasks?')){
-        const state=new URL(url,'http://relay.local').searchParams.get('state');
-        const tasks=state&&persisted.state!==state?[]:[persisted];
-        return response({tasks,counts:{[persisted.state]:1},nextCursor:null,hasMore:false});
-      }
-      if(url==='/task-console/tasks/'+one)return response({task:persisted,conversation:sessions[0],children:[],approvals:[]});
-      if(url.includes('/events?'))return response({events:[],nextCursor:0,hasMore:false});
-      throw Error('Unexpected URL '+url);
-    });
-  } finally {
-    globalThis.setTimeout=originalSetTimeout;
-    globalThis.clearTimeout=originalClearTimeout;
-  }
-});
-
-
-test('a complete filtered page evicts nonselected tasks that left the filter',async()=>{
-  let primary=task(one,A,'running');
-  const remaining=task(two,A,'running');
-  let scheduled:(()=>void)|undefined;
-  const previousTimeout=globalThis.setTimeout,previousClear=globalThis.clearTimeout;
-  globalThis.setTimeout=((callback:()=>void)=>{scheduled=callback;return 1;}) as unknown as typeof setTimeout;
-  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
-  try {
-    await fixture(async(get)=>{
-      const running=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Running');
-      assert.ok(running);running.onclick?.();await flush();
-      assert.equal(get('taskRows').children.filter(row=>row.className.split(' ').includes('task-row')).length,2);
-      primary=task(one,A,'completed');
-      assert.ok(scheduled);scheduled();await flush();
-      const names=get('taskRows').children.filter(row=>row.className.split(' ').includes('task-row'))
-        .map(row=>row.children[0]?.textContent);
-      assert.deepEqual(names,['Work '+two],'the completed task must not remain as a stale running row');
-    },async url=>{
-      if(url==='/sessions')return response({sessions:[sessions[0]]});
-      if(url.startsWith('/task-console/tasks?')) {
-        const state=new URL(url,'http://relay.local').searchParams.get('state');
-        const tasks=[primary,remaining].filter(item=>!state||item.state===state);
-        return response({tasks,counts:{running:tasks.length},hasMore:false,nextCursor:null});
-      }
-      throw Error('Unexpected URL '+url);
-    });
-  } finally {
-    globalThis.setTimeout=previousTimeout;
-    globalThis.clearTimeout=previousClear;
-  }
-});
-
-
-test('an older selected task is preserved while in scope and cleared after its state changes',async()=>{
-  const items=Array.from({length:53},(_,i)=>({
-    ...task(String(i+1).padStart(8,'0')+'-2222-2222-2222-222222222222',A,'running'),
-    createdAt:new Date(Date.parse(when)+(i+1)*1000).toISOString(),
-    prompt:'Older '+(i+1),rowid:i+1
-  }));
-  const oldest=items[0];
-  const mutations:string[]=[];
-  let scheduled:(()=>void)|undefined;
-  const oldTimeout=globalThis.setTimeout,oldClear=globalThis.clearTimeout;
-  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
-  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
-  try {
-    await fixture(async(get,_ui)=>{
-      const running=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Running');
-      assert.ok(running);running.onclick?.();await flush();
-      get('taskMore').onclick?.();await flush();
-      assert.equal(get('taskRows').children.filter(row=>row.className.split(' ').includes('task-row')).length,53);
-      const row=get('taskRows').children.find(item=>item.children[0]?.textContent==='Older 1');
-      assert.ok(row);row.onclick?.();await flush();
-      const cancel=get('taskDetail').querySelector('.task-actions')?.children.find(b=>b.textContent==='Cancel task');
-      assert.ok(cancel);
-      assert.ok(scheduled);scheduled();await flush();
-      assert.ok(get('taskDetail').querySelector('.task-actions'),'old in-scope task is retained');
-      oldest.state='completed';
-      assert.ok(scheduled);scheduled();await flush();
-      assert.equal(get('taskDetail').querySelector('.task-actions'),null);
-      assert.equal(get('taskDetail').children[0]?.textContent,'Select a task to inspect its work.');
-      assert.ok(!get('taskRows').children.some(item=>item.children[0]?.textContent==='Older 1'));
-      cancel.onclick?.();await flush();
-      assert.equal(mutations.length,0,'detached cancel never dispatches a mutation');
-    },async(url,options)=>{
-      if(options?.method==='POST'){mutations.push(url);return response({});}
-      if(url==='/sessions')return response({sessions:[sessions[0]]});
-      if(url.startsWith('/task-console/task-states?')) {
-        const ids=new URL(url,'http://relay.local').searchParams.get('ids')?.split(',')??[];
-        return response({states:Object.fromEntries(items.filter(item=>ids.includes(item.id))
-          .map(item=>[item.id,{state:item.state,conversationId:item.conversationId}]))});
-      }
-      if(url.startsWith('/task-console/tasks?')){
-        const search=new URL(url,'http://relay.local').searchParams;
-        const eligible=items.filter(item=>(!search.get('state')||item.state===search.get('state'))&&
-          (!search.get('cursor')||item.rowid<Number(search.get('cursor'))))
-          .sort((a,b)=>b.rowid-a.rowid);
-        const page=eligible.slice(0,50);
-        return response({tasks:page,counts:{running:items.filter(item=>item.state==='running').length},
-          nextCursor:eligible.length>50?String(page.at(-1)?.rowid):null,hasMore:eligible.length>50});
-      }
-      const selected=items.find(item=>url==='/task-console/tasks/'+item.id);
-      if(selected)return response({task:selected,conversation:sessions[0],children:[],approvals:[]});
-      if(url.includes('/events?'))return response({events:[],nextCursor:0,hasMore:false});
-      throw Error('Unexpected URL '+url);
-    });
-  } finally {
-    globalThis.setTimeout=oldTimeout;
-    globalThis.clearTimeout=oldClear;
-  }
-});
-
-
-test('nonexhaustive queued filter evicts an unselected task that starts running',async()=>{
-  const items=Array.from({length:60},(_,i)=>({
-    ...task(String(i+1).padStart(8,'0')+'-3333-3333-3333-333333333333',A,'queued'),
-    prompt:'Queue '+(i+1),createdAt:new Date(Date.parse(when)+(i+1)*1000).toISOString(),rowid:i+1
-  }));
-  const changed=items[39];
-  let scheduled:(()=>void)|undefined;
-  const oldTimeout=globalThis.setTimeout,oldClear=globalThis.clearTimeout;
-  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
-  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
-  try {
-    await fixture(async(get,_,calls)=>{
-      const queued=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Queued');
-      assert.ok(queued);queued.onclick?.();await flush();
-      assert.equal(get('taskRows').children.length,50);
-      changed.state='running';
-      assert.ok(scheduled);scheduled();await flush();
-      const visible=get('taskRows').children.map(row=>row.children[0]?.textContent);
-      assert.equal(visible.length,50);
-      assert.ok(!visible.includes('Queue 40'),'transitioned unselected row is not retained as queued');
-      assert.equal(get('taskCounts').children.find(item=>item.children[0]?.textContent==='Queued')?.children[1]?.textContent,'59');
-      assert.ok(!calls.some(url=>url.includes('/task-console/task-states?')&&
-        new URL(url,'http://relay.local').searchParams.get('ids')?.split(',').includes(changed.id)),
-        'displaced unselected rows are discarded rather than indefinitely materialized');
-      get('taskMore').onclick?.();await flush();
-      const all=get('taskRows').children.map(row=>row.children[0]?.textContent);
-      assert.equal(all.length,59,'all and only queued tasks remain after pagination');
-      assert.ok(!all.includes('Queue 40'));
-    },async url=>{
-      if(url==='/sessions')return response({sessions:[sessions[0]]});
-      if(url.startsWith('/task-console/task-states?')){
-        const ids=new URL(url,'http://relay.local').searchParams.get('ids')?.split(',')??[];
-        return response({states:Object.fromEntries(items.filter(item=>ids.includes(item.id))
-          .map(item=>[item.id,{state:item.state,conversationId:item.conversationId}]))});
-      }
-      if(url.startsWith('/task-console/tasks?')){
-        const search=new URL(url,'http://relay.local').searchParams;
-        const eligible=items.filter(item=>item.state===search.get('state')&&
-          (!search.get('cursor')||item.rowid<Number(search.get('cursor')))).sort((a,b)=>b.rowid-a.rowid);
-        const page=eligible.slice(0,50);
-        return response({tasks:page,counts:{queued:items.filter(item=>item.state==='queued').length,running:items.filter(item=>item.state==='running').length},
-          hasMore:eligible.length>50,nextCursor:eligible.length>50?String(page.at(-1)?.rowid):null});
-      }
-      throw Error('Unexpected URL '+url);
-    });
-  } finally {globalThis.setTimeout=oldTimeout;globalThis.clearTimeout=oldClear;}
-});
-
-test('exhausted older-page cursor stays exhausted through repeated foreground polls',async()=>{
-  const items=Array.from({length:60},(_,i)=>({
-    ...task(String(i+1).padStart(8,'0')+'-4444-4444-4444-444444444444',A,'completed'),
-    prompt:'Page '+(i+1),createdAt:new Date(Date.parse(when)+(i+1)*1000).toISOString(),rowid:i+1
-  }));
-  let scheduled:(()=>void)|undefined;
-  const oldTimeout=globalThis.setTimeout,oldClear=globalThis.clearTimeout;
-  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
-  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
-  try {
-    await fixture(async(get,_,calls)=>{
-      assert.equal(get('taskRows').children.length,50);
-      assert.equal(get('taskMore').hidden,false);
-      get('taskMore').onclick?.();await flush();
-      assert.equal(get('taskRows').children.length,60);
-      assert.equal(get('taskMore').hidden,true);
-      const olderCalls=()=>calls.filter(url=>url.includes('cursor=')).length;
-      assert.equal(olderCalls(),1);
-      assert.ok(scheduled);scheduled();await flush();
-      assert.equal(get('taskMore').hidden,true,'polling must not revive an exhausted cursor');
-      get('taskMore').onclick?.();await flush();
-      assert.equal(olderCalls(),1,'no repeat older-page request after exhaustion');
-      assert.equal(get('taskRows').children.length,60);
-      assert.ok(scheduled);scheduled();await flush();
-      assert.equal(get('taskMore').hidden,true);
-      assert.equal(new Set(get('taskRows').children.map(row=>row.children[0]?.textContent)).size,60);
-    },async url=>{
-      if(url==='/sessions')return response({sessions:[sessions[0]]});
-      if(url.startsWith('/task-console/task-states?')){
-        const ids=new URL(url,'http://relay.local').searchParams.get('ids')?.split(',')??[];
-        return response({states:Object.fromEntries(items.filter(item=>ids.includes(item.id))
-          .map(item=>[item.id,{state:item.state,conversationId:item.conversationId}]))});
-      }
-      if(url.startsWith('/task-console/tasks?')){
-        const search=new URL(url,'http://relay.local').searchParams;
-        const eligible=items.filter(item=>!search.get('cursor')||item.rowid<Number(search.get('cursor'))).sort((a,b)=>b.rowid-a.rowid);
-        const page=eligible.slice(0,50);
-        return response({tasks:page,counts:{completed:60},hasMore:eligible.length>50,
-          nextCursor:eligible.length>50?String(page.at(-1)?.rowid):null});
-      }
-      throw Error('Unexpected URL '+url);
-    });
-  } finally {globalThis.setTimeout=oldTimeout;globalThis.clearTimeout=oldClear;}
-});
-
-test('empty initial page and zero-result state filter both render a visible empty message',async()=>{
-  await fixture(async get=>{
+    const oldCancel=get('taskDetail').querySelector('.task-actions')?.children.find(x=>x.textContent==='Cancel task');
+    assert.ok(oldCancel);
+    const conversation=get('taskConversationFilter');
+    conversation.value=B;conversation.onchange?.();await flush();
+    assert.equal(get('taskDetail').querySelector('.task-actions'),null);
+    oldCancel.onclick?.();await flush();
+    assert.equal(posts.length,0);
+    assert.deepEqual(titles(get),['Task 2']);
+    get('taskRows').children[0].onclick?.();await flush();
+    selectStatus(get,'Completed');await flush();
+    assert.equal(get('taskDetail').querySelector('.task-actions'),null);
+    assert.equal(titles(get).length,0);
     assert.equal(get('taskRows').querySelector('.task-rows-empty')?.textContent,'No tasks match this filter.');
-  },async url=>{
-    if(url==='/sessions')return response({sessions:[sessions[0]]});
-    if(url.startsWith('/task-console/tasks?'))return response({tasks:[],counts:{},hasMore:false,nextCursor:null});
-    throw Error('Unexpected URL '+url);
-  });
-  const running=task(one,A,'running');
-  await fixture(async get=>{
-    assert.equal(get('taskRows').querySelector('.task-rows-empty'),null);
-    const completed=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Completed');
-    assert.ok(completed);completed.onclick?.();await flush();
-    assert.equal(get('taskRows').querySelector('.task-rows-empty')?.textContent,'No tasks match this filter.');
-    assert.equal(get('taskRows').children.length,1,'empty placeholder is not duplicated');
-  },async url=>{
-    if(url==='/sessions')return response({sessions:[sessions[0]]});
-    if(url.startsWith('/task-console/tasks?')){
-      const state=new URL(url,'http://relay.local').searchParams.get('state');
-      return response({tasks:state==='completed'?[]:[running],counts:{running:1},hasMore:false,nextCursor:null});
-    }
-    throw Error('Unexpected URL '+url);
+  },async(url,opts)=>{
+    if(opts?.method==='POST'){posts.push(url);return response({});}
+    return mock([a,b],url,opts);
   });
 });
 
-
-test('hundreds of automatic page shifts keep the DOM bounded and history reachable on demand',async()=>{
-  const make=(number:number)=>({
-    ...task(String(number).padStart(8,'0')+'-5555-5555-5555-555555555555',A,'completed'),
-    prompt:'History '+number,rowid:number,
-    createdAt:new Date(Date.parse(when)+number*1000).toISOString()
-  });
-  const history=Array.from({length:60},(_,i)=>make(i+1));
-  let scheduled:(()=>void)|undefined;
-  const previousTimeout=globalThis.setTimeout,previousClear=globalThis.clearTimeout;
-  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
-  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
-  try {
-    await fixture(async(get,_ui,calls)=>{
-      assert.equal(get('taskRows').children.length,50);
-      for(let number=61;number<=210;number++) {
-        history.push(make(number));
-        assert.ok(scheduled);
-        scheduled();await flush();
-        assert.ok(get('taskRows').children.length<=50,
-          'background inserts must not accumulate DOM rows: '+number);
-      }
-      assert.equal(get('taskRows').children.length,50);
-      assert.equal(get('taskMore').hidden,false);
-      for(let i=0;i<10&&!get('taskMore').hidden;i++){
-        get('taskMore').onclick?.();await flush();
-      }
-      const visible=get('taskRows').children.map(row=>row.children[0]?.textContent);
-      assert.equal(visible.length,210,'all historic tasks remain reachable with explicit paging');
-      assert.equal(new Set(visible).size,210,'overlapping cursors must not duplicate rows');
-      assert.equal(get('taskMore').hidden,true,'older pagination terminates after all tasks');
-      for(let number=1;number<=210;number++)
-        assert.ok(visible.includes('History '+number),'missing historic task '+number);
-      assert.ok(calls.some(url=>url.includes('cursor=161')),
-        'paging resumes just below the newest page after all 150 inserts');
-    },async url=>{
-      if(url==='/sessions')return response({sessions:[sessions[0]]});
-      if(url.startsWith('/task-console/tasks?')){
-        const search=new URL(url,'http://relay.local').searchParams;
-        const eligible=history.filter(item=>!search.get('cursor')||item.rowid<Number(search.get('cursor')))
-          .sort((a,b)=>b.rowid-a.rowid);
-        const page=eligible.slice(0,50);
-        return response({tasks:page,counts:{completed:history.length},hasMore:eligible.length>50,
-          nextCursor:eligible.length>50?String(page.at(-1)?.rowid):null});
-      }
-      throw Error('Unexpected URL '+url);
-    });
-  } finally {
-    globalThis.setTimeout=previousTimeout;
-    globalThis.clearTimeout=previousClear;
-  }
-});
-
-
-test('interleaved manual pagination and new arrivals never rewind deep-history progress',async()=>{
-  const make=(id:number)=>({
-    ...task(String(id).padStart(8,'0')+'-6666-6666-6666-666666666666',A,'completed'),
-    prompt:'Interleaved '+id,rowid:id,
-    createdAt:new Date(Date.parse(when)+id*1000).toISOString()
-  });
-  const persisted=Array.from({length:200},(_,i)=>make(i+1));
-  let scheduled:(()=>void)|undefined;
-  const originalTimer=globalThis.setTimeout,originalClear=globalThis.clearTimeout;
-  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
-  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
-  try {
-    await fixture(async(get,_ui,calls)=>{
-      const pageCursors=()=>calls.filter(url=>url.startsWith('/task-console/tasks?')&&url.includes('cursor='))
-        .map(url=>Number(new URL(url,'http://relay.local').searchParams.get('cursor')));
-      assert.equal(get('taskRows').children.length,50);
-      assert.ok(scheduled);
-
-      get('taskMore').onclick?.();await flush(); // 150..101
-      persisted.push(make(201));
-      scheduled();await flush();
-      get('taskMore').onclick?.();await flush(); // 100..51, not 151..102
-      persisted.push(make(202));
-      scheduled();await flush();
-      get('taskMore').onclick?.();await flush(); // 50..1
-      assert.deepEqual(pageCursors().slice(0,3),[151,101,51],
-        'deep cursor must advance monotonically even across newest-page shifts');
-      assert.ok(get('taskRows').children.some(item=>item.children[0]?.textContent==='Interleaved 1'));
-      assert.equal(get('taskRows').children.length,200,
-        'only genuinely displaced newest-page rows remain unloaded');
-      assert.equal(get('taskMore').hidden,false,'the two displaced rows are still reachable');
-
-      get('taskMore').onclick?.();await flush(); // gap snapshot 153..151
-      assert.equal(pageCursors()[3],153);
-      let visible=get('taskRows').children.map(item=>item.children[0]?.textContent);
-      assert.equal(new Set(visible).size,202);
-      assert.equal(visible.length,202);
-      assert.equal(get('taskMore').hidden,true);
-
-      // A new insert after finishing the gap creates a NEW, independent gap.
-      persisted.push(make(203));scheduled();await flush();
-      assert.equal(get('taskMore').hidden,false);
+test('historical state membership stays frozen until explicit Refresh',async()=>{
+  await withClock(async tick=>{
+    const items=[numbered(1,'running'),...Array.from({length:60},(_,i)=>numbered(i+2,'completed'))];
+    await fixture(async get=>{
+      selectStatus(get,'Completed');await flush();
       get('taskMore').onclick?.();await flush();
-      assert.equal(pageCursors()[4],154,'new gap starts above the previously filled boundary');
-      visible=get('taskRows').children.map(item=>item.children[0]?.textContent);
-      assert.equal(new Set(visible).size,203);
-      assert.equal(get('taskMore').hidden,true);
-    },async url=>{
-      if(url==='/sessions')return response({sessions:[sessions[0]]});
-      if(url.startsWith('/task-console/task-states?')){
-        const ids=new URL(url,'http://relay.local').searchParams.get('ids')?.split(',')??[];
-        return response({states:Object.fromEntries(persisted.filter(item=>ids.includes(item.id))
-          .map(item=>[item.id,{state:item.state,conversationId:item.conversationId}]))});
-      }
-      if(url.startsWith('/task-console/tasks?')){
-        const query=new URL(url,'http://relay.local').searchParams;
-        const filtered=persisted.filter(item=>!query.get('cursor')||item.rowid<Number(query.get('cursor')))
-          .sort((a,b)=>b.rowid-a.rowid);
-        const page=filtered.slice(0,50);
-        return response({tasks:page,counts:{completed:persisted.length},
-          hasMore:filtered.length>50,nextCursor:filtered.length>50?String(page.at(-1)?.rowid):null});
-      }
-      throw Error('Unexpected request '+url);
-    });
-  } finally {
-    globalThis.setTimeout=originalTimer;
-    globalThis.clearTimeout=originalClear;
-  }
-});
-
-
-test('pagination becomes available when an initially exhaustive 50-task page grows to 51 and 52',async()=>{
-  const make=(id:number)=>({
-    ...task(String(id).padStart(8,'0')+'-7777-7777-7777-777777777777',A,'queued'),
-    rowid:id,prompt:'Boundary '+id,
-    createdAt:new Date(Date.parse(when)+id*1000).toISOString()
-  });
-  const items=Array.from({length:50},(_,index)=>make(index+1));
-  let scheduled:(()=>void)|undefined;
-  const original=globalThis.setTimeout,originalClear=globalThis.clearTimeout;
-  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
-  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
-  try {
-    await fixture(async(get,_ui,calls)=>{
-      assert.equal(get('taskRows').children.length,50);
-      assert.equal(get('taskMore').hidden,true);
-      items.push(make(51));
-      assert.ok(scheduled);scheduled();await flush();
-      assert.equal(get('taskRows').children.length,50);
-      assert.equal(get('taskMore').hidden,false,'51st item must enable pagination');
-      items.push(make(52));
-      assert.ok(scheduled);scheduled();await flush();
-      get('taskMore').onclick?.();await flush();
-      assert.ok(get('taskRows').children.some(row=>row.children[0]?.textContent==='Boundary 1'),
-        'original deep cursor must make the oldest task reachable');
-      assert.equal(get('taskMore').hidden,false,'a newly displaced row remains available');
-      get('taskMore').onclick?.();await flush();
-      const titles=get('taskRows').children.map(row=>row.children[0]?.textContent);
-      assert.equal(titles.length,52);
-      assert.equal(new Set(titles).size,52);
-      for(let id=1;id<=52;id++)assert.ok(titles.includes('Boundary '+id),'missing item '+id);
-      assert.equal(get('taskMore').hidden,true);
-      const olderCursors=calls.filter(url=>url.includes('cursor=')).map(url=>Number(new URL(url,'http://relay.local').searchParams.get('cursor')));
-      assert.deepEqual(olderCursors,[2,3],'the deep cursor then the independent newest-page gap');
-    },async url=>{
-      if(url==='/sessions')return response({sessions:[sessions[0]]});
-      if(url.startsWith('/task-console/tasks?')){
-        const search=new URL(url,'http://relay.local').searchParams;
-        const eligible=items.filter(item=>!search.get('cursor')||item.rowid<Number(search.get('cursor')))
-          .sort((a,b)=>b.rowid-a.rowid);
-        const page=eligible.slice(0,50);
-        return response({tasks:page,counts:{queued:items.length},hasMore:eligible.length>50,
-          nextCursor:eligible.length>50?String(page.at(-1)?.rowid):null});
-      }
-      throw Error('Unexpected request '+url);
-    });
-  } finally {globalThis.setTimeout=original;globalThis.clearTimeout=originalClear;}
-});
-
-test('an older previously running task becomes reachable when the completed filter is fully paginated',async()=>{
-  const make=(id:number,state:'completed'|'running')=>({
-    ...task(String(id).padStart(8,'0')+'-8888-8888-8888-888888888888',A,state),
-    rowid:id,prompt:'Membership '+id,
-    createdAt:new Date(Date.parse(when)+id*1000).toISOString()
-  });
-  const items=[make(1,'running'),...Array.from({length:60},(_,i)=>make(i+2,'completed'))];
-  let scheduled:(()=>void)|undefined;
-  const original=globalThis.setTimeout,originalClear=globalThis.clearTimeout;
-  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
-  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
-  try {
-    await fixture(async(get,_ui,calls)=>{
-      const completed=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Completed');
-      assert.ok(completed);completed.onclick?.();await flush();
-      assert.equal(get('taskRows').children.length,50);
-      get('taskMore').onclick?.();await flush();
-      assert.equal(get('taskRows').children.length,60);
+      assert.equal(titles(get).length,60);
       assert.equal(get('taskMore').hidden,true);
       items[0].state='completed';
-      assert.ok(scheduled);scheduled();await flush();
-      assert.equal(get('taskMore').hidden,false,'a newly eligible older task reopens deliberate pagination');
-      let attempts=0;
-      while(!get('taskMore').hidden&&attempts++<5) {
-        get('taskMore').onclick?.();await flush();
-      }
-      assert.equal(get('taskRows').children.length,61);
+      await tick();
+      assert.equal(titles(get).length,60,'history does not silently incorporate newly eligible tasks');
       assert.equal(get('taskMore').hidden,true);
-      const displayed=get('taskRows').children.map(row=>row.children[0]?.textContent);
-      assert.ok(displayed.includes('Membership 1'),'older task that just finished is inspectable');
-      assert.equal(new Set(displayed).size,61);
-      assert.ok(calls.filter(url=>url.includes('cursor=')).length>=2,'rescan is explicit and server-backed');
-      assert.ok(scheduled);scheduled();await flush();
-      assert.equal(get('taskMore').hidden,true,'matching counts now reconcile');
-    },async url=>{
-      if(url==='/sessions')return response({sessions:[sessions[0]]});
-      if(url.startsWith('/task-console/task-states?')){
-        const ids=new URL(url,'http://relay.local').searchParams.get('ids')?.split(',')??[];
-        return response({states:Object.fromEntries(items.filter(item=>ids.includes(item.id))
-          .map(item=>[item.id,{state:item.state,conversationId:item.conversationId}]))});
-      }
-      if(url.startsWith('/task-console/tasks?')){
-        const search=new URL(url,'http://relay.local').searchParams;
-        const eligible=items.filter(item=>(!search.get('state')||item.state===search.get('state'))&&
-          (!search.get('cursor')||item.rowid<Number(search.get('cursor'))))
-          .sort((a,b)=>b.rowid-a.rowid);
-        const page=eligible.slice(0,50);
-        return response({tasks:page,counts:{
-          completed:items.filter(item=>item.state==='completed').length,
-          running:items.filter(item=>item.state==='running').length
-        },hasMore:eligible.length>50,nextCursor:eligible.length>50?String(page.at(-1)?.rowid):null});
-      }
-      throw Error('Unexpected request '+url);
-    });
-  } finally {globalThis.setTimeout=original;globalThis.clearTimeout=originalClear;}
+      assert.match(get('taskFeedback').textContent,/New task updates available/);
+      get('taskRefresh').onclick?.();await flush();
+      assert.equal(titles(get).length,50);
+      get('taskMore').onclick?.();await flush();
+      assert.equal(titles(get).length,61,'fresh filter includes the task that completed');
+      assert.ok(titles(get).includes('Task 1'));
+    },async(url,opts)=>mock(items,url,opts));
+  });
 });
 
-test('following an out-of-filter parent keeps its detail open across polling',async()=>{
-  const parent={...task(one,B,'completed','Completed parent result'),prompt:'Parent detail'};
-  const child={...task(two,A,'running'),parentId:one,prompt:'Active child'};
-  const changes:string[]=[];
-  let scheduled:(()=>void)|undefined;
-  const original=globalThis.setTimeout,originalClear=globalThis.clearTimeout;
-  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
-  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
-  try {
+test('selection and related-task details remain independent from list mode and filters',async()=>{
+  await withClock(async tick=>{
+    const parent=numbered(1,'completed',B),child=numbered(2,'running',A);
+    child.parentId=parent.id;
+    const items=[parent,child];
     await fixture(async(get,_ui,calls)=>{
-      const running=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Running');
-      assert.ok(running);running.onclick?.();await flush();
-      const conversation=get('taskConversationFilter');
-      conversation.value=A;conversation.onchange?.();await flush();
-      assert.equal(get('taskRows').children.length,1);
+      selectStatus(get,'Running');await flush();
+      const selector=get('taskConversationFilter');
+      selector.value=A;selector.onchange?.();await flush();
       get('taskRows').children[0].onclick?.();await flush();
       const link=get('taskDetail').querySelector('.task-relation-link');
       assert.ok(link);link.onclick?.();await flush();
-      const heading=get('taskDetail').querySelector('.task-detail-head');
-      assert.equal(heading?.children[0]?.textContent,'Parent detail');
-      assert.ok(scheduled);scheduled();await flush();
-      assert.equal(get('taskDetail').querySelector('.task-detail-head')?.children[0]?.textContent,'Parent detail',
-        'following a relation is deliberate navigation outside active filters');
-      assert.ok(get('taskDetail').querySelector('.task-result')?.textContent.includes('Completed parent'));
-      assert.ok(!get('taskDetail').children[0]?.textContent.includes('Select a task'));
-      assert.ok(calls.filter(path=>path==='/task-console/tasks/'+one).length>=2,
-        'out-of-filter related task continues receiving detail refreshes');
-      assert.equal(changes.length,0);
-    },async(url,options)=>{
-      if(options?.method==='POST'){changes.push(url);return response({});}
-      if(url==='/sessions')return response({sessions});
-      if(url.startsWith('/task-console/tasks?')){
-        const search=new URL(url,'http://relay.local').searchParams;
-        const filtered=[child,parent].filter(t=>(!search.get('state')||t.state===search.get('state'))&&
-          (!search.get('conversationId')||t.conversationId===search.get('conversationId')));
-        return response({tasks:filtered,counts:{running:1,completed:1},nextCursor:null,hasMore:false});
+      assert.equal(get('taskDetail').querySelector('.task-detail-head')?.children[0].textContent,'Task 1');
+      child.state='completed';await tick();
+      assert.equal(titles(get).length,0);
+      assert.equal(get('taskDetail').querySelector('.task-detail-head')?.children[0].textContent,'Task 1');
+      assert.ok(calls.filter(url=>url==='/task-console/tasks/'+parent.id).length>=2);
+      assert.equal(get('taskDetail').querySelector('.task-actions')?.children.some(x=>x.textContent==='Cancel task'),false);
+    },async(url,opts)=>mock(items,url,opts));
+  });
+});
+
+test('detail state refreshes independently while list is frozen, replacing obsolete actions',async()=>{
+  await withClock(async tick=>{
+    const items=Array.from({length:60},(_,i)=>numbered(i+1,'running'));
+    await fixture(async get=>{
+      get('taskRows').children[0].onclick?.();await flush();
+      const cancel=get('taskDetail').querySelector('.task-actions')?.children.find(x=>x.textContent==='Cancel task');
+      assert.ok(cancel);
+      get('taskMore').onclick?.();await flush();
+      items[59].state='completed';
+      await tick();
+      const head=get('taskDetail').querySelector('.task-detail-head');
+      assert.ok(head?.children[1]?.textContent.includes('Completed'));
+      assert.ok(!get('taskDetail').querySelector('.task-actions')?.children.some(x=>x.textContent==='Cancel task'));
+      assert.equal(titles(get).length,60);
+    },async(url,opts)=>mock(items,url,opts));
+  });
+});
+
+test('a late live response cannot overwrite history started during polling',async()=>{
+  await withClock(async tick=>{
+    const items=Array.from({length:60},(_,i)=>numbered(i+1));
+    let release:((value:Response)=>void)|undefined;
+    let block=false;
+    await fixture(async get=>{
+      block=true;
+      await tick();
+      assert.ok(release,'live poll is in flight');
+      get('taskMore').onclick?.();await flush();
+      assert.equal(titles(get).length,100);
+      items.push(numbered(61));
+      release!(mock(items,'/task-console/tasks?limit=50'));
+      await flush();
+      assert.equal(titles(get).length,100);
+      assert.ok(!titles(get).includes('Task 61'));
+      assert.match(get('taskFeedback').textContent,/History/);
+    },async(url,opts)=>{
+      if(block&&url.startsWith('/task-console/tasks?')&&!url.includes('&cursor=')){
+        block=false;
+        return await new Promise<Response>(resolve=>{release=resolve;});
       }
-      if(url==='/task-console/tasks/'+one)return response({task:parent,conversation:sessions[1],children:[],approvals:[]});
-      if(url==='/task-console/tasks/'+two)return response({task:child,conversation:sessions[0],children:[],approvals:[]});
-      if(url.includes('/events?'))return response({events:[],nextCursor:0,hasMore:false});
-      throw Error('Unexpected request '+url);
+      return mock(items,url,opts);
     });
-  } finally {globalThis.setTimeout=original;globalThis.clearTimeout=originalClear;}
+  });
+});
+
+test('initially empty workspace shows a clear empty state',async()=>{
+  await fixture(async get=>{
+    assert.equal(titles(get).length,0);
+    assert.equal(get('taskRows').querySelector('.task-rows-empty')?.textContent,'No tasks match this filter.');
+  },async(url,opts)=>mock([],url,opts));
+});
+
+test('full task result remains available rather than truncated in the detail pane',async()=>{
+  const item=numbered(1,'completed');
+  item.result='start '+('x'.repeat(12000))+' END_REPORT';
+  await fixture(async get=>{
+    get('taskRows').children[0].onclick?.();await flush();
+    assert.equal(get('taskDetail').querySelector('.task-result')?.textContent,item.result);
+  },async(url,opts)=>mock([item],url,opts));
 });
