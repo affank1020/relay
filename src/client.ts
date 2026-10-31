@@ -92,17 +92,24 @@ function emptyConversation(){
 }
 
 async function refresh(){
-  const [state,list]=await Promise.all([get<{provider:string;model:string;atlas:string;defaultModelKey?:string;models?:{key:string;label:string}[]}>('/status'),get<{sessions:Summary[]}>('/sessions')]);
+  const [state,list]=await Promise.all([get<{provider:string;model:string;atlas:string;ollamaOnline?:boolean;defaultModelKey?:string;models?:{key:string;label:string}[]}>('/status'),get<{sessions:Summary[]}>('/sessions')]);
   configuredModels=state.models??[];
   if(configuredModels.length){
     const picker=$<HTMLSelectElement>('modelPicker'),previous=picker.value;
     picker.replaceChildren();
-    for(const option of configuredModels){const item=document.createElement('option');item.value=option.key;item.textContent=option.label;picker.append(item);}
+    for(const option of configuredModels){
+      const item=document.createElement('option');
+      item.value=option.key;
+      const offline=option.key.startsWith('ollama/')&&state.ollamaOnline===false;
+      item.textContent=option.label+(offline?' (offline)':'');
+      item.disabled=offline;
+      picker.append(item);
+    }
     picker.value=configuredModels.some(x=>x.key===previous)?previous:(state.defaultModelKey??configuredModels[0].key);
   }
   $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===$<HTMLSelectElement>('modelPicker').value)?.label??state.model);
   $('connection').textContent='Pi connected';
-  $('subtitle').textContent=state.atlas==='configured'?'Connected to Atlas · '+configuredModels.length+' models available':'Atlas not configured';
+  $('subtitle').textContent=state.atlas==='configured'?'Connected to Atlas · '+configuredModels.filter(m=>!m.key.startsWith('ollama/')||state.ollamaOnline!==false).length+' models available':'Atlas not configured';
   $('atlasSummary').title=state.atlas==='configured'?'Atlas MCP configured':'Atlas MCP is not configured';
   knownSessions=list.sessions;
   renderSessions();
@@ -256,7 +263,9 @@ $<HTMLFormElement>('loginForm').onsubmit=async event=>{
   try{await api('/status');$<HTMLDialogElement>('login').close();$<HTMLInputElement>('token').value='';$('error').textContent='';await bootstrap();}
   catch(e){$('error').textContent=text(e);}
 };
-$('settings').onclick=()=>{if(hosted){void bootstrap();return;}token='';$<HTMLDialogElement>('login').showModal();};
+$('settings').onclick=()=>{if(hosted){// Keep discovery fresh even if the model picker stays open while Ollama downloads finish.
+setInterval(()=>{if(document.visibilityState!=='hidden')void refresh().catch(()=>{});},60_000);
+void bootstrap();return;}token='';$<HTMLDialogElement>('login').showModal();};
 $('new').onclick=()=>{void create().then(closeSidebar).catch(notify);};
 $<HTMLInputElement>('sessionSearch').oninput=renderSessions;
 $('openSidebar').onclick=()=>{document.body?.classList?.add('sidebar-open');};
