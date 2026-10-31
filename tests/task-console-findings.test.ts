@@ -238,7 +238,7 @@ test('new tasks cannot strand a displaced first-page row beyond the saved pagina
       assert.equal(titles.length,61,'the complete 60→61 history remains reachable');
       assert.equal(new Set(titles).size,61,'no task appears twice');
       for(let i=1;i<=61;i++)assert.ok(titles.includes('Number '+i),'missing rowid '+i);
-      assert.ok(calls.some(url=>url.includes('cursor=11')),'pagination uses the original cursor');
+      assert.ok(calls.some(url=>url.includes('cursor=12')),'pagination rebases to include the displaced rowid 11');
       assert.equal(displaced.rowid,11);
     },async url=>{
       if(url==='/sessions')return response({sessions:[sessions[0]]});
