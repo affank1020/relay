@@ -136,9 +136,10 @@ characters, no control characters) and returns `200 {"session":...}`.
 session-directory cleanup, `404` if absent and `409` for any active,
 interrupted, dependent, awaiting-approval or uncertain invocation. Do not
 silently cancel agents to permit deletion. Deletion can respond `503` after
-the DB commit if filesystem cleanup fails; the chat is no longer visible and
-a durable cleanup tombstone is retried on the next process start. The client
-shows this failure without claiming a successful full purge.
+the DB commit if a required WAL checkpoint or Pi filesystem cleanup fails;
+the chat is no longer visible and a durable cleanup tombstone is retried on
+the next process start. The client shows this failure without claiming a
+successful full purge.
 
 **Schema migration:** Relay upgrades `PRAGMA user_version` from 1 to 2 in
 one SQLite transaction. It adds a content-free `retired_usage` ledger and
@@ -147,8 +148,15 @@ usage is retired once in that transaction; global USD/token/unknown-usage
 budget accounting is cumulative even after deletion and restart. Local
 per-chat totals do not include retired usage. The delete transaction removes
 tasks, event text, approval arguments and tool invocation results, then
-records a cleanup tombstone. Pi session `.jsonl` directories are removed
-without following symlinks. Pending tombstones never make history reappear.
+records a cleanup tombstone. With SQLite `secure_delete=ON`, the freed
+database cells are overwritten; a verified `wal_checkpoint(TRUNCATE)` then
+removes prior committed WAL frames *before* a 204 response. Checkpoint
+failure produces 503 and preserves the tombstone for retry on startup.
+Pi session `.jsonl` directories are removed without following symlinks.
+Pending tombstones never make history reappear. This is logical/database-file
+purging, **not a guarantee of forensic erasure** from storage-level snapshots,
+backups, flash wear levelling, host filesystem caches or previously copied
+files. Handle old backups according to the applicable retention policy.
 
 **Predeployment backup:** stop Relay so no writer is active, and back up the
 *entire* `RELAY_DATA_DIR` volume, including `relay.sqlite`, the optional

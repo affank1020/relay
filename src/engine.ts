@@ -39,6 +39,9 @@ export class Engine {
     if(!this.harness.deleteConversationSessions)throw new SessionCleanupError('Session cleanup unavailable');
     for(const id of this.store.pendingSessionDeletions()) {
       try {
+        // After a crash or failed checkpoint, historical WAL frames may
+        // still contain transcript data. Never clear the tombstone first.
+        this.store.checkpointDeletedHistory();
         await this.harness.deleteConversationSessions(id);
         this.store.sessionDeletionComplete(id);
       } catch {
@@ -78,11 +81,15 @@ export class Engine {
     // validation and the transaction.
     this.store.purgeConversation(id,owned);
     try {
+      // A committed SQLite purge alone can leave old message bytes in the
+      // live WAL. Verify TRUNCATE before acknowledging a full purge.
+      this.store.checkpointDeletedHistory();
       await this.harness.deleteConversationSessions(id);
       this.store.sessionDeletionComplete(id);
     } catch {
-      // The chat is already logically deleted. Keep a durable retry marker.
-      throw new SessionCleanupError('Conversation deleted; session cleanup pending');
+      // The chat was logically deleted, but checkpoint or Pi cleanup failed.
+      // The durable tombstone makes the remaining work retryable on startup.
+      throw new SessionCleanupError('Conversation deleted; durable cleanup pending');
     }
   }
   conversation(modelKey?:string) {

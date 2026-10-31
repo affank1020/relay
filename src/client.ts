@@ -22,6 +22,21 @@ function indexToolReceipt(event:ExecutionEvent){
 }
 let configuredModels:{key:string;label:string}[]=[];
 let knownSessions:Summary[]=[];
+let sendRecoveryNotice='';
+function clearPendingForDeletedConversation(id:string){
+  if(pending?.conversationId!==id)return;
+  const unsent=pending.message;
+  pending=null;
+  remember('relay.pending','');
+  const prompt=$<HTMLTextAreaElement>('prompt');
+  if(!prompt.value.trim()||prompt.value.trim()===unsent.trim()){
+    prompt.value=unsent;
+    sendRecoveryNotice='That conversation was deleted. Your unconfirmed message is in the composer; review it before sending.';
+  }else{
+    sendRecoveryNotice='That conversation was deleted. An unconfirmed send was cleared; your current draft is unchanged.';
+  }
+  $('notice').textContent=sendRecoveryNotice;
+}
 let menuTarget:string|null=null, menuAnchor:HTMLButtonElement|null=null, dialogTarget:string|null=null;
 function closeSessionMenu(){
   const menu=$('sessionMenu');menu.hidden=true;
@@ -165,6 +180,10 @@ async function refresh(){
   atlas.title=state.atlas==='configured'?'Atlas MCP configured, not independently health checked':'Atlas is not connected';
   $('atlasLabel').textContent=state.atlas==='configured'?'Atlas MCP':state.atlas==='mock'?'Atlas (sample)':'Atlas not configured';
   $('atlasOrb').className='status-orb'+(state.atlas==='configured'?'':' is-muted');
+  // A stale tab may still have a pending send aimed at a chat deleted
+  // elsewhere. The authoritative session listing invalidates that target.
+  if(pending&&!list.sessions.some(s=>s.id===pending!.conversationId))
+    clearPendingForDeletedConversation(pending.conversationId);
   knownSessions=list.sessions;
   renderSessions();
   return list.sessions;
@@ -273,9 +292,10 @@ async function poll(){
     if(activity.length>300)activity.splice(0,activity.length-300);
     renderActivity();
     render(snapshot);
-    $('notice').textContent=pending?'A send is awaiting confirmation. Retry uses the same request ID.':'';
+    $('notice').textContent=pending?'A send is awaiting confirmation. Retry uses the same request ID.':sendRecoveryNotice;
   }catch(e){
     if(generation===epoch && text(e).includes('Conversation not found')){
+      clearPendingForDeletedConversation(id);
       try {
         const sessions=await refresh();
         if(current===id){
@@ -309,9 +329,13 @@ async function submit(event:Event){
     remember('relay.pending',JSON.stringify(pending));
     const {conversationId,message,requestId}=pending;
     await api('/sessions/'+conversationId+'/messages',{method:'POST',body:JSON.stringify({message,requestId})});
-    pending=null;remember('relay.pending','');prompt.value='';
+    pending=null;remember('relay.pending','');prompt.value='';sendRecoveryNotice='';
     if(current!==conversationId)await select(conversationId);else await poll();
-  }catch(e){notify('Send not confirmed. Press Send to retry the same request safely. '+text(e));}
+  }catch(e){
+    if(text(e)==='Conversation not found'&&pending)
+      clearPendingForDeletedConversation(pending.conversationId);
+    else notify('Send not confirmed. Press Send to retry the same request safely. '+text(e));
+  }
   finally{submitting=false;setBusy(busy);}
 }
 function hostedError(error:unknown,stage:'api'|'session'){
@@ -326,6 +350,8 @@ async function bootstrap(){
     const sessions=await refresh();stage='session';
     const remembered=recall('relay.conversation');
     try{const saved=JSON.parse(recall('relay.pending')||'null');if(saved&&typeof saved.message==='string'&&typeof saved.requestId==='string'&&typeof saved.conversationId==='string')pending=saved;}catch{}
+    if(pending&&!sessions.some(s=>s.id===pending!.conversationId))
+      clearPendingForDeletedConversation(pending.conversationId);
     if(!current){const selected=sessions.find(s=>s.id===remembered)||sessions[0];if(selected)await select(selected.id);else await create();}
   }catch(e){if(hosted)hostedError(e,stage);else $<HTMLDialogElement>('login').showModal();}
 }

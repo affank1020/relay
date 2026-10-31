@@ -306,3 +306,66 @@ test('conversation menu renames and deletes only after confirmation; failed requ
   assert.equal(element('title').textContent,'Second');
   assert.equal(element('sessions').children.length,1);
 });
+
+
+test('stale tab clears an unconfirmed send after another tab deletes the chat',async()=>{
+  const nodes=new Map<string,Element>();
+  const element=(id:string):Element=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id)!;};
+  const storage=new Map<string,string>();
+  let deleted=false,seq=0,pollAgain:(()=>void)|undefined;
+  const posts:Array<{conversation:string;message:string;requestId:string}>=[];
+  const context={
+    window:{location:{protocol:'https:'},sessionStorage:{getItem:(key:string)=>storage.get(key)??null,setItem:(key:string,value:string)=>{storage.set(key,value);}}},
+    document:{getElementById:element,createElement:(name:string)=>new Element(name)},
+    Headers,Response,URL,
+    crypto:{randomUUID:()=> 'new-request-'+(++seq)},
+    setTimeout:(fn:()=>void)=>{pollAgain=fn;return 1;},
+    clearTimeout:()=>{pollAgain=undefined;},
+    fetch:async(url:string,options?:RequestInit)=>{
+      if(url==='/api/status')return new Response(JSON.stringify({provider:'OpenRouter',model:'free',atlas:'configured'}));
+      if(url==='/api/sessions')return new Response(JSON.stringify({sessions:deleted?[{id:'c2',title:'Survivor'}]:[{id:'c1',title:'Deleted elsewhere'},{id:'c2',title:'Survivor'}]}));
+      const sending=url.match(/^\/api\/sessions\/(c[12])\/messages$/);
+      if(sending&&options?.method==='POST'){
+        const body=JSON.parse(options.body as string) as {message:string;requestId:string};
+        posts.push({conversation:sending[1],...body});
+        if(sending[1]==='c1')return new Response(JSON.stringify({error:'Temporary send failure'}),{status:503});
+        return new Response(JSON.stringify({task:{conversationId:'c2',id:'task-2'}}),{status:202});
+      }
+      const session=url.match(/^\/api\/sessions\/(c[12])$/);
+      if(session) {
+        if(deleted&&session[1]==='c1')return new Response(JSON.stringify({error:'Conversation not found'}),{status:404});
+        return new Response(JSON.stringify({session:{id:session[1],title:session[1]==='c1'?'Deleted elsewhere':'Survivor',busy:false,costUsd:0,usage:{costKind:'estimated',tokens:0,unknown:false}},tasks:[],approvals:[]}));
+      }
+      if(url.startsWith('/api/sessions/c1/events?after=')||url.startsWith('/api/sessions/c2/events?after='))
+        return new Response(JSON.stringify({events:[],nextCursor:0,hasMore:false}));
+      throw Error('Unexpected request '+url);
+    }
+  };
+  runInNewContext(source,context,{filename:'dist/public/app.js'});
+  await flush();
+  const prompt=element('prompt');
+  prompt.value='Unconfirmed message to A';
+  (element('form').onsubmit as unknown as ((e:{preventDefault():void})=>void))({preventDefault(){}});
+  await flush();
+  assert.equal(posts.length,1);
+  assert.equal(posts[0].conversation,'c1');
+  assert.match(storage.get('relay.pending')??'',/c1/);
+  // A second tab permanently deletes this now-idle conversation.
+  deleted=true;
+  const poll=pollAgain;
+  assert.ok(poll);
+  poll();
+  await flush();
+  assert.equal(element('title').textContent,'Survivor');
+  assert.equal(storage.get('relay.pending'),'','stale pending request must be cleared durably');
+  assert.equal(prompt.value,'Unconfirmed message to A','unsent text remains editable');
+  assert.match(element('notice').textContent,/deleted.*unconfirmed message/i);
+  prompt.value='New message to B';
+  (element('form').onsubmit as unknown as ((e:{preventDefault():void})=>void))({preventDefault(){}});
+  await flush();
+  assert.equal(posts.length,2);
+  assert.equal(posts[1].conversation,'c2');
+  assert.equal(posts[1].message,'New message to B');
+  assert.notEqual(posts[1].requestId,posts[0].requestId);
+  assert.equal(storage.get('relay.pending'),'');
+});

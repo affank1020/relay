@@ -19,9 +19,13 @@ export interface RetiredUsage { costUsd: number; tokens: number; unknown: boolea
 
 export class Store {
   readonly db: DatabaseSync;
+  private readonly inMemory: boolean;
   constructor(path: string) {
+    this.inMemory=path===':memory:';
     this.db = new DatabaseSync(path);
-    this.db.exec('PRAGMA foreign_keys=ON; PRAGMA locking_mode=EXCLUSIVE; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;');
+    // Overwrite freed cells on database pages, and separately truncate the
+    // historical WAL frames below before reporting completed deletion.
+    this.db.exec('PRAGMA foreign_keys=ON; PRAGMA locking_mode=EXCLUSIVE; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;');
     const version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
     if (version > 2) throw new Error('Database schema is newer than this Relay version');
     // V1 -> V2 is additive. Migrate within one SQLite transaction; a failed
@@ -65,6 +69,18 @@ export class Store {
   }
   sessionDeletionComplete(id:string):void {
     this.db.prepare('DELETE FROM pending_session_deletions WHERE conversation_id=?').run(id);
+  }
+  checkpointDeletedHistory():void {
+    // DELETE does not remove older page images from an open SQLite WAL.
+    // Only retire the cleanup tombstone after a verified TRUNCATE checkpoint.
+    const result=this.db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get() as
+      {busy:number;log:number;checkpointed:number}|undefined;
+    // In-memory SQLite has no WAL file: the pragma returns -1/-1.
+    if(!result || result.busy!==0 || (this.inMemory
+      ? result.log!==-1 || result.checkpointed!==-1
+      : result.log!==0 || result.checkpointed!==0)) {
+      throw new Error('Deleted conversation WAL cleanup is pending');
+    }
   }
   // Caller verifies execution states and cross-conversation references first.
   // This entire purge and budget retirement is one durable SQLite transaction;

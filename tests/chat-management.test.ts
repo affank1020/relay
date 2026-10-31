@@ -75,6 +75,16 @@ test('purge removes private rows and Pi session files without losing spend or vi
     const before=engine.usage();
     assert.equal(before.costUsd,.2);
     await engine.deleteConversation(c.id);
+    assert.equal((store.db.prepare('PRAGMA secure_delete').get() as {secure_delete:number}).secure_delete,1);
+    // A successful DELETE must not leave old prompt/result/tool args in either
+    // the live WAL or freed main-file pages while Relay keeps running.
+    const wal=await readFile(join(root,'relay.sqlite-wal'));
+    const main=await readFile(join(root,'relay.sqlite'));
+    for(const secret of ['sensitive prompt','fixture answer','private']){
+      assert.equal(wal.includes(secret),false,'Deleted text retained in WAL: '+secret);
+      assert.equal(main.includes(secret),false,'Deleted text retained in DB: '+secret);
+    }
+    assert.equal(wal.length,0,'TRUNCATE checkpoint must leave an empty WAL');
     assert.equal(store.get('conversations',c.id),undefined);
     assert.deepEqual(store.events(c.id),[]);
     assert.equal(engine.tasks().length,0);
@@ -258,4 +268,43 @@ test('Pi session cleanup refuses symlinks and does not delete outside files',asy
     assert.equal(await readFile(outside,'utf8'),'retain me');
     await assert.rejects(pi.deleteConversationSessions('../outside'),/Invalid conversation ID/);
   }finally{await rm(root,{recursive:true,force:true});}
+});
+
+
+test('checkpoint failure retains durable tombstone until startup retries WAL and Pi cleanup',async()=>{
+  await fixture(async(store,root)=>{
+    const pi=new PiHarness(root,'cohere/north-mini-code:free');
+    const engine=new Engine(store,harness(id=>pi.deleteConversationSessions(id)),limits);
+    const c=engine.conversation();
+    const task=engine.enqueue(c.id,'private checkpoint message','request-001');
+    await until(()=>engine.tasks().find(t=>t.id===task.id)?.state==='completed');
+    await engine.stop();
+    const dir=join(root,'sessions',c.id);
+    await mkdir(dir,{recursive:true});
+    await writeFile(join(dir,'old.jsonl'),'private Pi session');
+    const realCheckpoint=store.checkpointDeletedHistory.bind(store);
+    let attempts=0;
+    store.checkpointDeletedHistory=()=>{
+      attempts++;
+      throw new Error('Simulated checkpoint failure');
+    };
+    await assert.rejects(engine.deleteConversation(c.id),SessionCleanupError);
+    assert.equal(attempts,1);
+    assert.equal(store.get('conversations',c.id),undefined);
+    assert.deepEqual(store.pendingSessionDeletions(),[c.id]);
+    assert.equal(store.retiredUsage().count,1);
+    assert.equal(await readFile(join(dir,'old.jsonl'),'utf8'),'private Pi session',
+      'Pi deletion must not occur before the WAL is successfully sanitized');
+    // Simulate restart recovery after the checkpoint becomes available.
+    store.checkpointDeletedHistory=realCheckpoint;
+    const resumed=new Engine(store,harness(id=>pi.deleteConversationSessions(id)),limits);
+    resumed.start();
+    await until(()=>store.pendingSessionDeletions().length===0);
+    await assert.rejects(access(dir),/ENOENT/);
+    assert.equal((await readFile(join(root,'relay.sqlite-wal'))).length>0,true,
+      'Tombstone removal may create a new WAL frame, but no transcript bytes');
+    assert.equal((await readFile(join(root,'relay.sqlite-wal'))).includes('private checkpoint message'),false);
+    assert.equal(store.retiredUsage().count,1);
+    await resumed.stop();
+  });
 });
