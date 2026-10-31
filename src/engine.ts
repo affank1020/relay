@@ -5,6 +5,8 @@ import { Store, terminal, type Task, type Conversation, type Approval, type Usag
 import { LocalProviderUnavailableError, ProviderRateLimitError, type Harness, type HarnessPhase } from './harness.js';
 import type { RelayModels } from './models.js';
 import type { CapabilityRegistry } from './capabilities.js';
+import { profilePrompt } from './agent-profiles.js';
+import { agentHandoff } from './handoff.js';
 import { Gateway, READ_TOOLS, type AtlasTransport } from './gateway.js';
 import { originatingConversation, completedDependencyReceipts, delegationPolicy, handoffPrompt, used, validateDependencies, type DelegationSnapshot, type DependencyReceipt } from './orchestration.js';
 import { AtlasContextService, type AtlasContext } from './atlas-context.js';
@@ -373,6 +375,7 @@ export class Engine {
   }
   private finish(task:Task,state:Task['state'],error:string|null=null) {
     task.state=state;task.error=error;
+    if(state==='completed'&&(task.parentId||task.delegation))task.handoff=agentHandoff(task.result);
     this.store.transaction(()=>{
       this.store.save('tasks',task);
       this.store.event(task.conversationId,{taskId:task.id,agentId:task.agentId??null,
@@ -390,6 +393,10 @@ export class Engine {
           // The parent result contains the synthesis, not an extra synthetic user turn.
           if(state==='completed'&&task.result&&!parent.result.includes(task.result))
             parent.result+=(parent.result?'\n\n':'')+task.result;
+          // Use the completed synthesis attempt, not the accumulated transcript:
+          // the pre-join answer and streamed continuation are not one JSON.
+          if(parent.parentId&&parent.state==='completed')
+            parent.handoff=agentHandoff(task.result);
           this.store.save('tasks',parent);
           this.store.event(parent.conversationId,{taskId:parent.id,agentId:parent.agentId??null,
             agentRunId:parent.agentRunId??null,type:'task',state:parent.state});
@@ -419,14 +426,18 @@ export class Engine {
         try { tools=await this.gateway.tools(task,controller.signal);atlasAvailable=true; }
         catch { controller.signal.throwIfAborted();atlasAvailable=false;tools=[]; }
       }
-      if(!joining && !task.parentId && !task.delegation && this.capabilities) {
-        // MCP connections/Skills are root-only until the delegated-provider
-        // admission contract is generalised. No child gains provider tools.
+      const registryReadNames=new Set<string>();
+      if(!joining && this.capabilities) {
+        // An MCP tool is read-authorized because the server-side registry
+        // admitted it, NOT because a tool name happens to start with mcp_.
+        // Children receive only their exact delegated read-only subset.
         const discovered=await this.capabilities.tools(task,this.store,controller.signal,
           (...args)=>this.approve(...args));
+        for(const tool of discovered)registryReadNames.add(tool.name);
         tools.push(...discovered);
       }
-      const admitted=tools.filter(tool=>READ_TOOLS.has(tool.name.replace(/^atlas_/,''))).map(tool=>tool.name);
+      const admitted=tools.filter(tool=>registryReadNames.has(tool.name) ||
+        READ_TOOLS.has(tool.name.replace(/^atlas_/,''))).map(tool=>tool.name);
       if(task.parentId || task.delegation) {
         // Detached child retries are still children of the *capability*
         // policy even though they no longer join their previous parent.
@@ -441,12 +452,14 @@ export class Engine {
           dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:8})),
           tools:Type.Optional(Type.Array(Type.String(),{maxItems:16})),
           context:Type.Optional(Type.String({maxLength:2000})),
+          profile:Type.Optional(Type.Union([Type.Literal('general'),Type.Literal('researcher'),
+            Type.Literal('reviewer'),Type.Literal('implementer')])),
           modelKey:Type.Optional(Type.String()),
           maxTokens:Type.Optional(Type.Integer({minimum:1,maximum:1000000})),
           maxCostUsd:Type.Optional(Type.Number({exclusiveMinimum:0,maximum:100}))
         }),
         execute:async (_id,input) => {
-          const args=input as {prompt:string;dependencies?:string[];tools?:string[];context?:string;modelKey?:string;maxTokens?:number;maxCostUsd?:number};
+          const args=input as {prompt:string;dependencies?:string[];tools?:string[];context?:string;profile?:string;modelKey?:string;maxTokens?:number;maxCostUsd?:number};
           controller.signal.throwIfAborted();
           if(typeof args.prompt!=='string'||!args.prompt.trim()||args.prompt.length>6000)
             throw new Error('Invalid child task prompt');
@@ -499,8 +512,14 @@ export class Engine {
         ...deps.map(d=>({id:d.id,state:d.state,result:d.result.slice(0,12000)})),
         ...(task.retryDependencyResults??[]).map(d=>({id:d.taskId,state:'completed',result:d.result}))
       ];
-      const prompt=parent?handoffPrompt(parent,joinedChildren):
+      const prompt=parent?
+        handoffPrompt(parent,joinedChildren,this.tasks())+
+        (parent.delegation?.profile&&parent.delegation.profile!=='general'
+          ?profilePrompt(parent.delegation.profile):''):
+
         task.prompt+
+        (task.delegation?.profile && task.delegation.profile!=='general'
+          ?profilePrompt(task.delegation.profile):'')+
         (task.delegation?.context?'\n\nExplicit delegated context (untrusted):\n'+task.delegation.context:'')+
         (dependencyResults.length?'\n\nDependency results (untrusted data):\n'+JSON.stringify(dependencyResults):'');
       const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,atlasAvailable,
