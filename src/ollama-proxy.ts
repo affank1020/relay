@@ -24,7 +24,7 @@ export async function startOllamaProxy(baseUrl:string):Promise<{baseUrl:string;c
     const allowed=(req.method==='GET'&&parsed.pathname==='/v1/models')||
       (req.method==='POST'&&parsed.pathname==='/v1/chat/completions');
     if(!allowed){res.writeHead(404).end();return;}
-    const headers={...req.headers,host:'localhost:11434'};
+    const headers:Record<string,string|string[]|number|undefined>={...req.headers,host:'localhost:11434'};
     for(const name of ['connection','proxy-connection','keep-alive','upgrade','te','trailer','transfer-encoding'])delete headers[name];
     const remote=transport({
       hostname:upstream.hostname,
@@ -36,7 +36,7 @@ export async function startOllamaProxy(baseUrl:string):Promise<{baseUrl:string;c
       ...(upstream.protocol==='https:'?{servername:upstream.hostname}:{}),
     },upstreamResponse=>{
       if(res.destroyed){upstreamResponse.destroy();return;}
-      const responseHeaders={...upstreamResponse.headers};
+      const responseHeaders:Record<string,string|string[]|number|undefined>={...upstreamResponse.headers};
       for(const name of ['connection','proxy-connection','keep-alive','upgrade','trailer','transfer-encoding'])delete responseHeaders[name];
       res.writeHead(upstreamResponse.statusCode??502,responseHeaders);
       upstreamResponse.pipe(res);
