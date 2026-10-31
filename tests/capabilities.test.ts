@@ -7,7 +7,8 @@ import { Engine } from '../src/engine.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CapabilityRegistry } from '../src/capabilities.js';
-import { ConnectionManager, configuredProviders, type ProviderTransport } from '../src/integrations/manager.js';
+import { ConnectionManager, HttpProviderTransport, configuredProviders, type ProviderTransport } from '../src/integrations/manager.js';
+import { validRemoteArguments } from '../src/integrations/schema.js';
 import { Store, type Task } from '../src/store.js';
 import { PiHarness } from '../src/harness.js';
 
@@ -151,4 +152,136 @@ test('capability settings API is authenticated, validated and durable',async()=>
     await engine.stop();store.close();await registry.close();
     await rm(root,{recursive:true,force:true});
   }
+});
+
+
+test('typeless nested JSON Schema constraints and combinators fail closed',()=>{
+  const schema={
+    type:'object',properties:{
+      filter:{properties:{owner:{type:'string'}},required:['owner'],additionalProperties:false},
+      count:{minimum:2,maximum:6},
+      tags:{minItems:2,items:{type:'string',maxLength:5}},
+      variant:{oneOf:[
+        {required:['repo'],properties:{repo:{type:'string'}},additionalProperties:false},
+        {required:['issue'],properties:{issue:{type:'integer'}},additionalProperties:false}
+      ]}
+    },required:['filter'],additionalProperties:false
+  };
+  assert.equal(validRemoteArguments(schema,{filter:{owner:'alice'},count:3,tags:['a','b'],variant:{repo:'x'}}),true);
+  assert.equal(validRemoteArguments(schema,{filter:{owner:42}}),false);
+  assert.equal(validRemoteArguments(schema,{filter:{owner:'alice',other:'unexpected'}}),false);
+  assert.equal(validRemoteArguments(schema,{filter:{owner:'alice'},count:1}),false);
+  assert.equal(validRemoteArguments(schema,{filter:{owner:'alice'},tags:['one']}),false);
+  assert.equal(validRemoteArguments(schema,{filter:{owner:'alice'},tags:['more-than-five','ok']}),false);
+  assert.equal(validRemoteArguments(schema,{filter:{owner:'alice'},variant:{repo:6}}),false);
+  assert.equal(validRemoteArguments(schema,{filter:{owner:'alice'},variant:{unknown:true}}),false);
+  assert.equal(validRemoteArguments({...schema,pattern:'unsafe-unimplemented'},{filter:{owner:'alice'}}),false);
+});
+
+test('expired established MCP transport reconnects on a later discovery, never replays a failed call',async()=>{
+  const config=configuredProviders({RELAY_GITHUB_TOKEN:'fake'})[0];
+  let generations=0,closed=0,dispatched=0;
+  const provider=new HttpProviderTransport(config,async()=>{
+    const version=++generations;
+    let discovered=0;
+    return {
+      listTools:async()=>{
+        discovered++;
+        if(version===1&&discovered===2)throw new Error('remote session expired: credentials opaque');
+        return {tools:[{name:'issue_read',inputSchema:{type:'object'}}]};
+      },
+      callTool:async()=>{dispatched++;throw new Error('stale session');},
+      close:async()=>{closed++;}
+    } as never;
+  });
+  const signal=new AbortController().signal;
+  try{
+    assert.equal((await provider.list(signal)).length,1);
+    await assert.rejects(provider.list(signal),/session expired/);
+    assert.equal(closed,1);
+    assert.equal((await provider.list(signal)).length,1);
+    assert.equal(generations,2);
+    await assert.rejects(provider.call('issue_read',{},signal),/stale session/);
+    assert.equal(dispatched,1,'no automatic retry of ambiguous calls');
+    assert.equal(closed,2);
+    assert.equal((await provider.list(signal)).length,1);
+    assert.equal(generations,3);
+  }finally{await provider.close();}
+});
+
+test('known failed MCP read does not prevent conversation deletion',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'relay-read-delete-'));
+  const store=new Store(':memory:');
+  const provider=configuredProviders({RELAY_GITHUB_TOKEN:'private'})[0];
+  const registry=new CapabilityRegistry(root,join(process.cwd(),'skills'),[provider],()=>({
+    list:async()=>[{name:'issue_read',inputSchema:{type:'object',additionalProperties:false}}],
+    call:async()=>({isError:true,content:[{type:'text',text:'secret failure'}]}),
+    close:async()=>{}
+  }));
+  await registry.update('integrations','github',true);
+  const harness={version:1 as const,capabilities:{persistence:true,cancellation:true,tools:true},
+    deleteConversationSessions:async()=>{},
+    run:async(req:import('../src/harness.js').HarnessRequest)=>{
+      const tool=req.tools.find(t=>t.name==='mcp_github_issue_read');
+      assert.ok(tool);
+      await assert.rejects(tool.execute('known-failure',{},req.signal,undefined,{} as never),/MCP read failed/);
+      return 'could not read the issue';
+    }};
+  const engine=new Engine(store,harness,{concurrency:1,queue:10,sessionUsd:0,globalUsd:0,
+    sessionTokens:0,reserveUsd:0,maxRunMs:10000},undefined,{},undefined,registry);
+  try{
+    const session=engine.conversation();
+    const task=engine.enqueue(session.id,'Read an issue','read-error-001');
+    const end=Date.now()+4000;
+    while(engine.tasks().find(t=>t.id===task.id)?.state!=='completed'){
+      if(Date.now()>end)throw new Error('Task not completed');
+      await new Promise(resolve=>setTimeout(resolve,10));
+    }
+    assert.deepEqual(store.invocationStates(task.id),['failed_read']);
+    await engine.deleteConversation(session.id);
+    assert.equal(store.get('conversations',session.id),undefined);
+  }finally{await engine.stop();store.close();await registry.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('uncertain MCP reads need explicit reconciliation; Atlas uncertainties cannot be retired',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'relay-read-reconcile-'));
+  const store=new Store(':memory:');
+  const provider=configuredProviders({RELAY_GITHUB_TOKEN:'private'})[0];
+  const registry=new CapabilityRegistry(root,join(process.cwd(),'skills'),[provider],()=>({
+    list:async()=>[{name:'issue_read',inputSchema:{type:'object',additionalProperties:false}}],
+    call:async()=>{throw new Error('connection lost after dispatch');},
+    close:async()=>{}
+  }));
+  await registry.update('integrations','github',true);
+  const harness={version:1 as const,capabilities:{persistence:true,cancellation:true,tools:true},
+    deleteConversationSessions:async()=>{},
+    run:async(req:import('../src/harness.js').HarnessRequest)=>{
+      const tool=req.tools.find(t=>t.name==='mcp_github_issue_read')!;
+      await assert.rejects(tool.execute('ambiguous-read',{},req.signal,undefined,{} as never),/uncertain/);
+      return 'outcome unknown';
+    }};
+  const engine=new Engine(store,harness,{concurrency:1,queue:10,sessionUsd:0,globalUsd:0,
+    sessionTokens:0,reserveUsd:0,maxRunMs:10000},undefined,{},undefined,registry);
+  try{
+    const c=engine.conversation();
+    const task=engine.enqueue(c.id,'Read issue','read-unknown-001');
+    const end=Date.now()+4000;
+    while(engine.tasks().find(t=>t.id===task.id)?.state!=='completed'){
+      if(Date.now()>end)throw new Error('Task not completed');
+      await new Promise(resolve=>setTimeout(resolve,10));
+    }
+    assert.deepEqual(store.invocationStates(task.id),['uncertain']);
+    await assert.rejects(engine.deleteConversation(c.id),/uncertain read-only MCP invocations/);
+    assert.throws(()=>engine.reconcileMcpReadInvocations(c.id,false),/confirmation/);
+    // An Atlas-style uncertain operation is never eligible for read-only reconciliation.
+    store.save('invocations',{id:task.id+':atlas-test',state:'uncertain'});
+    assert.throws(()=>engine.reconcileMcpReadInvocations(c.id,true),/uncertain tool invocations/);
+    assert.deepEqual(store.invocationStates(task.id).sort(),['uncertain','uncertain']);
+    store.db.prepare('DELETE FROM invocations WHERE id=?').run(task.id+':atlas-test');
+    assert.equal(engine.reconcileMcpReadInvocations(c.id,true),1);
+    assert.deepEqual(store.invocationStates(task.id),['reconciled_read']);
+    assert.equal(store.events(c.id).at(-1)?.type,'reconciliation');
+    await engine.deleteConversation(c.id);
+    assert.equal(store.get('conversations',c.id),undefined);
+  }finally{await engine.stop();store.close();await registry.close();await rm(root,{recursive:true,force:true});}
 });
