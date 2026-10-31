@@ -462,7 +462,7 @@ test('streaming updates preserve turn nodes and progress follows real events',as
   const nodes=new Map<string,Element>();
   const element=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id)!;};
   const task={id:'t1',conversationId:'c1',prompt:'Check Atlas',result:'',state:'running',error:null,usage:[]};
-  const phases=[{...event('phase-1',1),type:'phase',taskId:'t1',state:'opening_session'}];
+  const phases:Array<{sequence:number;[key:string]:unknown}>=[{...event('phase-1',1),type:'phase',taskId:'t1',state:'opening_session'}];
   let nextPoll:(()=>void)|undefined;
   const context={
     window:{location:{protocol:'https:'},sessionStorage:{getItem:()=>null,setItem:()=>{}}},
