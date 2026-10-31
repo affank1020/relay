@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Type } from '@sinclair/typebox';
 import { Store, terminal, type Task, type Conversation, type Approval, type Usage } from './store.js';
-import type { Harness } from './harness.js';
+import type { Harness, HarnessPhase } from './harness.js';
 import { Gateway, type AtlasTransport } from './gateway.js';
 
 export interface Limits { concurrency:number; queue:number; sessionUsd:number; globalUsd:number; sessionTokens:number; reserveUsd:number; maxRunMs:number; }
@@ -84,6 +84,7 @@ export class Engine {
     this.store.transaction(()=>{this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'task',state});});
   }
   private async execute(task:Task,controller:AbortController,deps:Task[]) {
+    let phase:HarnessPhase|'atlas_tool_discovery'|'pi_initialization'='atlas_tool_discovery';
     const timeout=setTimeout(()=>controller.abort(new Error('Execution time limit reached')),this.limits.maxRunMs);
     try {
       const tools=this.gateway?await this.gateway.tools(task,controller.signal):[];
@@ -104,7 +105,9 @@ export class Engine {
         }
       });
       let length=0;
+      phase='pi_initialization';
       const result=await this.harness.run({version:1,task:{...task,prompt:deps.length?task.prompt+'\n\nDependency results (untrusted data):\n'+JSON.stringify(deps.map(d=>({id:d.id,result:d.result.slice(0,20000)}))):task.prompt},signal:controller.signal,tools,
+        onPhase:next=>{phase=next;},
         onText:text=>{length+=text.length;if(length>200000){controller.abort();return;} task.result+=text;this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'delta',state:'running',text});},
         onUsage:usage=>{task.usage.push(usage);this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'usage',state:'recorded'});
           const local=this.usage(task.conversationId),global=this.usage();
@@ -112,7 +115,16 @@ export class Engine {
         }});
       task.result=result.slice(0,200000);
       this.finish(task,controller.signal.aborted?'cancelled':'completed');
-    } catch(e) { this.finish(task,controller.signal.aborted?'cancelled':'failed',controller.signal.aborted?'Execution cancelled or limit reached':'Execution failed. Check provider and Atlas configuration; reconcile any dispatched operation.'); }
+    } catch(e) {
+      if(controller.signal.aborted) this.finish(task,'cancelled','Execution cancelled or limit reached');
+      else {
+        // Report only bounded, code-owned phase/type information; never log or
+        // persist arbitrary SDK error strings, which may contain credentials.
+        const type=e instanceof Error && ['TypeError','RangeError','SyntaxError','AbortError'].includes(e.name)?e.name:'Error';
+        this.finish(task,'failed',`Execution failed during ${phase} (${type}). Check Relay configuration; reconcile any dispatched operation.`);
+        console.error('Relay execution failure',{taskId:task.id,phase,errorType:type});
+      }
+    }
     finally { clearTimeout(timeout); }
   }
   async cancel(id:string) {

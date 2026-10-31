@@ -8,6 +8,7 @@ import { Engine, type Limits } from '../src/engine.js';
 import { Store, type Task } from '../src/store.js';
 import type { Harness, HarnessRequest } from '../src/harness.js';
 import { PiHarness } from '../src/harness.js';
+import { Type } from '@sinclair/typebox';
 
 export const limits:Limits={concurrency:2,queue:64,sessionUsd:0,globalUsd:0,sessionTokens:0,reserveUsd:0,maxRunMs:5000};
 export function fixtureHarness(run:(r:HarnessRequest)=>Promise<string>):Harness { return {version:1,capabilities:{persistence:true,cancellation:true,tools:true},run}; }
@@ -78,4 +79,48 @@ test('real Pi SDK initializes restricted persistent session before cancellation 
   const controller=new AbortController();controller.abort(new Error('cancel-before-prompt'));
   try{await assert.rejects(new PiHarness(root,'poolside/laguna-s-2.1:free').run({version:1,task,signal:controller.signal,tools:[],onText:()=>assert.fail(),onUsage:()=>assert.fail()}),/cancel-before-prompt/);}
   finally{await engine.stop();store.close();await rm(root,{recursive:true,force:true});}
+});
+
+
+test('failed task identifies the safe execution stage without disclosing exception contents',async()=>{
+  const store=new Store(':memory:');
+  const atlas={list:async()=>{throw new Error('secret-atlas-response');},call:async()=>{throw new Error('unreachable');},close:async()=>{}};
+  const engine=new Engine(store,fixtureHarness(async()=>assert.fail('harness must not run')),limits,atlas);
+  try {
+    const c=engine.conversation();engine.enqueue(c.id,'status','request-stage-001');
+    await until(()=>engine.tasks()[0]?.state==='failed');
+    assert.match(engine.tasks()[0].error||'',/atlas_tool_discovery/);
+    assert.doesNotMatch(engine.tasks()[0].error||'',/secret-atlas-response/);
+  } finally {await engine.stop();store.close();}
+
+  const secondStore=new Store(':memory:');
+  const second=new Engine(secondStore,fixtureHarness(async r=>{
+    r.onPhase?.('creating_session');
+    throw new TypeError('private provider credential');
+  }),limits);
+  try {
+    const c=second.conversation();second.enqueue(c.id,'status','request-stage-002');
+    await until(()=>second.tasks()[0]?.state==='failed');
+    assert.match(second.tasks()[0].error||'',/creating_session \(TypeError\)/);
+    assert.doesNotMatch(second.tasks()[0].error||'',/private provider credential/);
+  } finally {await second.stop();secondStore.close();}
+});
+
+test('real Pi session accepts all 23 Atlas tools and relay_delegate before cancellation', {timeout:65000},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'relay-pi-tool-startup-'));
+  const controller=new AbortController();controller.abort(new Error('cancel-before-prompt'));
+  const tools=Array.from({length:23},(_,i)=>({
+    name:'atlas_diagnostic_'+i,label:'Atlas diagnostic '+i,description:'Read-only fixture',
+    parameters:Type.Unsafe<Record<string,unknown>>({type:'object',properties:{id:{type:'string'}},additionalProperties:false}),
+    execute:async()=>({content:[{type:'text' as const,text:'never executed'}],details:{}}),
+  }));
+  tools.push({
+    name:'relay_delegate',label:'Delegate task',description:'Diagnostic delegation fixture',
+    parameters:Type.Object({prompt:Type.String({minLength:1,maxLength:6000}),dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:8}))}),
+    execute:async()=>({content:[{type:'text' as const,text:'never executed'}],details:{}}),
+  });
+  const task:Task={id:crypto.randomUUID(),conversationId:crypto.randomUUID(),requestId:'tool-startup',prompt:'must not infer',state:'running',createdAt:new Date().toISOString(),parentId:null,dependencies:[],attemptOf:null,result:'',error:null,usage:[]};
+  try {
+    await assert.rejects(new PiHarness(root,'poolside/laguna-s-2.1:free').run({version:1,task,signal:controller.signal,tools,onText:()=>assert.fail('text not expected'),onUsage:()=>assert.fail('usage not expected')}),/cancel-before-prompt/);
+  } finally {await rm(root,{recursive:true,force:true});}
 });
