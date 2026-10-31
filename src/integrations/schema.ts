@@ -36,14 +36,14 @@ function check(schema:Schema,value:unknown,depth:number):boolean {
   const type=schema.type as string|undefined;
   if(type==='null')return value===null;
   if(type==='boolean')return typeof value==='boolean';
-  if(type==='number'||type==='integer'){
+  if(type==='number'||type==='integer'||(!type && numeric(value))){
     if(!numeric(value)||(type==='integer'&&!Number.isInteger(value)))return false;
     if(numeric(schema.minimum)&&value<schema.minimum)return false;
     if(numeric(schema.maximum)&&value>schema.maximum)return false;
     if(numeric(schema.exclusiveMinimum)&&value<=schema.exclusiveMinimum)return false;
     if(numeric(schema.exclusiveMaximum)&&value>=schema.exclusiveMaximum)return false;
   }
-  if(type==='string'){
+  if(type==='string'||(!type&&typeof value==='string')){
     if(typeof value!=='string')return false;
     if(numeric(schema.minLength)&&value.length<schema.minLength)return false;
     if(numeric(schema.maxLength)&&value.length>schema.maxLength)return false;
@@ -52,13 +52,13 @@ function check(schema:Schema,value:unknown,depth:number):boolean {
     if(schema.format==='date-time'&&!Number.isFinite(Date.parse(value)))return false;
     if(schema.format==='uri'){try {new URL(value);}catch{return false;}}
   }
-  if(type==='array'){
+  if(type==='array'||(!type&&Array.isArray(value))){
     if(!Array.isArray(value))return false;
     if(numeric(schema.minItems)&&value.length<schema.minItems)return false;
     if(numeric(schema.maxItems)&&value.length>schema.maxItems)return false;
     if(schema.items&&!value.every(v=>check(schema.items as Schema,v,depth+1)))return false;
   }
-  if(type==='object'){
+  if(type==='object'||(!type&&plain(value))){
     if(!plain(value))return false;
     const keys=Object.keys(value);
     if(numeric(schema.minProperties)&&keys.length<schema.minProperties)return false;

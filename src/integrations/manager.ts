@@ -58,36 +58,59 @@ export interface ProviderTransport {
   call(name:string,args:Record<string,unknown>,signal:AbortSignal):Promise<unknown>;
   close():Promise<void>;
 }
+type McpClientConnection=Pick<Client,'listTools'|'callTool'|'close'>;
 export class HttpProviderTransport implements ProviderTransport {
-  private client?:Promise<Client>;
-  constructor(private readonly config:ProviderConfig) {}
-  private connect():Promise<Client> {
-    return this.client ??= (async()=>{
-      const client=new Client({name:'relay-'+this.config.id,version:'1.0.0'});
-      const transport=new StreamableHTTPClientTransport(new URL(this.config.url),
-        {requestInit:{headers:{Authorization:'Bearer '+this.config.token},redirect:'error'}});
-      try {await client.connect(transport,{timeout:8000});return client;}
-      catch(error){this.client=undefined;await client.close().catch(()=>{});throw error;}
-    })();
+  private client?:Promise<McpClientConnection>;
+  // Injection tests a genuine session lifecycle without using live credentials.
+  constructor(private readonly config:ProviderConfig,
+    private readonly open?:()=>Promise<McpClientConnection>) {}
+  private connect():Promise<McpClientConnection> {
+    if(this.client)return this.client;
+    const promise=this.open?this.open():this.openHttp();
+    this.client=promise;
+    // Failed initial negotiation does not poison subsequent discovery.
+    void promise.catch(()=>{if(this.client===promise)this.client=undefined;});
+    return promise;
+  }
+  private async openHttp():Promise<McpClientConnection> {
+    const client=new Client({name:'relay-'+this.config.id,version:'1.0.0'});
+    const transport=new StreamableHTTPClientTransport(new URL(this.config.url),
+      {requestInit:{headers:{Authorization:'Bearer '+this.config.token},redirect:'error'}});
+    try {await client.connect(transport,{timeout:8000});return client;}
+    catch(error){await client.close().catch(()=>{});throw error;}
+  }
+  private async invalidate(client:McpClientConnection):Promise<void> {
+    const pending=this.client;
+    if(!pending||await pending.catch(()=>undefined)!==client)return;
+    // Never retry a failed call; only future discovery may reconnect.
+    this.client=undefined;
+    await client.close().catch(()=>{});
   }
   async list(signal:AbortSignal):Promise<ListedTool[]> {
     const client=await this.connect(),tools:ListedTool[]=[];
-    let cursor:string|undefined;
-    for(let page=0;page<3;page++){
-      signal.throwIfAborted();
-      const response=await client.listTools(cursor?{cursor}:undefined,{signal,timeout:8000});
-      tools.push(...response.tools);
-      if(tools.length>64)throw new Error('Tool catalogue limit exceeded');
-      cursor=response.nextCursor;
-      if(!cursor)return tools;
-    }
-    throw new Error('Tool catalogue page limit exceeded');
+    try {
+      let cursor:string|undefined;
+      for(let page=0;page<3;page++){
+        signal.throwIfAborted();
+        const response=await client.listTools(cursor?{cursor}:undefined,{signal,timeout:8000});
+        tools.push(...response.tools);
+        if(tools.length>64)throw new Error('Tool catalogue limit exceeded');
+        cursor=response.nextCursor;
+        if(!cursor)return tools;
+      }
+      throw new Error('Tool catalogue page limit exceeded');
+    }catch(error){await this.invalidate(client);throw error;}
   }
   async call(name:string,args:Record<string,unknown>,signal:AbortSignal):Promise<unknown> {
     const client=await this.connect();
-    return client.callTool({name,arguments:args},undefined,{signal,timeout:20000});
+    try {return await client.callTool({name,arguments:args},undefined,{signal,timeout:20000});}
+    catch(error){await this.invalidate(client);throw error;}
   }
-  async close():Promise<void>{if(this.client)await (await this.client).close().catch(()=>{});this.client=undefined;}
+  async close():Promise<void>{
+    const pending=this.client;
+    this.client=undefined;
+    if(pending)await (await pending.catch(()=>undefined))?.close().catch(()=>{});
+  }
 }
 const safeSchema=(schema:Record<string,unknown>):boolean=>{
   try {
