@@ -29,7 +29,13 @@ export function taskConsolePage(engine:Engine,url:URL) {
   const more=rows.length>limit;
   const page=rows.slice(0,limit);
   return {
-    tasks:page.map(row=>JSON.parse(row.data) as Task),
+    // Polling must not resend a complete model response (up to 200KB per task).
+    // Task detail remains the authoritative full record.
+    tasks:page.map(row=>{
+      const task=JSON.parse(row.data) as Task;
+      return {...task,prompt:task.prompt.slice(0,500),result:task.result.slice(0,280),
+        error:task.error?.slice(0,280)??null,usage:[]};
+    }),
     nextCursor:more?String(page[page.length-1].rowid):null,
     hasMore:more,
     counts:Object.fromEntries(counts.map(row=>[row.state,row.total]))
@@ -46,7 +52,9 @@ function safeArgs(value:unknown,depth=0):unknown {
       key,/token|secret|password|credential|authorization|api.?key|headers|cookie|private.?key/i.test(key)?'[redacted]':safeArgs(item,depth+1)
     ]));
   }
-  if(typeof value==='string')return value.slice(0,350);
+  if(typeof value==='string')return value.slice(0,350)
+    .replace(/(?:Bearer\s+\S+|sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{15,})/gi,'[redacted]')
+    .replace(/(token|api[_-]?key|secret|password)=([^&\s]+)/gi,'$1=[redacted]');
   return typeof value==='number'||typeof value==='boolean'||value===null?value:'[unavailable]';
 }
 
