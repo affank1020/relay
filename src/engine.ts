@@ -295,7 +295,7 @@ export class Engine {
             if(node.id===current!.id)return true;
             if(visited.has(node.id))return false;
             visited.add(node.id);
-            const id=node.parentId??node.continuationOf;
+            const id:string|undefined=node.parentId??node.continuationOf;
             node=id?byId.get(id):undefined;
           }
           return false;
