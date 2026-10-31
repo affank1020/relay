@@ -107,7 +107,7 @@ export class Engine {
     }
     const removed=new Set(all.filter(t=>included.has(t.conversationId)).map(t=>t.id));
     if(all.some(t=>included.has(t.conversationId) &&
-      (!terminal(t.state)||this.active.has(t.id))))
+      (!terminal(t.state)||t.state==='interrupted'||this.active.has(t.id))))
       throw new ConversationConflictError('Conversation tree has active or uncertain tasks');
     if(all.some(t=>!included.has(t.conversationId) &&
       (removed.has(t.parentId??'')||removed.has(t.attemptOf??'')||
