@@ -96,3 +96,39 @@ test('Activity details stay expanded across idle polls and newly prepended event
   assert.equal(list.children[0].dataset.eventId,'event-2');
   assert.notStrictEqual(list.children[0],original,'session switches must discard old activity rows');
 });
+
+test('Atlas receipts render beside a Markdown response without injecting model HTML',async()=>{
+  const nodes=new Map<string,Element>();
+  const element=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id)!;};
+  const task={id:'t1',conversationId:'c1',prompt:'Get Atlas status',result:'**Atlas active**\n\n<script>alert(1)</script>',state:'completed',error:null,usage:[]};
+  const receipt={...event('tool-1',1),type:'tool',state:'completed',taskId:'t1',invocationId:'call-1',tool:'get_atlas_status'};
+  let timeout:(()=>void)|undefined;
+  const context={
+    window:{location:{protocol:'https:'},sessionStorage:{getItem:()=>null,setItem:()=>{}}},
+    document:{getElementById:element,createElement:(tag:string)=>new Element(tag)},
+    Headers,Response,URL,
+    setTimeout:(fn:()=>void)=>{timeout=fn;return 1;},
+    clearTimeout:()=>{timeout=undefined;},
+    fetch:async(url:string)=>{
+      if(url==='/api/status')return new Response(JSON.stringify({provider:'OpenRouter',model:'test-free',atlas:'configured'}));
+      if(url==='/api/sessions')return new Response(JSON.stringify({sessions:[{id:'c1',title:'Atlas status'}]}));
+      if(url==='/api/sessions/c1')return new Response(JSON.stringify({session:{id:'c1',title:'Atlas status',busy:false,costUsd:0,usage:{costKind:'estimated',tokens:20,unknown:false}},tasks:[task],approvals:[]}));
+      if(url.startsWith('/api/sessions/c1/events?after='))return new Response(JSON.stringify({events:url.endsWith('=0')?[receipt]:[],nextCursor:1,hasMore:false}));
+      throw Error('unexpected '+url);
+    }
+  };
+  runInNewContext(source,context,{filename:'dist/public/app.js'});
+  await flush();
+  const message=element('messages');
+  assert.ok(message.children.some(x=>x.className==='message assistant'));
+  const assistant=message.children.find(x=>x.className==='message assistant')!;
+  const pills=assistant.children.find(x=>x.className==='inline-tools');
+  assert.ok(pills,'tool action should be adjacent to its assistant response');
+  assert.ok(pills.children[0].children.some(x=>x.textContent==='Get Atlas Status'));
+  const markdown=assistant.children.find(x=>x.className==='markdown');
+  assert.ok(markdown);
+  const elements=(root:Element):Element[]=>[root,...root.children.flatMap(elements)];
+  assert.ok(!elements(markdown).some(x=>x.tag==='script'),'untrusted model markup must stay text');
+  assert.ok(elements(markdown).some(x=>x.textContent.includes('<script>')));
+  assert.ok(timeout,'polling should remain active after tool events');
+});
