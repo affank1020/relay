@@ -440,6 +440,80 @@ dialog button[type=submit] { width: 100%; margin-top: 12px; padding: 11px; borde
   .empty h2 { font-size: 24px; }
   .model-control select { max-width: 62vw; }
 }
+
+/* Per-conversation Atlas context; never expands the navigation column. */
+.atlas-context { position: relative; min-width: 0; }
+.context-trigger {
+  display: block;
+  max-width: min(260px, 24vw);
+  min-width: 85px;
+  overflow: hidden;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.context-trigger:hover, .context-trigger[aria-expanded="true"] {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  color: var(--accent);
+}
+.context-popover {
+  position: absolute;
+  z-index: 15;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(320px, calc(100vw - 24px));
+  max-height: min(400px, 80dvh);
+  overflow-y: auto;
+  padding: 15px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 14px 32px #0008;
+}
+.context-field { margin-bottom: 12px; }
+.context-field label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.context-select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface-elevated);
+  color: var(--text);
+  font-size: 12px;
+}
+.context-status { min-height: 14px; margin: 2px 0 10px; color: var(--text-muted); font-size: 11px; }
+.context-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.context-actions button {
+  min-height: 32px;
+  padding: 6px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  color: var(--text-secondary);
+  background: transparent;
+  font-size: 12px;
+}
+.context-actions .context-save { background: var(--accent); border-color: var(--accent); color: #1b1914; }
+.context-actions .context-save:hover:not(:disabled) { background: var(--accent-hover); }
+@media (max-width: 700px) {
+  .context-trigger { max-width: 28vw; min-width: 70px; font-size: 11px; }
+  .context-popover { right: -60px; }
+}
+
 /* Hides a stale preview badge until an already-running dev server is restarted. */
 .dev-badge { display: none !important; }
 @media(prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }

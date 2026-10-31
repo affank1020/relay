@@ -1,10 +1,11 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import type { AtlasContext } from './atlas-context.js';
 
 export type State = 'queued' | 'running' | 'awaiting_approval' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
-export interface Conversation { id: string; title: string; createdAt: string; modelKey?: string; }
+export interface Conversation { id: string; title: string; createdAt: string; modelKey?: string; atlasContext?: AtlasContext|null; }
 export interface Usage { input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; costUsd: number | null; costKind: 'estimated' | 'measured' | 'unknown'; }
-export interface Task { id: string; conversationId: string; requestId: string; prompt: string; state: State; createdAt: string; parentId: string | null; dependencies: string[]; attemptOf: string | null; result: string; error: string | null; usage: Usage[]; }
+export interface Task { id: string; conversationId: string; requestId: string; prompt: string; state: State; createdAt: string; parentId: string | null; dependencies: string[]; attemptOf: string | null; result: string; error: string | null; usage: Usage[]; atlasContext?: AtlasContext|null; }
 export interface ExecutionEvent {
   schemaVersion: 1; id: string; sequence: number; timestamp: string; conversationId: string;
   taskId: string | null; agentRunId: string | null; invocationId: string | null;

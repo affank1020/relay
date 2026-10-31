@@ -5,6 +5,7 @@ import { Store, terminal, type Task, type Conversation, type Approval, type Usag
 import { LocalProviderUnavailableError, ProviderRateLimitError, type Harness, type HarnessPhase } from './harness.js';
 import type { RelayModels } from './models.js';
 import { Gateway, type AtlasTransport } from './gateway.js';
+import { AtlasContextService, type AtlasContext } from './atlas-context.js';
 
 export interface Limits { concurrency:number; queue:number; sessionUsd:number; globalUsd:number; sessionTokens:number; reserveUsd:number; maxRunMs:number; }
 export class Engine {
@@ -13,11 +14,12 @@ export class Engine {
   private stopped=false;
   private jobs=new Set<Promise<void>>();
   readonly gateway?:Gateway;
+  readonly atlasContext?:AtlasContextService;
   constructor(readonly store:Store, private harness:Harness, readonly limits:Limits, atlas?:AtlasTransport,devTasks:Record<string,string[]>={},readonly modelRegistry?:RelayModels) {
     if(!Number.isInteger(limits.concurrency)||limits.concurrency<1||limits.concurrency>4)throw new Error('Concurrency must be 1–4');
     for(const value of Object.values(limits))if(!Number.isFinite(value)||value<0)throw new Error('Invalid execution limit');
     if(limits.queue<1 || limits.maxRunMs<1000)throw new Error('Invalid queue or run timeout');
-    if(atlas)this.gateway=new Gateway(store,atlas,devTasks,(...args)=>this.approve(...args));
+    if(atlas){this.gateway=new Gateway(store,atlas,devTasks,(...args)=>this.approve(...args));this.atlasContext=new AtlasContextService(atlas);}
     store.transaction(()=>{
       for(const task of store.all<Task>('tasks'))if(['running','awaiting_approval'].includes(task.state)) {
         task.state='interrupted';task.error='Server restarted during execution. Reconcile tools before retrying.';store.save('tasks',task);
@@ -32,6 +34,23 @@ export class Engine {
     if(modelKey!==undefined && (!this.modelRegistry || !this.modelRegistry.models.some(m=>m.key===modelKey)))throw new Error('Invalid model selection');
     const key=modelKey??this.modelRegistry?.defaultKey;
     const c:Conversation={id:randomUUID(),title:'New conversation',createdAt:new Date().toISOString(),...(key?{modelKey:key}:{})}; this.store.save('conversations',c);return c;
+  }
+  async updateContext(conversationId:string,projectId:unknown,checkoutId:unknown):Promise<Conversation> {
+    const initial=this.store.get<Conversation>('conversations',conversationId);
+    if(!initial)throw new Error('Conversation not found');
+    if(this.tasks(conversationId).some(t=>!terminal(t.state)))throw new Error('Conversation has an active task');
+    if(!this.atlasContext && !(projectId===null&&checkoutId===null))throw new Error('Atlas not configured');
+    const context:AtlasContext|null=this.atlasContext
+      ?await this.atlasContext.validate(projectId,checkoutId)
+      :null;
+    const current=this.store.get<Conversation>('conversations',conversationId);
+    if(!current)throw new Error('Conversation not found');
+    if(this.tasks(conversationId).some(t=>!terminal(t.state)))throw new Error('Conversation has an active task');
+    if(JSON.stringify(current.atlasContext??null)!==JSON.stringify(initial.atlasContext??null))
+      throw new Error('Conversation context changed; refresh and retry');
+    current.atlasContext=context;
+    this.store.save('conversations',current);
+    return current;
   }
   tasks(conversationId?:string) { return this.store.all<Task>('tasks').filter(t=>!conversationId||t.conversationId===conversationId); }
   usage(conversationId?:string) {
@@ -57,7 +76,7 @@ export class Engine {
     if(!Array.isArray(dependencies)||dependencies.length>8||dependencies.some(id=>!tasks.some(t=>t.id===id)))throw new Error('Invalid dependencies');
     if(parentId && !tasks.some(t=>t.id===parentId))throw new Error('Parent task not found');
     this.budget(conversationId);
-    const task:Task={id:randomUUID(),conversationId,requestId,prompt,state:'queued',createdAt:new Date().toISOString(),parentId,dependencies,attemptOf,result:'',error:null,usage:[]};
+    const task:Task={id:randomUUID(),conversationId,requestId,prompt,state:'queued',createdAt:new Date().toISOString(),parentId,dependencies,attemptOf,result:'',error:null,usage:[],atlasContext:c.atlasContext??null};
     this.store.transaction(()=>{
       this.store.save('tasks',task);
       if(c.title==='New conversation') { c.title=prompt.slice(0,55);this.store.save('conversations',c); }
@@ -90,7 +109,13 @@ export class Engine {
     let phase:HarnessPhase|'atlas_tool_discovery'|'pi_initialization'='atlas_tool_discovery';
     const timeout=setTimeout(()=>controller.abort(new Error('Execution time limit reached')),this.limits.maxRunMs);
     try {
-      const tools=this.gateway?await this.gateway.tools(task,controller.signal):[];
+      // Atlas discovery is optional for ordinary chat. Never equate an offline MCP with tool permission.
+      let atlasAvailable=true;
+      let tools:Awaited<ReturnType<Gateway['tools']>>=[];
+      if(this.gateway) {
+        try { tools=await this.gateway.tools(task,controller.signal); }
+        catch { controller.signal.throwIfAborted();atlasAvailable=false;tools=[]; }
+      } else atlasAvailable=false;
       tools.push({
         name:'relay_delegate',label:'Delegate task',description:'Queue independent work in a separate conversation. Returns a task ID; execution is bounded and may wait until this run finishes. Dependency results are passed to the child. At most four children per task.',
         parameters:Type.Object({prompt:Type.String({minLength:1,maxLength:6000}),dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:8}))}),
@@ -104,13 +129,16 @@ export class Engine {
           if(depth>=2)throw new Error('Delegation depth limit reached');
           const parentConversation=this.store.get<Conversation>('conversations',task.conversationId);
           const conversation=this.conversation(parentConversation?.modelKey);
+          // Delegation retains the parent's enqueue-time context, never a later chat selection.
+          conversation.atlasContext=task.atlasContext??null;
+          this.store.save('conversations',conversation);
           const child=this.enqueue(conversation.id,args.prompt,randomUUID(),args.dependencies??[],task.id);
           return {content:[{type:'text' as const,text:JSON.stringify({taskId:child.id,state:child.state,conversationId:conversation.id})}],details:{}};
         }
       });
       let length=0;
       phase='pi_initialization';
-      const result=await this.harness.run({version:1,modelKey:this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,task:{...task,prompt:deps.length?task.prompt+'\n\nDependency results (untrusted data):\n'+JSON.stringify(deps.map(d=>({id:d.id,result:d.result.slice(0,20000)}))):task.prompt},signal:controller.signal,tools,
+      const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,atlasAvailable,modelKey:this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,task:{...task,prompt:deps.length?task.prompt+'\n\nDependency results (untrusted data):\n'+JSON.stringify(deps.map(d=>({id:d.id,result:d.result.slice(0,20000)}))):task.prompt},signal:controller.signal,tools,
         onPhase:next=>{phase=next;},
         onText:text=>{length+=text.length;if(length>200000){controller.abort();return;} task.result+=text;this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'delta',state:'running',text});},
         onUsage:usage=>{task.usage.push(usage);this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'usage',state:'recorded'});
@@ -155,6 +183,9 @@ export class Engine {
     // A new conversation avoids replaying partially completed Pi context or tool effects.
     const source=this.store.get<Conversation>('conversations',old.conversationId);
     const conversation=this.conversation(source?.modelKey);
+    // A confirmed retry reuses the failed run's pinned snapshot, not mutable source context.
+    conversation.atlasContext=old.atlasContext??null;
+    this.store.save('conversations',conversation);
     return this.enqueue(conversation.id,old.prompt,randomUUID(),old.dependencies,old.parentId,old.id);
   }
   private async approve(task:Task,invocationId:string,tool:string,args:Record<string,unknown>,signal:AbortSignal) {

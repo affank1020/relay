@@ -1,6 +1,8 @@
 import type { Task, ExecutionEvent, Approval } from './store.js';
 import { renderMarkdown } from './markdown.js';
-interface Summary { id:string; title:string; modelKey?:string; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
+import { AtlasContextPicker } from './atlas-picker.js';
+import type { AtlasContext } from './atlas-context.js';
+interface Summary { id:string; title:string; modelKey?:string; atlasContext?:AtlasContext|null; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
 interface Snapshot { session:Summary; tasks:Task[]; approvals:Approval[]; }
 function $<T extends HTMLElement=HTMLElement>(id:string):T { const n=document.getElementById(id);if(!n)throw new Error('Missing element '+id);return n as T; }
 const hosted=window.location.protocol==='https:';
@@ -36,6 +38,7 @@ async function api(path:string,options:RequestInit={}):Promise<Response>{
 }
 async function get<T>(path:string){return await (await api(path)).json() as T;}
 function notify(error:unknown){$('notice').textContent=text(error);}
+const atlasPicker=new AtlasContextPicker($('atlasContext'),api,notify);
 function setBusy(value:boolean){
   busy=value;
   $<HTMLButtonElement>('send').disabled=value||submitting;
@@ -165,6 +168,7 @@ function render(data:Snapshot){
     lastView=serialized;
   }
   $('title').textContent=data.session.title;
+  atlasPicker.setSession(data.session);
   const picker=$<HTMLSelectElement>('modelPicker');
   if(data.session.modelKey&&!configuredModels.some(m=>m.key===data.session.modelKey)&&![...picker.options].some(x=>x.value===data.session.modelKey)){
     const missing=document.createElement('option');missing.value=data.session.modelKey;
