@@ -670,13 +670,17 @@ test('pagination becomes available when an initially exhaustive 50-task page gro
       items.push(make(52));
       assert.ok(scheduled);scheduled();await flush();
       get('taskMore').onclick?.();await flush();
+      assert.ok(get('taskRows').children.some(row=>row.children[0]?.textContent==='Boundary 1'),
+        'original deep cursor must make the oldest task reachable');
+      assert.equal(get('taskMore').hidden,false,'a newly displaced row remains available');
+      get('taskMore').onclick?.();await flush();
       const titles=get('taskRows').children.map(row=>row.children[0]?.textContent);
       assert.equal(titles.length,52);
       assert.equal(new Set(titles).size,52);
       for(let id=1;id<=52;id++)assert.ok(titles.includes('Boundary '+id),'missing item '+id);
       assert.equal(get('taskMore').hidden,true);
       const olderCursors=calls.filter(url=>url.includes('cursor=')).map(url=>Number(new URL(url,'http://relay.local').searchParams.get('cursor')));
-      assert.deepEqual(olderCursors,[3],'the first deep cursor begins below the newest 50');
+      assert.deepEqual(olderCursors,[2,3],'the deep cursor then the independent newest-page gap');
     },async url=>{
       if(url==='/sessions')return response({sessions:[sessions[0]]});
       if(url.startsWith('/task-console/tasks?')){
