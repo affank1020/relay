@@ -14,7 +14,11 @@ import { streamConversationEvents } from './live-events.js';
 export function createPlatform(engine:Engine, token:string, staticDir:string, model:string, modelRegistry?:RelayModels,capabilities?:CapabilityRegistry) {
   if(token.length<24)throw new Error('RELAY_ACCESS_TOKEN must be 24+ characters');
   if(!model.endsWith(':free'))throw new Error('Relay requires a free OpenRouter model');
-  const summary=(c:Conversation)=>({...c,busy:engine.tasks(c.id).some(t=>!terminal(t.state)),costUsd:engine.usage(c.id).costUsd,usage:engine.usage(c.id)});
+  const summary=(c:Conversation,owned?:Task[])=>{
+    const tasks=owned??engine.tasks(c.id);
+    const usage=engine.usage(c.id,tasks);
+    return {...c,busy:tasks.some(t=>!terminal(t.state)),costUsd:usage.costUsd,usage};
+  };
   function send(res:ServerResponse,code:number,value:unknown) { res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(value)); }
   async function body(req:IncomingMessage):Promise<Record<string,unknown>> {
     req.setEncoding('utf8');let text='';
@@ -57,7 +61,18 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         await capabilities.update(capability[1] as 'skills'|'integrations',capability[2],data.enabled);
         return send(res,200,await capabilities.list());
       }
-      if(path==='/api/sessions'&&req.method==='GET')return send(res,200,{sessions:engine.store.all<Conversation>('conversations').reverse().map(summary)});
+      if(path==='/api/sessions'&&req.method==='GET') {
+        const internal=engine.store.internalConversationIds();
+        const grouped=new Map<string,Task[]>();
+        for(const task of engine.tasks()){
+          const tasks=grouped.get(task.conversationId)??[];
+          tasks.push(task);grouped.set(task.conversationId,tasks);
+        }
+        const sessions=engine.store.all<Conversation>('conversations')
+          .filter(c=>!c.internalParentConversationId&&!internal.has(c.id))
+          .reverse().map(c=>summary(c,grouped.get(c.id)??[]));
+        return send(res,200,{sessions});
+      }
       if(path==='/api/sessions'&&req.method==='POST'){
         const data=await body(req);
         if(data.modelKey!==undefined&&typeof data.modelKey!=='string')throw new Error('Invalid model selection');
@@ -122,7 +137,7 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
           }
         }
         if(!conversation[2]&&req.method==='GET') {
-          const tasks=engine.tasks(c.id);
+          const tasks=engine.tasks(c.id).filter(task=>task.kind!=='join');
           const turns=tasks.flatMap(t=>[{role:'user',text:t.prompt},...(t.result?[{role:'assistant',text:t.result}]:[])]);
           return send(res,200,{session:summary(c),turns,tasks,approvals:engine.store.all<Approval>('approvals').filter(a=>tasks.some(t=>t.id===a.taskId))});
         }
@@ -144,6 +159,7 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
           return streamConversationEvents(req,res,engine.store,c.id,after);
         }
         if(conversation[2]==='/messages'&&req.method==='POST'){
+          if(engine.isInternalConversation(c))return send(res,409,{error:'Internal agent conversation is read-only'});
           const data=await body(req);
           if(typeof data.message!=='string'||typeof data.requestId!=='string')throw new Error('message and requestId required');
           if(data.dependencies!==undefined && (!Array.isArray(data.dependencies)||data.dependencies.some(d=>typeof d!=='string')))throw new Error('Invalid dependencies');
@@ -157,7 +173,12 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         const task=engine.store.get<Task>('tasks',taskRoute[1]);if(!task)return send(res,404,{error:'Task not found'});
         if(req.method==='GET'&&!taskRoute[2])return send(res,200,{task});
         if(req.method==='POST'&&taskRoute[2]==='/cancel')return send(res,200,{task:await engine.cancel(task.id)});
-        if(req.method==='POST'&&taskRoute[2]==='/retry'){const data=await body(req);return send(res,202,{task:engine.retry(task.id,data.reconciled===true)});}
+        if(req.method==='POST'&&taskRoute[2]==='/retry'){
+          const data=await body(req);
+          const next=engine.retry(task.id,data.reconciled===true);
+          return send(res,202,{task:next,
+            ...(next.retryDetachedFromParentId?{notice:'Independent retry; original parent synthesis will not change.'}:{})});
+        }
       }
       const approval=path.match(/^\/api\/approvals\/([a-f0-9-]+)$/);
       if(approval&&req.method==='POST'){const data=await body(req);if(typeof data.approved!=='boolean')throw new Error('approved must be boolean');return send(res,200,{approval:engine.decide(approval[1],data.approved)});}
