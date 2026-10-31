@@ -17,9 +17,9 @@ All new routes are protected by the existing bearer-token or authenticated ingre
 
 Status filters, conversation filters, a search of loaded tasks, concise entries, task details, parent/dependency/child links and the source conversation link are available. The initial list is bounded to 50 tasks with cursor pagination. The newest page polls every four seconds while the screen is visible. Existing row elements are reused to maintain keyboard focus; old loaded rows can remain stale until revisited. Mutations always use authoritative task state.
 
-Execution activity loads for the selected task, replayed using the existing event sequence cursor. At most 120 entries are visible at once; further batches are loaded on demand. A selected Node is not labelled as executing: only an event containing executingNodeId displays a reported execution receipt.
+Execution activity loads for the selected task, replayed using the existing per-conversation event sequence cursor. Up to four 500-event pages are scanned per foreground refresh so selected-task events hidden behind unrelated activity are discovered automatically; while replay is incomplete, the timeline says it is scanning rather than falsely reporting no events. At most 120 entries are visible at once, and users can continue replay manually if desired. A selected Node is not labelled as executing: only an event containing executingNodeId displays a reported execution receipt.
 
-Cancel, retry, approve and reject invoke guarded server routes. UI does not assume success until response. Navigation never cancels work. Approval arguments have an explicit redacted disclosure.
+Cancel, retry, approve and reject invoke guarded server routes. UI does not assume success until response. Changing the selected conversation or task state filter immediately clears the previous detail and disables its stale action callbacks; navigation never cancels work. The full persisted task output is visible in a bounded scroll area (only list previews are truncated). Approval arguments have an explicit redacted disclosure.
 
 ## Testing and limitations
 
