@@ -238,6 +238,11 @@ test('new tasks cannot strand a displaced first-page row beyond the saved pagina
       assert.equal(displaced.rowid,11);
     },async url=>{
       if(url==='/sessions')return response({sessions:[sessions[0]]});
+      if(url.startsWith('/task-console/task-states?')) {
+        const ids=new URL(url,'http://relay.local').searchParams.get('ids')?.split(',')??[];
+        return response({states:Object.fromEntries(persisted.filter(item=>ids.includes(item.id))
+          .map(item=>[item.id,{state:item.state,conversationId:item.conversationId}]))});
+      }
       if(url.startsWith('/task-console/tasks?')){
         const query=new URL(url,'http://relay.local').searchParams;
         const cursor=query.get('cursor'),limit=Number(query.get('limit')??50);
@@ -366,6 +371,11 @@ test('an older selected task is preserved while in scope and cleared after its s
     },async(url,options)=>{
       if(options?.method==='POST'){mutations.push(url);return response({});}
       if(url==='/sessions')return response({sessions:[sessions[0]]});
+      if(url.startsWith('/task-console/task-states?')) {
+        const ids=new URL(url,'http://relay.local').searchParams.get('ids')?.split(',')??[];
+        return response({states:Object.fromEntries(items.filter(item=>ids.includes(item.id))
+          .map(item=>[item.id,{state:item.state,conversationId:item.conversationId}]))});
+      }
       if(url.startsWith('/task-console/tasks?')){
         const search=new URL(url,'http://relay.local').searchParams;
         const eligible=items.filter(item=>(!search.get('state')||item.state===search.get('state'))&&
