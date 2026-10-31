@@ -231,6 +231,44 @@ test('file errors cannot make an earlier successful Git read appear failed',asyn
   }finally{store.close();}
 });
 
+test('successful Git and worktree retries clear only matching failed-read warnings',async()=>{
+  for(const failingTool of ['workspace_git_list_worktrees','workspace_git_status'] as const){
+    const store=new Store(':memory:');store.save('conversations',{id:'conv'});
+    const base=fixture();let attempts=0;
+    const unstable:AtlasTransport={...base,call:async(name,args,signal)=>{
+      if(name===failingTool&&++attempts===1)throw new Error('Temporary read failure');
+      return base.call(name,args,signal);
+    }};
+    const gateway=new Gateway(store,unstable,{},async()=>{});
+    const signal=new AbortController().signal;
+    const args={checkoutId:checkout};
+    try{
+      await assert.rejects(
+        gateway.invoke(task(),'first-'+failingTool,failingTool,args,signal),/Atlas invocation failed/);
+      let view=project(store)[0];
+      assert.equal(view.lastFailureTool,failingTool);
+      assert.ok(view.lastFailureAt);
+      // Success of the OTHER read must not dismiss this specific warning.
+      const other=failingTool==='workspace_git_status'?'workspace_git_list_worktrees':'workspace_git_status';
+      await gateway.invoke(task(),'other-'+failingTool,other,args,signal);
+      view=project(store)[0];
+      assert.equal(view.lastFailureTool,failingTool);
+      await gateway.invoke(task(),'retry-'+failingTool,failingTool,args,signal);
+      view=project(store)[0];
+      assert.equal(view.lastFailureTool,undefined);
+      assert.equal(view.lastFailureAt,undefined);
+      assert.equal(view.lastFailureState,undefined);
+      if(failingTool==='workspace_git_list_worktrees'){
+        assert.equal(view.worktrees?.length,1);
+        assert.equal(view.worktrees?.[0].branch,'atlas/feature');
+      }else{
+        assert.equal(view.branch,'atlas/feature');
+        assert.ok(view.gitObservedAt);
+      }
+    }finally{store.close();}
+  }
+});
+
 test('truncated Atlas Git results preserve the lower-bound count in the UI',()=>{
   const data=observeAtlasResult('workspace_git_status',{checkoutId:checkout},{
     available:true,branch:'main',dirty:true,truncated:true,

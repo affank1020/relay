@@ -171,6 +171,13 @@ export function projectAtlasCheckouts(events:ReadonlyArray<AtlasAwarenessEvent>)
         view.gitObservedAt=event.timestamp;
       }
       if(fact.worktrees)view.worktrees=fact.worktrees;
+      // A later successful read supersedes a failed read of the same tool.
+      // Keep an unrelated failure until that particular operation recovers.
+      if((fact.git&&view.lastFailureTool==='workspace_git_status')||
+         (fact.worktrees&&view.lastFailureTool==='workspace_git_list_worktrees')){
+        view.lastFailureAt=undefined;view.lastFailureState=undefined;
+        view.lastFailureTool=undefined;
+      }
       if(event.agentRunId)view.agentRunId=event.agentRunId;
     } else if(event.type==='tool'&&event.taskId&&
       (event.tool==='workspace_git_status'||event.tool==='workspace_git_list_worktrees')&&
