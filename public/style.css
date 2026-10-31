@@ -677,3 +677,6 @@ dialog #deleteName { color: var(--text); overflow-wrap: anywhere; }
 .git-skill-acknowledge input { margin-top:2px; accent-color:var(--accent); }
 .capability-remove { background:transparent;border:1px solid var(--border-strong);border-radius:6px;padding:6px 8px;color:var(--text-secondary);font-size:11px;cursor:pointer; }
 @media(max-width:480px) { .git-skill-fields { grid-template-columns:1fr; } }
+
+.atlas-observed-link { color: var(--accent); width: fit-content; font-size: 11px; text-decoration: none; }
+.atlas-observed-link:hover { text-decoration: underline; }
