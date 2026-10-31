@@ -19,6 +19,7 @@ interface MockElement {
   showModal(): void;
   close(): void;
   focus(): void;
+  setAttribute(name:string,value:string):void;
   append(...items: unknown[]): void;
   replaceChildren(...items: unknown[]): void;
 }
@@ -36,7 +37,7 @@ function harness(
         textContent: '', value: '', hidden: false, disabled: false, title: '',
         showModal() { this.shown = (this.shown || 0) + 1; },
         close() { this.closed = true; },
-        focus() {}, append() {}, replaceChildren() {},
+        focus() {}, setAttribute() {}, append() {}, replaceChildren() {},
       };
       nodes.set(id, found);
     }
@@ -46,7 +47,7 @@ function harness(
     window: { location: { hostname, protocol }, alert() {} },
     document: {
       getElementById: element,
-      createElement: () => ({ textContent: '', className: '', append() {}, focus() {} })
+      createElement: () => ({ textContent: '', className: '', append() {}, focus() {}, setAttribute() {}, replaceChildren() {} })
     },
     Headers,
     TextDecoder,
