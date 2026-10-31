@@ -116,10 +116,12 @@ test('refuses queued, interrupted, pending-approval and uncertain invocation rec
     store.save('approvals',{id:'waiting',taskId:task.id,invocationId:'waiting',tool:'test',args:{},state:'pending'} as import('../src/store.js').Approval);
     await assert.rejects(engine.deleteConversation(c.id),ConversationConflictError);
     store.save('approvals',{id:'waiting',taskId:task.id,invocationId:'waiting',tool:'test',args:{},state:'rejected'} as import('../src/store.js').Approval);
-    const interrupted={...task,state:'interrupted' as const};
+    const completed=store.get<Task>('tasks',task.id)!;
+    assert.equal(completed.state,'completed');
+    const interrupted={...completed,state:'interrupted' as const};
     store.save('tasks',interrupted);
     await assert.rejects(engine.deleteConversation(c.id),ConversationConflictError);
-    store.save('tasks',task);
+    store.save('tasks',completed);
     await engine.stop(); // Wait for the completed job to release its active controller.
     await engine.deleteConversation(c.id);
   });
