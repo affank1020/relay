@@ -229,6 +229,10 @@ test('new tasks cannot strand a displaced first-page row beyond the saved pagina
       assert.ok(get('taskRows').children.some(row=>row.children[0]?.textContent==='Number 11'));
       assert.ok(get('taskDetail').querySelector('.task-actions'),'displacement alone must not clear a selected older task');
       assert.ok(calls.some(url=>url.startsWith('/task-console/tasks?')));
+      const latest=get('taskRows').children.find(row=>row.children[0]?.textContent==='Number 61');
+      assert.ok(latest);latest.onclick?.();await flush();
+      assert.equal(get('taskRows').children.length,50,'switching selection drops the displaced pinned row');
+      assert.ok(!get('taskRows').children.some(row=>row.children[0]?.textContent==='Number 11'));
       get('taskMore').onclick?.();await flush();
       const titles=get('taskRows').children.map(row=>row.children[0]?.textContent);
       assert.equal(titles.length,61,'the complete 60→61 history remains reachable');
