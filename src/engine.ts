@@ -274,9 +274,61 @@ export class Engine {
     return {costUsd:usage.usd+retired.costUsd,tokens:usage.tokens+retired.tokens,
       unknown:usage.unknown||retired.unknown,reserved};
   }
+  // A delegated budget applies to the whole descendant agent tree, not just
+  // the agent's own Pi inference. Nested children and inference-only joins
+  // cannot evade the ceiling by spending in separate internal conversations.
+  private delegatedTreeExhausted(taskId:string|null,additionalUsd=0,abortActiveDescendants=false):boolean {
+    if(!taskId)return false;
+    const tasks=this.tasks(),byId=new Map(tasks.map(task=>[task.id,task]));
+    let current=byId.get(taskId);
+    const ancestors=new Set<string>();
+    let exhausted=false;
+    while(current) {
+      if(ancestors.has(current.id))return true;
+      ancestors.add(current.id);
+      const parent=current.parentId??current.continuationOf;
+      const policy=current.delegation;
+      if(policy && (policy.maxTokens!==null || policy.maxCostUsd!==null)) {
+        const descendants=tasks.filter(candidate=>{
+          const visited=new Set<string>();
+          let node:Task|undefined=candidate;
+          while(node) {
+            if(node.id===current!.id)return true;
+            if(visited.has(node.id))return false;
+            visited.add(node.id);
+            const id:string|undefined=node.parentId??node.continuationOf;
+            node=id?byId.get(id):undefined;
+          }
+          return false;
+        });
+        const total=used(descendants.flatMap(task=>task.usage));
+        // Reserve only genuinely active runs; queued agents are admitted again
+        // at dispatch. Include the proposed new run at the admission boundary.
+        const reservations=descendants.filter(task=>this.active.has(task.id)).length*this.limits.reserveUsd;
+        if((policy.maxTokens!==null&&(total.unknown||total.tokens>=policy.maxTokens))||
+           (policy.maxCostUsd!==null&&(total.unknown||
+             total.usd>=policy.maxCostUsd ||
+             total.usd+reservations+additionalUsd>policy.maxCostUsd))) {
+          exhausted=true;
+          if(!abortActiveDescendants)return true;
+          // A shared budget can be exhausted by one sibling while others
+          // have no new usage receipt. Abort *every* live descendant of
+          // each exhausted ancestor, including pending joins. Never abort
+          // unrelated roots or ancestors that own the depleted branch.
+          for(const child of descendants)
+            this.active.get(child.id)?.abort(new Error('Delegated family budget exhausted'));
+        }
+      }
+      current=parent?byId.get(parent):undefined;
+      if(parent&&!current)return true; // missing ancestry fails closed
+    }
+    return exhausted;
+  }
   private budget(conversationId:string,parentId:string|null=null,delegation?:DelegationSnapshot) {
     const family=this.familyUsage(conversationId,parentId),global=this.usage();
     const reserved=this.active.size*this.limits.reserveUsd;
+    if(this.delegatedTreeExhausted(parentId,this.limits.reserveUsd))
+      throw new Error('Delegated agent family budget exhausted');
     if((this.limits.sessionUsd>0 && (family.unknown || family.costUsd+family.reserved+this.limits.reserveUsd>this.limits.sessionUsd)) ||
        (this.limits.globalUsd>0 && (global.unknown || global.costUsd+reserved+this.limits.reserveUsd>this.limits.globalUsd)) ||
        (this.limits.sessionTokens>0 && (family.unknown || family.tokens>=this.limits.sessionTokens)) ||
@@ -557,11 +609,16 @@ export class Engine {
             agentId:task.agentId??null,agentRunId:task.agentRunId??null,type:'usage',state:'recorded'});
           const own=used(task.usage),global=this.usage();
           const family=this.familyUsage(task.conversationId,task.parentId??task.continuationOf??null);
+          // Always evaluate the shared subtree, even when this run's own
+          // limit is exhausted. Short-circuiting on the per-run limit would
+          // leave concurrently running siblings alive without new receipts.
+          const treeExhausted=this.delegatedTreeExhausted(task.id,0,true);
           if((task.delegation?.maxTokens!=null&&(own.unknown||own.tokens>=task.delegation.maxTokens))||
             (task.delegation?.maxCostUsd!=null&&(own.unknown||own.usd>=task.delegation.maxCostUsd))||
             (this.limits.sessionTokens>0&&(family.unknown||family.tokens>=this.limits.sessionTokens))||
             (this.limits.sessionUsd>0&&(family.unknown||family.costUsd>=this.limits.sessionUsd))||
-            (this.limits.globalUsd>0&&(global.unknown||global.costUsd>=this.limits.globalUsd)))
+            (this.limits.globalUsd>0&&(global.unknown||global.costUsd>=this.limits.globalUsd))||
+            treeExhausted)
             controller.abort(new Error('Budget limit reached'));
         }});
       task.result=result.slice(0,200000);
