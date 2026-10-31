@@ -19,12 +19,46 @@ disabled. Enabling Skill instructions never grants tools.
 
 Enable/disable preferences persist atomically under
 RELAY_DATA_DIR/capabilities.json (0600). Updates are server-authenticated.
+For each inference, the server also limits the **aggregate enabled Skill text**
+to a conservative fraction of the selected model's actual context window,
+reserving space for the model's output, ordinary prompt and chat history.
+Admitted Skill text is charged by UTF-8 bytes, not an optimistic average
+tokens-per-character estimate. Oversized Skills are skipped (not truncated)
+for that inference, and the activity stream records `skill/skipped_context`
+with the Skill name; skipped Skills are never advertised as loaded. Users
+can disable Skills or select a model with a larger window. There is no fixed
+16 KiB instruction ceiling: a reviewed 20–32 KiB Skill can be admitted by a
+sufficiently large-context model. A skipped Skill remains installed and
+enabled for future runs that have sufficient context.
+The limit cannot prevent otherwise normal chats from continuing.
+
 A task loads its current authorised Skill set when it begins. Child tasks
 load their own current authorised set rather than inheriting arbitrary parent
-credentials or a free-form instruction that grants capabilities. An explicit
-Git-package installation flow with revision pinning, human review and revocation
-is reserved for a follow-up: arbitrary repository URLs cannot be installed by
-the model or the UI.
+credentials or a free-form instruction that grants capabilities. The next slice adds a **reviewed, revision-pinned GitHub Skill workflow**:
+open Skills & integrations → Install reviewed GitHub Skill, enter repository
+owner/name, exact 40-hex commit SHA, and the path to SKILL.md. Relay fetches
+that single public file through the fixed GitHub API endpoint, without tokens,
+redirects, mutable branch names, archive extraction or executable packages.
+Preview displays **all raw Skill instructions as text**, the exact source and
+SHA-256 fingerprint. Installing requires a separate acknowledgement of the
+reviewed bytes, saves an immutable snapshot to RELAY_DATA_DIR/trusted-git-skills
+and starts it **disabled**. The user must explicitly enable it afterward.
+
+A preview token is single-use, expires after ten minutes and is lost on server
+restart; preview itself does not change persistent capabilities. At most eight
+reviewed Git Skills may be installed; duplicate names (including bundled ones)
+are denied. Enabling rechecks the file and digest; a missing, modified or
+symlinked snapshot fails closed even if the persisted enabled flag is true.
+Remove revokes authority in capabilities.json *before* cleaning up package bytes.
+There is no automatic upstream refresh: a changed GitHub commit or revision
+requires a new explicit preview/approval.
+
+Only SKILL.md text is installed; related code, extensions, scripts, extra assets,
+custom tools and elevated permissions are **never** imported. Approved Skill
+instructions can still influence the model, so inspect the preview carefully;
+GitHub hosting and a pinned SHA are not substitutes for trusting the author.
+This is initially **public GitHub** only. It does not fetch private repos using
+a PAT or permit the agent to install a Skill itself.
 
 ## MCP
 
@@ -69,7 +103,7 @@ offline providers and redaction. GitHub CI verifies the production container.
 A live credentialed GitHub MCP smoke needs an operator-owned token and a
 user-selected read-only repository; fixtures alone do not establish that.
 
-Current omissions: remote Git installation/review, explicit write approval,
+Current omissions: private Git Skill imports, explicit write approval,
 per-agent scoped grants beyond global opt-in, live remote credential validation,
 MCP provider reconnect/health beyond discovery status and conversation memory.
 
@@ -79,7 +113,7 @@ MCP provider reconnect/health beyond discovery status and conversation memory.
 | --- | --- | --- |
 | Normal chat, persisted sessions, rename/delete | Implemented | Resume/reconnect robustness tracked in #25 |
 | Hosted/local model choices | Implemented baseline | More model policies and provider resilience |
-| Skills | Bundled opt-in text Skills in this slice | Reviewed version-pinned Git packages |
+| Skills | Bundled opt-in text Skills + reviewed immutable public GitHub snapshots | Private/internal sources, granular scope grants |
 | MCP | Restricted server-side read adapters in this slice | Explicit GitHub write approval |
 | Memory/preferences | Missing | Separate, source-attributed user-controlled store |
 | Attachments and file handling | Missing | Upload/storage, content validation and deletion |

@@ -101,6 +101,26 @@
   <div class="capabilities-panel">
     <div class="capabilities-header"><h2 id="capabilitiesTitle">Skills &amp; integrations</h2><button id="closeCapabilities" type="button" class="icon-button" aria-label="Close">×</button></div>
     <div id="capabilitiesContent" role="status" aria-live="polite"></div>
+    <details class="git-skill-installer">
+      <summary>Install reviewed GitHub Skill</summary>
+      <form id="gitSkillPreviewForm">
+        <div class="git-skill-fields">
+          <label>Owner<input id="gitSkillOwner" autocomplete="off" placeholder="owner" required maxlength="39"></label>
+          <label>Repository<input id="gitSkillRepo" autocomplete="off" placeholder="repository" required maxlength="100"></label>
+          <label>Full commit SHA<input id="gitSkillCommit" autocomplete="off" spellcheck="false" pattern="[0-9a-fA-F]{40}" placeholder="40-character commit" required></label>
+          <label>Skill file<input id="gitSkillPath" autocomplete="off" spellcheck="false" value="SKILL.md" required></label>
+        </div>
+        <div class="dialog-actions"><button id="gitSkillPreviewButton" type="submit">Preview Skill</button></div>
+      </form>
+      <section id="gitSkillReview" hidden>
+        <h3 id="gitSkillReviewName"></h3>
+        <p id="gitSkillReviewSource" class="capability-description"></p>
+        <p id="gitSkillReviewDigest" class="git-skill-digest"></p>
+        <pre id="gitSkillReviewText" tabindex="0"></pre>
+        <label class="git-skill-acknowledge"><input id="gitSkillAcknowledge" type="checkbox"> I have reviewed these instructions and trust this exact revision. They do not grant tools or permissions.</label>
+        <div class="dialog-actions"><button id="gitSkillInstall" type="button" disabled>Install disabled</button></div>
+      </section>
+    </details>
     <p id="capabilitiesError" class="dialog-error" role="alert"></p>
   </div>
 </dialog>

@@ -26,6 +26,8 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Test actual browser task console scrolling
         run: node --import tsx --test --test-timeout=65000 tests/task-console-browser.browser.ts
+      - name: Test real browser reviewed Git Skill management
+        run: node --import tsx --test --test-timeout=65000 tests/reviewed-skills-browser.browser.ts
       - name: Reject checked-in JavaScript source
         run: |
           test -z "$(find src tests public -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' -o -name '*.jsx' \) -print)"
