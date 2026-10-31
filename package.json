@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node dist/server.js",
+    "dev:ui": "node scripts/dev-ui.mjs",
     "check": "tsc --noEmit",
     "build": "bash scripts/build.sh",
     "test": "npm run build && node --import tsx --test --test-timeout=65000 tests/*.test.ts",

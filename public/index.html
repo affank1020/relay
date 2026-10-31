@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark"><meta name="theme-color" content="#101017">
+<meta name="color-scheme" content="dark"><meta name="theme-color" content="#0c0d10">
 <title>Relay · AI workspace</title>
 <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
 </head>
@@ -10,53 +10,48 @@
 <div class="shell">
   <aside id="sidebar" aria-label="Workspace navigation">
     <div class="brand">
-      <span class="logo" aria-hidden="true">R</span>
-      <div class="brand-copy"><b>Relay</b><small>Personal AI workspace</small></div>
+      <span class="wordmark">relay<span class="brand-period">.</span></span>
       <button id="closeSidebar" class="icon-button mobile-only" title="Close navigation" aria-label="Close navigation">×</button>
     </div>
-    <button id="new" class="primary-new"><span aria-hidden="true">＋</span> New chat <span class="keycap">⌘ K</span></button>
+    <button id="new" class="primary-new"><svg class="nav-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> New chat <span class="keycap">⌘ K</span></button>
     <div class="search-wrap">
-      <span aria-hidden="true">⌕</span>
+      <svg class="nav-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
       <input id="sessionSearch" type="search" aria-label="Search conversations" placeholder="Search conversations" autocomplete="off">
     </div>
-    <div class="sidebar-heading"><span>Recent conversations</span><span id="sessionCount"></span></div>
+    <div class="sidebar-heading"><span>Chats</span><span id="sessionCount"></span></div>
     <nav id="sessions" aria-label="Conversations"></nav>
     <div class="sidebar-bottom">
-      <button id="showTasks" class="secondary-action" aria-expanded="false" aria-controls="taskList"><span aria-hidden="true">◷</span> Tasks &amp; agents <span aria-hidden="true" class="chevron">⌄</span></button>
-      <nav id="taskList" aria-label="Recent tasks" hidden></nav>
-      <a class="secondary-action atlas-link" href="https://atlas.affankhan.dev" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">◈</span> Open Atlas <span aria-hidden="true">↗</span></a>
-      <footer><span class="dot" aria-hidden="true"></span><span id="connection">Connecting…</span><button id="settings" title="Reconnect" aria-label="Reconnect">↻</button></footer>
+      <a class="secondary-action atlas-link" href="https://atlas.affankhan.dev" target="_blank" rel="noopener noreferrer"><svg class="nav-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/></svg> Open Atlas <svg class="nav-icon external" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a>
+      <footer><span class="dot" aria-hidden="true"></span><span id="connection">Connecting…</span><button id="settings" title="Reconnect" aria-label="Reconnect"><svg class="nav-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 8A8 8 0 1 0 19 16M20 3v5h-5"/></svg></button></footer>
     </div>
   </aside>
   <main>
     <header class="topbar">
       <div class="topbar-title"><button id="openSidebar" class="icon-button mobile-only" aria-label="Open navigation">☰</button>
-        <div><h1 id="title">New conversation</h1><small id="subtitle">Your connected tools are ready when you need them</small></div>
+        <div><h1 id="title">New chat</h1></div>
       </div>
-      <div class="topbar-actions"><span id="state" class="run-state">Idle</span><button id="toggleInspector" class="action" aria-expanded="false" aria-controls="inspector">◈ <span>Activity</span></button></div>
+      <div class="topbar-actions"><span id="state" class="run-state" hidden>Working</span><button id="toggleInspector" class="action" aria-expanded="false" aria-controls="inspector"><span>Activity</span></button></div>
     </header>
     <section id="messages" class="messages" aria-live="polite">
-      <div class="empty"><span class="spark" aria-hidden="true">✳</span><h2>What are we working on?</h2><p>Ask anything, or work with your Atlas projects and agents.</p></div>
+      <div class="empty"><h2>What are we working on?</h2></div>
     </section>
     <div id="approvals" aria-live="polite"></div>
     <p id="notice" role="status"></p>
     <section class="composer" aria-label="Message composer">
       <form id="form">
-        <textarea id="prompt" rows="2" maxlength="6000" aria-label="Message" placeholder="Ask Relay anything…" autocomplete="off"></textarea>
-        <div class="compose-row"><div class="composer-left"><span class="composer-hint">Enter to send · Shift+Enter for a new line</span></div>
+        <textarea id="prompt" rows="2" maxlength="6000" aria-label="Message" placeholder="Message…" autocomplete="off"></textarea>
+        <div class="compose-row">
           <div class="controls"><button id="stop" type="button" hidden>Stop</button><button id="send" type="submit" aria-label="Send message" title="Send message">↑</button></div>
         </div>
       </form>
-      <div class="meta"><div class="model-control"><label for="modelPicker">Model</label><select id="modelPicker" aria-label="Inference model"></select></div><span id="model" class="model-detail">Pi + OpenRouter</span><span id="cost" class="usage-detail">0 tokens</span></div>
+      <div class="meta"><div class="model-control"><select id="modelPicker" aria-label="Inference model"></select></div><span id="cost" class="usage-detail">0 tokens</span></div>
     </section>
   </main>
   <section id="inspector" aria-label="Execution inspector" hidden>
-    <div class="inspector-head"><div><span class="eyebrow">LIVE EXECUTION</span><h2>Activity</h2></div><button id="closeInspector" class="icon-button" aria-label="Close activity">×</button></div>
-    <p class="inspector-intro">Real events from Pi and Atlas. No inferred actions or model-generated activity summaries.</p>
-    <div id="atlasSummary" class="atlas-summary"><span class="status-orb"></span><div><b>Atlas MCP</b><small>Connection status follows Relay configuration</small></div></div>
+    <div class="inspector-head"><h2>Activity</h2><button id="closeInspector" class="icon-button" aria-label="Close activity">×</button></div>
+    <div id="atlasSummary" class="atlas-summary"><span id="atlasOrb" class="status-orb"></span><b id="atlasLabel">Atlas MCP</b></div>
     <div id="activity" class="activity-list"></div>
-    <p class="inspector-foot">Node execution is shown only when Atlas returns an actual execution receipt.</p>
   </section>
 </div>
-<dialog id="login"><form id="loginForm"><div class="logo">R</div><h2>Connect to Relay</h2><p>Enter your private Relay access token. It stays in this browser tab and is not sent to your model provider.</p><input id="token" type="password" placeholder="Access token" autocomplete="off" minlength="24" required><button type="submit">Connect</button><p id="error" role="alert"></p></form></dialog>
+<dialog id="login"><form id="loginForm"><div class="wordmark">relay<span class="brand-period">.</span></div><h2>Connect</h2><input id="token" type="password" placeholder="Access token" autocomplete="off" minlength="24" required><button type="submit">Connect</button><p id="error" role="alert"></p></form></dialog>
 </body></html>
