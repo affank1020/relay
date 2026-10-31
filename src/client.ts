@@ -38,10 +38,14 @@ function clearPendingForDeletedConversation(id:string){
   $('notice').textContent=sendRecoveryNotice;
 }
 let menuTarget:string|null=null, menuAnchor:HTMLButtonElement|null=null, dialogTarget:string|null=null;
-function closeSessionMenu(){
-  const menu=$('sessionMenu');menu.hidden=true;
-  if(menuAnchor)menuAnchor.setAttribute('aria-expanded','false');
+function closeSessionMenu(restoreFocus=false){
+  const menu=$('sessionMenu'),anchor=menuAnchor;
+  menu.hidden=true;
+  if(anchor)anchor.setAttribute('aria-expanded','false');
   menuTarget=null;menuAnchor=null;
+  // Escape is a keyboard dismissal: return to the still-mounted invoker.
+  // Pointer dismissal and modal transitions must not steal the new focus.
+  if(restoreFocus&&anchor?.isConnected)anchor.focus();
 }
 function openSessionMenu(id:string,anchor:HTMLButtonElement){
   const menu=$('sessionMenu');
@@ -108,7 +112,13 @@ function currentToolEvents(taskId:string){
   return [...(toolReceipts.get(taskId)?.values()??[])].sort((a,b)=>a.sequence-b.sequence);
 }
 function renderSessions(){
+  const menu=$('sessionMenu');
+  // A refresh replaces the sidebar buttons. If keyboard focus was in the
+  // open actions group, give it back to the new invoker after rendering.
+  const focusedMenuTarget=!menu.hidden&&document.activeElement&&menu.contains(document.activeElement)
+    ?menuTarget:null;
   closeSessionMenu();
+  let focusRestored=false;
   const q=$<HTMLInputElement>('sessionSearch').value.trim().toLowerCase();
   const matched=knownSessions.filter(s=>s.title.toLowerCase().includes(q));
   $('sessionCount').textContent=String(matched.length);
@@ -123,11 +133,13 @@ function renderSessions(){
     const more=el('button','session-more','⋯') as HTMLButtonElement;
     more.type='button';more.title='Conversation actions';
     more.setAttribute('aria-label','Actions for '+session.title);
-    more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');
+    more.setAttribute('aria-controls','sessionMenu');more.setAttribute('aria-expanded','false');
     more.onclick=event=>{event.stopPropagation();openSessionMenu(session.id,more);};
     row.append(button,more);parent.append(row);
+    if(session.id===focusedMenuTarget){more.focus();focusRestored=true;}
   }
   if(!matched.length)parent.append(el('p','sidebar-empty',q?'No matching conversations.':'No conversations yet.'));
+  if(focusedMenuTarget&&!focusRestored)$<HTMLInputElement>('sessionSearch').focus();
 }
 function closeSidebar(){document.body?.classList?.remove('sidebar-open');}
 function fillPrompt(value:string){
@@ -413,7 +425,10 @@ document.addEventListener?.('pointerdown',event=>{
   if(target&&!$('sessionMenu').contains(target)&&!menuAnchor?.contains(target))closeSessionMenu();
 });
 document.addEventListener?.('keydown',event=>{
-  if(event.key==='Escape'&&!$('sessionMenu').hidden){closeSessionMenu();}
+  if(event.key==='Escape'&&!$('sessionMenu').hidden){
+    event.preventDefault();
+    closeSessionMenu(true);
+  }
 });
 $<HTMLInputElement>('sessionSearch').oninput=renderSessions;
 $('openSidebar').onclick=()=>{document.body?.classList?.add('sidebar-open');};

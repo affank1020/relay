@@ -8,12 +8,13 @@ import { test } from 'node:test';
 const source=readFileSync(new URL('../dist/public/app.js',import.meta.url),'utf8');
 const flush=async()=>{for(let i=0;i<6;i++)await new Promise<void>(resolve=>setImmediate(resolve));};
 
+let focusedElement:Element|null=null;
 class Element {
   readonly children:Element[]=[];
   readonly dataset:Record<string,string>={};
   parent:Element|null=null;
   textContent='';className='';value='';hidden=false;disabled=false;
-  title='';open=false;scrollHeight=0;scrollTop=0;clientHeight=0;
+  title='';open=false;isConnected=true;scrollHeight=0;scrollTop=0;clientHeight=0;
   style={left:'',top:''}; attributes:Record<string,string>={};
   onclick?:()=>void;
   onsubmit?:()=>void;
@@ -32,7 +33,11 @@ class Element {
   replaceChildren(...nodes:Element[]){for(const child of this.children)child.parent=null;this.children.splice(0);this.append(...nodes);}
   get lastElementChild():Element|null{return this.children.at(-1)??null;}
   remove(){if(this.parent){const index=this.parent.children.indexOf(this);if(index>=0)this.parent.children.splice(index,1);this.parent=null;}}
-  focus(){}
+  focus(){focusedElement=this;}
+  contains(node:Element|null):boolean{
+    for(let parent=node;parent;parent=parent.parent)if(parent===this)return true;
+    return false;
+  }
   select(){}
   getBoundingClientRect(){return {right:215,bottom:120};}
   showModal(){this.open=true;}
@@ -368,4 +373,84 @@ test('stale tab clears an unconfirmed send after another tab deletes the chat',a
   assert.equal(posts[1].message,'New message to B');
   assert.notEqual(posts[1].requestId,posts[0].requestId);
   assert.equal(storage.get('relay.pending'),'');
+});
+
+
+test('conversation actions restore keyboard focus on Escape and refresh without stealing pointer or modal focus',async()=>{
+  focusedElement=null;
+  const nodes=new Map<string,Element>();
+  const element=(id:string):Element=>{
+    if(!nodes.has(id))nodes.set(id,new Element());
+    return nodes.get(id)!;
+  };
+  const handlers:{keydown:Array<(e:{key:string;preventDefault():void})=>void>;pointerdown:Array<(e:{target:Element})=>void>}={keydown:[],pointerdown:[]};
+  const document={
+    getElementById:element,
+    createElement:(tag:string)=>new Element(tag),
+    get activeElement(){return focusedElement;},
+    addEventListener:(type:string,cb:never)=>{
+      if(type==='keydown')handlers.keydown.push(cb);
+      if(type==='pointerdown')handlers.pointerdown.push(cb);
+    }
+  };
+  const context={
+    window:{location:{protocol:'https:'},innerWidth:1000,innerHeight:600,sessionStorage:{getItem:()=>null,setItem:()=>{}}},
+    document,Headers,Response,URL,
+    setTimeout:(_callback:()=>void)=>1,clearTimeout:()=>{},
+    fetch:async(url:string)=>{
+      if(url==='/api/status')return new Response(JSON.stringify({provider:'OpenRouter',model:'free',atlas:'configured'}));
+      if(url==='/api/sessions')return new Response(JSON.stringify({sessions:[{id:'c1',title:'Focus test'}]}));
+      if(url==='/api/sessions/c1')return new Response(JSON.stringify(snapshot('c1')));
+      if(url.startsWith('/api/sessions/c1/events?after='))return new Response(JSON.stringify({events:[],nextCursor:0,hasMore:false}));
+      throw Error('Unexpected '+url);
+    }
+  };
+  runInNewContext(source,context,{filename:'dist/public/app.js'});
+  await flush();
+  const actions=()=>element('sessions').children[0].children.find(x=>x.className==='session-more')!;
+  const clickActions=(button:Element)=>{
+    button.focus();
+    (button.onclick as unknown as ((e:{stopPropagation():void})=>void))({stopPropagation(){}});
+  };
+  const original=actions();
+  clickActions(original);
+  assert.equal(element('sessionMenu').hidden,false);
+  assert.strictEqual(focusedElement,element('menuRename'),'opening moves focus to first action');
+  assert.equal(original.attributes['aria-expanded'],'true');
+  let escapePrevented=false;
+  for(const handler of handlers.keydown)handler({key:'Escape',preventDefault:()=>{escapePrevented=true;}});
+  assert.equal(escapePrevented,true);
+  assert.equal(element('sessionMenu').hidden,true);
+  assert.strictEqual(focusedElement,original,'Escape restores the still-connected invoker');
+  assert.equal(original.attributes['aria-expanded'],'false');
+
+  clickActions(original);
+  assert.strictEqual(focusedElement,element('menuRename'));
+  element('sessionSearch').oninput?.();
+  const refreshed=actions();
+  assert.notStrictEqual(refreshed,original,'sidebar refresh replaces the invoker');
+  assert.strictEqual(focusedElement,refreshed,'refresh restores focus to the new invoker');
+  assert.equal(element('sessionMenu').hidden,true);
+
+  clickActions(refreshed);
+  element('menuRename').onclick?.();
+  assert.equal(element('renameDialog').open,true);
+  assert.strictEqual(focusedElement,element('renameInput'),'modal takes keyboard focus');
+  element('renameDialog').close();
+
+  clickActions(refreshed);
+  const outside=element('new');
+  for(const handler of handlers.pointerdown)handler({target:outside});
+  assert.equal(element('sessionMenu').hidden,true);
+  assert.strictEqual(focusedElement,element('menuRename'),
+    'pointer dismissal must not re-focus the actions button');
+  outside.focus();
+  assert.strictEqual(focusedElement,outside);
+
+  clickActions(refreshed);
+  refreshed.isConnected=false;
+  focusedElement=element('menuRename');
+  for(const handler of handlers.keydown)handler({key:'Escape',preventDefault:()=>{}});
+  assert.strictEqual(focusedElement,element('menuRename'),
+    'never focus a stale/detached invoker');
 });
