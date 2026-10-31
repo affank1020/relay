@@ -63,9 +63,10 @@ test('task workspace opens independently of chat, safely gates actions, and repl
   }));
   const response=(payload:unknown,status=200)=>new Response(JSON.stringify(payload),{status});
   original.document={getElementById:get,createElement:(tag:string)=>new Element(tag),visibilityState:'visible'};
+  let consoleInstance:ReturnType<typeof mountTaskConsole>|undefined;
   original.window={confirm:(message:string)=>{confirms.push(message);return true;}};
   try {
-    const console=mountTaskConsole(async(url,options)=>{
+    consoleInstance=mountTaskConsole(async(url,options)=>{
       calls.push({url,method:options?.method??'GET',body:options?.body as string|undefined});
       if(url==='/sessions')return response({sessions:[{id:conversationId,title:'Source conversation'}]});
       if(url.startsWith('/task-console/tasks?'))return response({tasks:[failed,pending],counts:{failed:1,awaiting_approval:1},hasMore:false,nextCursor:null});
@@ -90,10 +91,10 @@ test('task workspace opens independently of chat, safely gates actions, and repl
       }
       throw Error('Unexpected request '+url);
     },async()=>{});
-    await console.show();
+    await consoleInstance.show();
     assert.equal(get('taskRows').children.length,2);
     assert.equal(get('taskCounts').children.length,8);
-    get('taskRows').children[0].onclick?.();
+    get('taskRows').children.find(row=>row.children[0]?.textContent?.includes('Review integration failure'))?.onclick?.();
     await drain();
     // The timeline is rendered as a descendant of the selected detail.
     const timeline=get('taskDetail').querySelector('.task-timeline');
@@ -118,10 +119,11 @@ test('task workspace opens independently of chat, safely gates actions, and repl
     assert.ok(approve);
     approve.onclick?.();await drain();
     assert.ok(calls.some(call=>call.url==='/approvals/approval-1'));
-    console.hide();
+    consoleInstance.hide();
     assert.equal(get('taskConsole').hidden,true);
     assert.ok(!calls.some(call=>call.url.includes('/cancel')),'navigation must not cancel active work');
   } finally {
+    consoleInstance?.hide();
     original.document=beforeDoc;
     original.window=beforeWindow;
   }
