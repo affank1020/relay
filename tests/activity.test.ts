@@ -525,7 +525,7 @@ test('live SSE batches append generated text without remounting or duplicating r
       if(url==='/api/sessions/c1')return new Response(JSON.stringify({session:{id:'c1',title:'Live',busy:true,costUsd:0,usage:{costKind:'estimated',tokens:0,unknown:false}},tasks:[task],approvals:[]}));
       if(url.startsWith('/api/sessions/c1/events?after='))return new Response(JSON.stringify({events:[],nextCursor:0,hasMore:false}));
       if(url.startsWith('/api/sessions/c1/stream?after=')){
-        const stream=new ReadableStream<Uint8Array>({start(controller){streamController=controller;controller.enqueue(encoder.encode(': connected\\n\\n'));}});
+        const stream=new ReadableStream<Uint8Array>({start(controller){streamController=controller;controller.enqueue(encoder.encode(': connected\n\n'));}});
         return new Response(stream,{headers:{'Content-Type':'text/event-stream'}});
       }
       throw Error('Unexpected '+url);
@@ -538,7 +538,7 @@ test('live SSE batches append generated text without remounting or duplicating r
   const user=messages.children[0],assistant=messages.children[1];
   const emit=(sequence:number,text:string,offset:number)=>{
     const item={...event('delta-'+sequence,sequence),taskId:'t1',type:'delta',state:'running',text,textOffset:offset};
-    streamController!.enqueue(encoder.encode('event: batch\\ndata: '+JSON.stringify({events:[item]})+'\\n\\n'));
+    streamController!.enqueue(encoder.encode('event: batch\ndata: '+JSON.stringify({events:[item]})+'\n\n'));
   };
   emit(1,'Hi',2);await flush();
   assert.strictEqual(messages.children[0],user);
