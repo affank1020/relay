@@ -54,6 +54,13 @@ test('MCP structured array contract, validation, project membership, and untrust
   await assert.rejects(svc.validate(null,checkoutId),(e:unknown)=>e instanceof AtlasContextError&&e.status===400);
   assert.equal(atlasList(mcp([])).length,0);
   assert.throws(()=>atlasList(mcp({items:[]})),/unsupported response/);
+  const mixed=mockAtlas();mixed.call=async name=>name==='list_projects'?mcp(projectList):mcp([...checkoutList,{...checkoutList[0],id:otherId,status:'inactive'}]);
+  const active=await new AtlasContextService(mixed).checkouts(projectId);
+  assert.deepEqual(active.map(w=>w.checkoutId),[checkoutId],'inactive checkout must not block otherwise valid discovery');
+  await assert.rejects(new AtlasContextService(mixed).validate(projectId,otherId),/no longer associated/);
+  const denied=mockAtlas();denied.call=async()=>{throw Error('403 Forbidden');};
+  await assert.rejects(new AtlasContextService(denied).projects(),(e:unknown)=>e instanceof AtlasContextError&&e.status===403&&e.message==='Atlas access denied');
+  assert.throws(()=>atlasList({isError:true,content:[{type:'text',text:'Permission denied'}]}),(e:unknown)=>e instanceof AtlasContextError&&e.status===403);
   const liar=mockAtlas();liar.call=async name=>name==='list_projects'?mcp(projectList):mcp([{...checkoutList[0],projectId:otherId}]);
   await assert.rejects(new AtlasContextService(liar).checkouts(projectId),/inconsistent project membership/);
   const unavailable=mockAtlas();unavailable.call=async()=>{throw Error('Bearer secret PRIVATE');};
