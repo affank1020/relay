@@ -69,8 +69,8 @@ test('purge removes private rows and Pi session files without losing spend or vi
     const dir=join(root,'sessions',c.id);
     await mkdir(dir,{recursive:true});
     await writeFile(join(dir,'conversation.jsonl'),'secret transcript');
-    store.save('approvals',{id:'approval-1',taskId:task.id,invocationId:'invocation-1',tool:'test',args:{secret:'private'},state:'approved'});
-    store.save('invocations',{id:task.id+':tool-1',state:'completed',digest:'digest',result:{secret:'private'}});
+    store.save('approvals',{id:'approval-1',taskId:task.id,invocationId:'invocation-1',tool:'test',args:{secret:'private'},state:'approved'} as import('../src/store.js').Approval);
+    store.save('invocations',{id:task.id+':tool-1',state:'completed',digest:'digest',result:{secret:'private'}} as {id:string});
     assert.ok(store.events(c.id).length>0);
     const before=engine.usage();
     assert.equal(before.costUsd,.2);
@@ -110,12 +110,12 @@ test('refuses queued, interrupted, pending-approval and uncertain invocation rec
     const task=engine.enqueue(c.id,'hello','request-001');
     await assert.rejects(engine.deleteConversation(c.id),ConversationConflictError);
     await until(()=>engine.tasks()[0]?.state==='completed');
-    store.save('invocations',{id:task.id+':tool',state:'dispatched'});
+    store.save('invocations',{id:task.id+':tool',state:'dispatched'} as {id:string});
     await assert.rejects(engine.deleteConversation(c.id),ConversationConflictError);
-    store.save('invocations',{id:task.id+':tool',state:'completed'});
-    store.save('approvals',{id:'waiting',taskId:task.id,invocationId:'waiting',tool:'test',args:{},state:'pending'});
+    store.save('invocations',{id:task.id+':tool',state:'completed'} as {id:string});
+    store.save('approvals',{id:'waiting',taskId:task.id,invocationId:'waiting',tool:'test',args:{},state:'pending'} as import('../src/store.js').Approval);
     await assert.rejects(engine.deleteConversation(c.id),ConversationConflictError);
-    store.save('approvals',{id:'waiting',taskId:task.id,invocationId:'waiting',tool:'test',args:{},state:'rejected'});
+    store.save('approvals',{id:'waiting',taskId:task.id,invocationId:'waiting',tool:'test',args:{},state:'rejected'} as import('../src/store.js').Approval);
     const interrupted={...task,state:'interrupted' as const};
     store.save('tasks',interrupted);
     await assert.rejects(engine.deleteConversation(c.id),ConversationConflictError);
