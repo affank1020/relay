@@ -21,6 +21,8 @@ test('compiled Relay serves HTML and creates durable conversations', { timeout: 
       RELAY_ACCESS_TOKEN: token,
       OPENROUTER_API_KEY: 'ci-test-key-not-valid-for-inference',
       RELAY_MODEL: 'cohere/north-mini-code:free',
+      RELAY_OLLAMA_URL: 'http://127.0.0.1:11434/v1',
+      RELAY_OLLAMA_MODELS: 'qwen3:4b',
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -42,6 +44,22 @@ test('compiled Relay serves HTML and creates durable conversations', { timeout: 
     const client = await fetch('http://127.0.0.1:' + port + '/app.js');
     assert.equal(client.status, 200, 'Compiled browser entrypoint must exist');
     await client.text();
+    const statusResponse = await fetch('http://127.0.0.1:' + port + '/api/status', {headers:{Authorization:'Bearer '+token}});
+    assert.equal(statusResponse.status,200);
+    const status=await statusResponse.json() as {models?:{key:string}[]};
+    assert.deepEqual(status.models?.map(m=>m.key),['openrouter/cohere/north-mini-code:free','ollama/qwen3:4b']);
+    const invalid = await fetch('http://127.0.0.1:' + port + '/api/sessions', {
+      method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+      body:JSON.stringify({modelKey:'ollama/not-allowed'})
+    });
+    assert.equal(invalid.status,400);
+    const localSession=await fetch('http://127.0.0.1:' + port + '/api/sessions', {
+      method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+      body:JSON.stringify({modelKey:'ollama/qwen3:4b'})
+    });
+    assert.equal(localSession.status,201);
+    const selected=await localSession.json() as {session:{modelKey?:string}};
+    assert.equal(selected.session.modelKey,'ollama/qwen3:4b');
     const response = await fetch('http://127.0.0.1:' + port + '/api/sessions', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
