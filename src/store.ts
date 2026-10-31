@@ -30,6 +30,10 @@ export interface ExecutionEvent {
   executingNodeId: string | null; text?: string; textOffset?: number;
 }
 export interface Approval { id: string; taskId: string; invocationId: string; tool: string; args: Record<string, unknown>; state: 'pending' | 'approved' | 'rejected'; }
+// Additive invocation metadata; older Atlas records intentionally lack kind.
+// No schema migration or change to the persisted ExecutionEvent contract.
+export interface InvocationRecord { id:string; state:string; kind?:string; invocationId?:string; toolName?:string; providerId?:string; [key:string]:unknown }
+
 export const terminal = (state: State) => ['completed','failed','cancelled','interrupted'].includes(state);
 
 export interface RetiredUsage { costUsd: number; tokens: number; unknown: boolean; measured: boolean; count: number; }
@@ -70,14 +74,15 @@ export class Store {
       CREATE TABLE IF NOT EXISTS retired_family_usage(conversation_id TEXT PRIMARY KEY, root_conversation_id TEXT NOT NULL, cost_usd REAL NOT NULL, tokens INTEGER NOT NULL, unknown INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS retired_family_root ON retired_family_usage(root_conversation_id);
       CREATE INDEX IF NOT EXISTS task_internal_child_conversation ON tasks(conversation_id) WHERE json_extract(data, '$.parentId') IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS retired_read_reconciliations(conversation_id TEXT PRIMARY KEY, read_count INTEGER NOT NULL CHECK(read_count>0), acknowledged_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS pending_session_deletions(conversation_id TEXT PRIMARY KEY);
       PRAGMA user_version=3; COMMIT;`);
   }
   transaction<T>(fn: () => T): T { this.db.exec('BEGIN IMMEDIATE'); try { const value=fn(); this.db.exec('COMMIT'); return value; } catch(e) { this.db.exec('ROLLBACK'); throw e; } }
   all<T>(table: 'conversations'|'tasks'|'approvals'): T[] { return this.db.prepare('SELECT data FROM '+table+' ORDER BY rowid').all().map(r=>JSON.parse(String(r.data)) as T); }
   get<T>(table: 'conversations'|'tasks'|'approvals'|'invocations',id: string): T | undefined { const row=this.db.prepare('SELECT data FROM '+table+' WHERE id=?').get(id); return row ? JSON.parse(String(row.data)) as T : undefined; }
-  save(table: 'conversations'|'tasks'|'approvals'|'invocations', value: {id: string}): void {
-    if(table==='tasks') { const t=value as Task; this.db.prepare('INSERT INTO tasks(id,conversation_id,request_id,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(t.id,t.conversationId,t.requestId,JSON.stringify(t)); }
+  save<T extends {id:string}>(table: 'conversations'|'tasks'|'approvals'|'invocations', value:T): void {
+    if(table==='tasks') { const t=value as unknown as Task; this.db.prepare('INSERT INTO tasks(id,conversation_id,request_id,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(t.id,t.conversationId,t.requestId,JSON.stringify(t)); }
     else this.db.prepare('INSERT INTO '+table+'(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(value.id,JSON.stringify(value));
   }
   event(conversationId: string, fields: Partial<Omit<ExecutionEvent,'schemaVersion'|'id'|'sequence'|'timestamp'|'conversationId'>>): ExecutionEvent {
@@ -112,9 +117,12 @@ export class Store {
       .get(rootConversationId) as {cost:number;tokens:number;unknown:number};
     return {costUsd:row.cost,tokens:row.tokens,unknown:row.unknown!==0};
   }
-  invocationStates(taskId:string): string[] {
+  invocationRecords(taskId:string):InvocationRecord[] {
     return this.db.prepare('SELECT data FROM invocations WHERE substr(id,1,?)=?').all(taskId.length+1,taskId+':')
-      .map(row=>(JSON.parse(String(row.data)) as {state?:string}).state??'unknown');
+      .map(row=>JSON.parse(String(row.data)) as InvocationRecord);
+  }
+  invocationStates(taskId:string):string[] {
+    return this.invocationRecords(taskId).map(record=>record.state??'unknown');
   }
   pendingSessionDeletions(): string[] {
     return this.db.prepare('SELECT conversation_id FROM pending_session_deletions ORDER BY conversation_id').all().map(row=>String(row.conversation_id));
@@ -156,6 +164,16 @@ export class Store {
         else this.db.prepare('DELETE FROM retired_family_usage WHERE root_conversation_id=?').run(id);
         const ids=new Set(tasks.map(t=>t.id));
         for(const approval of this.all<Approval>('approvals'))if(ids.has(approval.taskId))deleteApproval.run(approval.id);
+        // Retain only numeric evidence of explicit MCP read reconciliation.
+        // Raw invocation arguments, headers and results are still purged.
+        const acknowledged=tasks.flatMap(t=>this.invocationRecords(t.id))
+          .filter(r=>r.kind==='mcp_read'&&r.state==='reconciled_read');
+        if(acknowledged.length){
+          const acknowledgedAt=acknowledged.map(r=>typeof r.reconciledAt==='string'?r.reconciledAt:'')
+            .sort().at(-1)||new Date().toISOString();
+          this.db.prepare('INSERT INTO retired_read_reconciliations(conversation_id,read_count,acknowledged_at) VALUES(?,?,?)')
+            .run(id,acknowledged.length,acknowledgedAt);
+        }
         for(const task of tasks)deleteInvocation.run(task.id.length+1,task.id+':');
         this.db.prepare('DELETE FROM events WHERE conversation_id=?').run(id);
         this.db.prepare('DELETE FROM tasks WHERE conversation_id=?').run(id);
