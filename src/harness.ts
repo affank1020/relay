@@ -2,30 +2,55 @@ import { mkdir, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { Task, Usage } from './store.js';
+import type { RelayModels } from './models.js';
 
-export type HarnessPhase = 'preparing_directories' | 'loading_model' | 'loading_resources' | 'opening_session' | 'creating_session' | 'running_inference' | 'finalizing_response';
-export interface HarnessRequest { version:1; task:Task; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; }
+export type HarnessPhase = 'preparing_directories' | 'loading_model' | 'checking_local_provider' | 'loading_resources' | 'opening_session' | 'creating_session' | 'running_inference' | 'finalizing_response';
+export interface HarnessRequest { version:1; task:Task; modelKey?:string; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; }
 export interface Harness { readonly version:1; readonly capabilities: { persistence:boolean; cancellation:boolean; tools:boolean }; run(request:HarnessRequest):Promise<string>; }
 const count=(n:unknown)=>typeof n==='number' && Number.isFinite(n) && n>=0?n:null;
 export const isPiRateLimited=(detail:unknown):boolean=>typeof detail==='string' && /\b429\b|\brate[\s_-]?limit(?:ed|ing)?\b/i.test(detail);
 export class ProviderRateLimitError extends Error { constructor(){super('OpenRouter rate limit');this.name='ProviderRateLimitError';} }
+export class LocalProviderUnavailableError extends Error { constructor(readonly reason:'offline'|'missing_model'){super(reason);this.name='LocalProviderUnavailableError';} }
 export class PiHarness implements Harness {
   readonly version=1 as const;
   readonly capabilities={persistence:true,cancellation:true,tools:true};
   private runtime?:Promise<ModelRuntime>;
-  constructor(private root:string,private modelId:string) {
+  constructor(private root:string,private modelId:string,private registry?:RelayModels) {
     if(!modelId.endsWith(':free'))throw new Error('Only explicit free OpenRouter variants are permitted');
   }
-  async run({task,signal,tools,onText,onUsage,onPhase}:HarnessRequest):Promise<string> {
+  async run({task,modelKey,signal,tools,onText,onUsage,onPhase}:HarnessRequest):Promise<string> {
     onPhase?.('preparing_directories');
     const cwd=join(this.root,'isolated'); const agentDir=join(this.root,'agent');
     const sessionDir=join(this.root,'sessions',task.conversationId);
     await Promise.all([mkdir(cwd,{recursive:true}),mkdir(agentDir,{recursive:true}),mkdir(sessionDir,{recursive:true})]);
     onPhase?.('loading_model');
-    this.runtime ??= ModelRuntime.create({allowModelNetwork:true,modelRefreshTimeoutMs:15000,authPath:join(agentDir,'auth.json'),modelsPath:null}).catch(e=>{this.runtime=undefined;throw e;});
+    this.runtime ??= ModelRuntime.create({allowModelNetwork:true,modelRefreshTimeoutMs:15000,authPath:join(agentDir,'auth.json'),modelsPath:null}).then(runtime=>{
+      if(this.registry?.ollama)runtime.registerProvider('ollama',{
+        baseUrl:this.registry.ollama.baseUrl,api:'openai-completions',apiKey:'ollama',
+        compat:{supportsDeveloperRole:false,supportsReasoningEffort:false},
+        models:this.registry.ollama.modelIds.map(id=>({id}))
+      });
+      return runtime;
+    }).catch(e=>{this.runtime=undefined;throw e;});
     const modelRuntime=await this.runtime;
-    const model=modelRuntime.getModel('openrouter',this.modelId);
-    if(!model)throw new Error('Configured OpenRouter model is unavailable');
+    const key=modelKey??this.registry?.defaultKey??'openrouter/'+this.modelId;
+    const selected=this.registry?.models.find(x=>x.key===key);
+    if(this.registry && !selected)throw new Error('Selected model is not configured');
+    const provider=selected?.provider??'openrouter';
+    const id=selected?.id??this.modelId;
+    const model=modelRuntime.getModel(provider,id);
+    if(!model)throw new Error('Configured model is unavailable');
+    if(provider==='ollama'){
+      onPhase?.('checking_local_provider');
+      let response:Response;
+      try { response=await fetch(this.registry!.ollama!.baseUrl+'/models',{signal:AbortSignal.any([signal,AbortSignal.timeout(4500)])}); }
+      catch { signal.throwIfAborted();throw new LocalProviderUnavailableError('offline'); }
+      if(!response.ok)throw new LocalProviderUnavailableError('offline');
+      let listing:unknown;
+      try {listing=await response.json();}catch{throw new LocalProviderUnavailableError('offline');}
+      const entries=(listing as {data?:Array<{id?:unknown}>})?.data;
+      if(!Array.isArray(entries)||!entries.some(item=>item?.id===id))throw new LocalProviderUnavailableError('missing_model');
+    }
     onPhase?.('loading_resources');
     const settingsManager=SettingsManager.inMemory();
     const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager,noExtensions:true,disabledBuiltinExtensions:['mcp'],noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true,
