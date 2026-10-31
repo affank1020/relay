@@ -376,7 +376,7 @@ test('minimal MCP reconciliation audit survives durable conversation deletion an
     store=new Store(dbPath);
     const receipt=store.db.prepare('SELECT * FROM retired_read_reconciliations WHERE conversation_id=?')
       .get(id) as {conversation_id:string;read_count:number;acknowledged_at:string}|undefined;
-    assert.deepEqual(receipt,{conversation_id:id,read_count:1,acknowledged_at:'2026-10-31T21:00:00.000Z'});
+    assert.deepEqual({...receipt},{conversation_id:id,read_count:1,acknowledged_at:'2026-10-31T21:00:00.000Z'});
     assert.equal(store.get('conversations',id),undefined);
     assert.deepEqual(store.events(id),[]);
     assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM invocations').get()?.count,0);
