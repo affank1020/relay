@@ -3,12 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import type { Engine } from '../src/engine.js';
 import { taskConsoleDetail, taskConsolePage } from '../src/task-console-api.js';
-import { Store, type Task } from '../src/store.js';
+import { Store, type Task, type Conversation, type Approval } from '../src/store.js';
 
 function fixtures() {
   const store=new Store(':memory:');
   const conversations=[randomUUID(),randomUUID()];
-  for(const id of conversations)store.save('conversations',{id,title:'Conversation '+id.slice(0,6),createdAt:new Date().toISOString()});
+  for(const id of conversations)store.save('conversations',{id,title:'Conversation '+id.slice(0,6),createdAt:new Date().toISOString()} satisfies Conversation);
   const all:Task[]=[];
   for(let i=0;i<240;i++) {
     const task:Task={
@@ -69,7 +69,7 @@ test('task detail returns relationships and a redacted approval preview without 
       id:randomUUID(),taskId:task.id,invocationId:randomUUID(),tool:'atlas_operation',
       args:{projectId:'legitimate',apiToken:'plain-secret',nested:{password:'private',input:'safe'}},
       state:'pending'
-    });
+    } satisfies Approval);
     const detail=taskConsoleDetail(engine,task.id);
     assert.ok(detail);
     assert.equal(detail.children[0].id,child.id);
