@@ -26,6 +26,22 @@ Use HOST=127.0.0.1 for local-only access. Never copy production secrets into tes
 RELAY_MAX_ACTIVE must be an integer from 1 to 4; invalid values fail startup.
 Conversation metadata, task lifecycle, approvals and execution events now persist in a Relay-only SQLite file inside RELAY_DATA_DIR (default `.relay/`). Pi session files are stored beneath the same directory and the Docker configuration mounts a dedicated `relay_data` volume. Active work at restart is marked interrupted and requires reconciliation before retrying. Back up this volume before deployments and do not share its database with Atlas.
 
+## UI-only localhost preview
+
+For styling and chat-layout iteration without configuring an Atlas MCP token,
+Ollama, Pi or production credentials:
+
+```sh
+npm ci --include=dev --ignore-scripts --no-audit --no-fund
+npm run dev:ui
+```
+
+Open `http://localhost:4173`. The server binds to `127.0.0.1` only, uses
+**sample** conversations/model choices/Atlas receipts (no actual inference or
+Atlas operations), and reloads when `public/index.html`, `public/style.css`,
+or bundled `src/client.ts` changes. Restart after editing `scripts/dev-ui.mjs`.
+Stop with Ctrl+C. This preview is not a production backend or a security smoke test.
+
 ## Atlas Mac execution
 
 - Node: Affans-MacBook-Pro-2.local, ID fe7984f9-c7fb-42fd-ac89-4480bc9734a2.
