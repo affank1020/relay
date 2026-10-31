@@ -14,6 +14,10 @@ export interface ExecutionEvent {
   executingNodeId: string | null; text?: string; textOffset?: number;
 }
 export interface Approval { id: string; taskId: string; invocationId: string; tool: string; args: Record<string, unknown>; state: 'pending' | 'approved' | 'rejected'; }
+// Additive invocation metadata; older Atlas records intentionally lack kind.
+// No schema migration or change to the persisted ExecutionEvent contract.
+export interface InvocationRecord { id:string; state:string; kind?:string; invocationId?:string; toolName?:string; providerId?:string; [key:string]:unknown }
+
 export const terminal = (state: State) => ['completed','failed','cancelled','interrupted'].includes(state);
 
 export interface RetiredUsage { costUsd: number; tokens: number; unknown: boolean; measured: boolean; count: number; }
@@ -77,9 +81,12 @@ export class Store {
     const row=this.db.prepare('SELECT COALESCE(SUM(cost_usd),0) AS cost, COALESCE(SUM(tokens),0) AS tokens, COALESCE(MAX(unknown),0) AS unknown, COALESCE(MIN(measured),1) AS measured, COALESCE(SUM(usage_count),0) AS count FROM retired_usage').get() as {cost:number;tokens:number;unknown:number;measured:number;count:number};
     return {costUsd:row.cost,tokens:row.tokens,unknown:row.unknown!==0,measured:row.measured!==0,count:row.count};
   }
-  invocationStates(taskId:string): string[] {
+  invocationRecords(taskId:string):InvocationRecord[] {
     return this.db.prepare('SELECT data FROM invocations WHERE substr(id,1,?)=?').all(taskId.length+1,taskId+':')
-      .map(row=>(JSON.parse(String(row.data)) as {state?:string}).state??'unknown');
+      .map(row=>JSON.parse(String(row.data)) as InvocationRecord);
+  }
+  invocationStates(taskId:string):string[] {
+    return this.invocationRecords(taskId).map(record=>record.state??'unknown');
   }
   pendingSessionDeletions(): string[] {
     return this.db.prepare('SELECT conversation_id FROM pending_session_deletions ORDER BY conversation_id').all().map(row=>String(row.conversation_id));

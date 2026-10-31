@@ -190,23 +190,35 @@ export class ConnectionManager {
        !validRemoteArguments(tool.inputSchema,args)) {
       emit('denied');throw new Error('MCP arguments failed schema validation');
     }
-    store.save('invocations',{id:key,digest,state:'validating'} as {id:string});
+    // Record this as a server-admitted read-only request, distinct from Atlas
+    // development tasks. Only these records may be explicitly reconciled.
+    const record={id:key,digest,kind:'mcp_read' as const,providerId:config.id,
+      toolName:label,invocationId};
+    store.save('invocations',{...record,state:'validating'});
     emit('validating');
+    let dispatched=false,receivedResponse=false;
     try{
       signal.throwIfAborted();
-      store.save('invocations',{id:key,digest,state:'dispatched'} as {id:string});
+      store.save('invocations',{...record,state:'dispatched'});
+      dispatched=true;
       emit('started');
       const result=await this.transport(config).call(tool.name,args,signal);
+      receivedResponse=true;
       if(JSON.stringify(result).length>100_000)throw new Error('MCP response exceeds limit');
       if(result && typeof result==='object' && 'isError' in result && result.isError)
         throw new Error('MCP provider reported an error');
-      store.save('invocations',{id:key,digest,state:'completed'} as {id:string});
+      store.save('invocations',{...record,state:'completed'});
       emit('completed');
       return result;
     }catch{
-      store.save('invocations',{id:key,digest,state:'uncertain'} as {id:string});
+      // An explicit provider error, oversized response or aborted preflight
+      // is a known terminal read failure, not an unknown write side effect.
+      // Only errors after an attempted dispatch with no response are uncertain.
+      store.save('invocations',{...record,state:dispatched&&!receivedResponse?'uncertain':'failed_read'});
       emit(signal.aborted?'cancelled':'failed');
-      throw new Error('MCP call failed; verify provider state before retrying');
+      throw new Error(dispatched&&!receivedResponse
+        ?'MCP read outcome is uncertain; do not replay without reconciliation'
+        :'MCP read failed; verify provider state before retrying');
     }
   }
   async close():Promise<void>{await Promise.all([...this.transports.values()].map(t=>t.close()));}
