@@ -42,8 +42,9 @@ export class TrustedSkills {
       throw new Error('untrusted file');
     const content=await readFile(file,'utf8');
     const meta=parseSkill(content);
-    if(meta.name!==skill.name || meta.description!==skill.description ||
-      meta.version!==skill.version)throw new Error('mismatched metadata');
+    if(meta.name!==skill.name ||
+      (skill.source==='git' && (meta.description!==skill.description||meta.version!==skill.version)))
+      throw new Error('mismatched metadata');
     if(skill.source==='git' && sha256(content)!==skill.sha256)throw new Error('modified reviewed Skill');
     return content;
   }
