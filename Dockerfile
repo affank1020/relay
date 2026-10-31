@@ -6,6 +6,7 @@ COPY skills ./skills
 COPY src ./src
 COPY public ./public
 COPY scripts/build.sh ./scripts/build.sh
+COPY scripts/atlas-smoke.ts ./scripts/atlas-smoke.ts
 RUN npm run check && npm run build
 RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
