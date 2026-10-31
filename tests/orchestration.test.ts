@@ -635,7 +635,8 @@ test('nested delegated token ceiling includes both sibling children and blocks s
     assert.equal(coordinator.state,'failed','nested synthesis must not spend past its parent ceiling');
     assert.ok(!engine.tasks().some(t=>t.continuationOf===coordinator.id),
       'a nested continuation cannot bypass the exhausted subtree cap');
-    assert.equal(root.state,'completed','unbudgeted ancestor still synthesises the failed branch');
+    assert.equal(store.get<Task>('tasks',root.id)?.state,'completed',
+      'unbudgeted ancestor still synthesises the failed branch');
     assert.ok(engine.tasks().some(t=>t.continuationOf===root.id&&t.state==='completed'));
     assert.equal(executed.filter(x=>x.startsWith('worker')).length,2);
   }finally{await engine.stop();store.close();}
