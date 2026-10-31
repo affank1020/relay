@@ -338,8 +338,10 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     detail.append(resultHeading);
     const resultPane=node('div','task-result',task.result);
     resultPane.hidden=!task.result;
-    resultPane.scrollTop=previousScrollTop;
     detail.append(resultPane);
+    // CSSOM View ignores scrollTop writes on detached elements. Apply only
+    // after the replacement pane has a layout box (and content).
+    if(task.result)resultPane.scrollTop=previousScrollTop;
     relation('Parent',task.parentId?[task.parentId]:[]);
     relation('Dependencies',task.dependencies);
     relation('Child tasks',data.children.map(child=>child.id));
@@ -435,9 +437,17 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
         eventMore=replay.hasMore;
         if(!eventMore)break;
       }
+      // A successful replay clears any earlier transient error. Keep it
+      // outside the event list diff so placeholders and rows remain stable.
+      eventList?.querySelector('.task-events-error')?.remove();
       renderEvents();
     } catch(error) {
-      if(generation===detailEpoch&&eventList)eventList.append(node('p','task-error','Activity unavailable: '+errorText(error)));
+      if(generation===detailEpoch&&eventList) {
+        const text='Activity unavailable: '+errorText(error);
+        const warning=eventList.querySelector('.task-events-error');
+        if(warning)warning.textContent=text;
+        else eventList.append(node('p','task-error task-events-error',text));
+      }
     } finally {
       if(generation===detailEpoch) {
         eventLoading=false;
