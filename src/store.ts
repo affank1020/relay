@@ -17,6 +17,10 @@ export interface ExecutionEvent {
   atlasResource?: AtlasResourceObservation;
 }
 export interface Approval { id: string; taskId: string; invocationId: string; tool: string; args: Record<string, unknown>; state: 'pending' | 'approved' | 'rejected'; }
+// Additive invocation metadata; older Atlas records intentionally lack kind.
+// No schema migration or change to the persisted ExecutionEvent contract.
+export interface InvocationRecord { id:string; state:string; kind?:string; invocationId?:string; toolName?:string; providerId?:string; [key:string]:unknown }
+
 export const terminal = (state: State) => ['completed','failed','cancelled','interrupted'].includes(state);
 
 export interface RetiredUsage { costUsd: number; tokens: number; unknown: boolean; measured: boolean; count: number; }
@@ -54,14 +58,17 @@ export class Store {
       CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS invocations(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS retired_usage(conversation_id TEXT PRIMARY KEY, cost_usd REAL NOT NULL, tokens INTEGER NOT NULL, unknown INTEGER NOT NULL, measured INTEGER NOT NULL, usage_count INTEGER NOT NULL);
+      -- Minimal, non-content acknowledgement ledger persists after deletion.
+      -- No tool args/results, invocation IDs, names or transcript are retained.
+      CREATE TABLE IF NOT EXISTS retired_read_reconciliations(conversation_id TEXT PRIMARY KEY, read_count INTEGER NOT NULL CHECK(read_count>0), acknowledged_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS pending_session_deletions(conversation_id TEXT PRIMARY KEY);
       PRAGMA user_version=2; COMMIT;`);
   }
   transaction<T>(fn: () => T): T { this.db.exec('BEGIN IMMEDIATE'); try { const value=fn(); this.db.exec('COMMIT'); return value; } catch(e) { this.db.exec('ROLLBACK'); throw e; } }
   all<T>(table: 'conversations'|'tasks'|'approvals'): T[] { return this.db.prepare('SELECT data FROM '+table+' ORDER BY rowid').all().map(r=>JSON.parse(String(r.data)) as T); }
   get<T>(table: 'conversations'|'tasks'|'approvals'|'invocations',id: string): T | undefined { const row=this.db.prepare('SELECT data FROM '+table+' WHERE id=?').get(id); return row ? JSON.parse(String(row.data)) as T : undefined; }
-  save(table: 'conversations'|'tasks'|'approvals'|'invocations', value: {id: string}): void {
-    if(table==='tasks') { const t=value as Task; this.db.prepare('INSERT INTO tasks(id,conversation_id,request_id,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(t.id,t.conversationId,t.requestId,JSON.stringify(t)); }
+  save<T extends {id:string}>(table: 'conversations'|'tasks'|'approvals'|'invocations', value:T): void {
+    if(table==='tasks') { const t=value as unknown as Task; this.db.prepare('INSERT INTO tasks(id,conversation_id,request_id,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(t.id,t.conversationId,t.requestId,JSON.stringify(t)); }
     else this.db.prepare('INSERT INTO '+table+'(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(value.id,JSON.stringify(value));
   }
   event(conversationId: string, fields: Partial<Omit<ExecutionEvent,'schemaVersion'|'id'|'sequence'|'timestamp'|'conversationId'>>): ExecutionEvent {
@@ -80,9 +87,12 @@ export class Store {
     const row=this.db.prepare('SELECT COALESCE(SUM(cost_usd),0) AS cost, COALESCE(SUM(tokens),0) AS tokens, COALESCE(MAX(unknown),0) AS unknown, COALESCE(MIN(measured),1) AS measured, COALESCE(SUM(usage_count),0) AS count FROM retired_usage').get() as {cost:number;tokens:number;unknown:number;measured:number;count:number};
     return {costUsd:row.cost,tokens:row.tokens,unknown:row.unknown!==0,measured:row.measured!==0,count:row.count};
   }
-  invocationStates(taskId:string): string[] {
+  invocationRecords(taskId:string):InvocationRecord[] {
     return this.db.prepare('SELECT data FROM invocations WHERE substr(id,1,?)=?').all(taskId.length+1,taskId+':')
-      .map(row=>(JSON.parse(String(row.data)) as {state?:string}).state??'unknown');
+      .map(row=>JSON.parse(String(row.data)) as InvocationRecord);
+  }
+  invocationStates(taskId:string):string[] {
+    return this.invocationRecords(taskId).map(record=>record.state??'unknown');
   }
   pendingSessionDeletions(): string[] {
     return this.db.prepare('SELECT conversation_id FROM pending_session_deletions ORDER BY conversation_id').all().map(row=>String(row.conversation_id));
@@ -113,6 +123,14 @@ export class Store {
       const unknown=usage.some(u=>u.costUsd===null||u.input===null||u.output===null)?1:0;
       const measured=usage.every(u=>u.costKind==='measured')?1:0;
       this.db.prepare('INSERT INTO retired_usage(conversation_id,cost_usd,tokens,unknown,measured,usage_count) VALUES(?,?,?,?,?,?)').run(id,cost,tokens,unknown,measured,usage.length);
+      const acknowledged=tasks.flatMap(t=>this.invocationRecords(t.id))
+        .filter(r=>r.kind==='mcp_read'&&r.state==='reconciled_read');
+      if(acknowledged.length){
+        const acknowledgedAt=acknowledged.map(r=>typeof r.reconciledAt==='string'?r.reconciledAt:'')
+          .sort().at(-1)||new Date().toISOString();
+        this.db.prepare('INSERT INTO retired_read_reconciliations(conversation_id,read_count,acknowledged_at) VALUES(?,?,?)')
+          .run(id,acknowledged.length,acknowledgedAt);
+      }
       const deleteApproval=this.db.prepare('DELETE FROM approvals WHERE id=?');
       const ids=new Set(tasks.map(t=>t.id));
       for(const approval of this.all<Approval>('approvals'))if(ids.has(approval.taskId))deleteApproval.run(approval.id);
