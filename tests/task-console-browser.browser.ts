@@ -91,3 +91,55 @@ test('real Chromium preserves task output scrolling through streaming and state 
     await browser.close();
   }
 });
+
+test('real Chromium preserves inline subagent disclosure and opens the correct task after live updates',async()=>{
+  const bundle=await build({entryPoints:['src/agent-progress-ui.ts'],bundle:true,platform:'browser',
+    format:'iife',globalName:'RelayAgentProgress',write:false,target:'es2022'});
+  assert.ok(bundle.outputFiles?.[0]);
+  const browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:440,height:760}});
+    await page.setContent('<!doctype html><html><body><details id="delegations"><summary></summary><div class="inline-agent-children"></div></details></body></html>');
+    await page.addScriptTag({content:bundle.outputFiles[0].text});
+    await page.addScriptTag({content:'var __name=(target,name)=>target;'});
+    await page.evaluate(()=>{
+      const app=(window as any).RelayAgentProgress;
+      const first={id:'child-1',parentId:'root',agentRunId:'run-1',depth:1,role:'researcher',
+        prompt:'Look for errors <script>window.hacked=true</script>',state:'running',dependencies:[],
+        modelKey:null,tokens:null,costUsd:null,reportedSummary:null,lastTool:null};
+      const second={...first,id:'child-2',depth:2,role:'reviewer',parentId:'child-1',state:'queued',prompt:'Review result'};
+      (window as any).__agents=[first,second];
+      (window as any).__opened=[];
+      (window as any).__render=()=>app.renderInlineAgents(document.getElementById('delegations'),
+        (window as any).__agents,(id:string)=>(window as any).__opened.push(id));
+      (window as any).__render();
+    });
+    const group=page.locator('#delegations');
+    assert.equal(await group.locator('summary').textContent(),'2 agents · 2 active');
+    await group.locator('summary').click();
+    const row=group.locator('[data-agent-id="child-1"]');
+    assert.equal(await group.evaluate(element=>(element as HTMLDetailsElement).open),true);
+    await row.evaluate(element=>{element.dataset.identity='same-node';});
+    await page.evaluate(()=>{
+      const agents=(window as any).__agents;
+      agents[0].state='completed';
+      agents[0].reportedSummary='Found evidence in the logs <img src=x onerror=alert(1)>';
+      agents[1].state='failed';
+      (window as any).__render();
+    });
+    assert.equal(await group.evaluate(element=>(element as HTMLDetailsElement).open),true);
+    assert.equal(await row.evaluate(element=>element.dataset.identity),'same-node',
+      'live state update must not replace the row or close disclosure');
+    assert.equal(await group.locator('.inline-agent-status').first().textContent(),'Completed');
+    assert.ok((await group.textContent())?.includes('Agent-reported (unverified)'));
+    assert.equal(await group.locator('script, img').count(),0,'untrusted text must not become markup');
+    assert.equal(await group.locator('[data-agent-id="child-2"] .inline-agent-status').textContent(),'Failed');
+    await row.locator('button').click();
+    assert.deepEqual(await page.evaluate(()=>(window as any).__opened),['child-1']);
+    await page.evaluate(()=>{
+      (window as any).__agents.splice(1,1);
+      (window as any).__render();
+    });
+    assert.equal(await group.locator('[data-agent-id]').count(),1);
+  }finally{await browser.close();}
+});

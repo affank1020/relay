@@ -10,6 +10,7 @@ import { refreshOllamaModels, type RelayModels } from './models.js';
 import { AtlasContextError } from './atlas-context.js';
 import type { CapabilityRegistry } from './capabilities.js';
 import { SkillPackageError } from './skills/git.js';
+import { projectAgentProgress } from './agent-progress.js';
 import { streamConversationEvents } from './live-events.js';
 import { parseAtlasWebOrigin } from './atlas-navigation.js';
 
@@ -169,7 +170,20 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         if(!conversation[2]&&req.method==='GET') {
           const tasks=engine.tasks(c.id).filter(task=>task.kind!=='join');
           const turns=tasks.flatMap(t=>[{role:'user',text:t.prompt},...(t.result?[{role:'assistant',text:t.result}]:[])]);
-          return send(res,200,{session:summary(c),turns,tasks,approvals:engine.store.all<Approval>('approvals').filter(a=>tasks.some(t=>t.id===a.taskId))});
+          // Include durable, bounded subagent progress in the parent snapshot.
+          // Internal conversations and raw child transcripts are never returned
+          // to the normal chat UI. The task console remains the detailed view.
+          const latestTool=engine.store.db.prepare(
+            "SELECT json_extract(data, '$.tool') AS name, json_extract(data, '$.state') AS state FROM events "+
+            "WHERE conversation_id=? AND json_extract(data, '$.taskId')=? "+
+            "AND json_extract(data, '$.type')='tool' ORDER BY sequence DESC LIMIT 1"
+          );
+          const agents=projectAgentProgress(tasks,engine.tasks(),child=>{
+            const row=latestTool.get(child.conversationId,child.id) as {name:string|null;state:string}|undefined;
+            return row?.name?{name:row.name.slice(0,120),state:row.state.slice(0,60)}:null;
+          });
+          return send(res,200,{session:summary(c),turns,tasks,agents,
+            approvals:engine.store.all<Approval>('approvals').filter(a=>tasks.some(t=>t.id===a.taskId))});
         }
         if(conversation[2]==='/context'&&req.method==='PATCH'){
           const data=await body(req);
