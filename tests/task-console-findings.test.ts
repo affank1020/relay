@@ -418,8 +418,9 @@ test('nonexhaustive queued filter evicts an unselected task that starts running'
       assert.equal(visible.length,50);
       assert.ok(!visible.includes('Queue 40'),'transitioned unselected row is not retained as queued');
       assert.equal(get('taskCounts').children.find(item=>item.children[0]?.textContent==='Queued')?.children[1]?.textContent,'59');
-      const stateCall=calls.find(url=>url.includes('/task-console/task-states?'));
-      assert.ok(stateCall&&new URL(stateCall,'http://relay.local').searchParams.get('ids')?.split(',').includes(changed.id));
+      assert.ok(!calls.some(url=>url.includes('/task-console/task-states?')&&
+        new URL(url,'http://relay.local').searchParams.get('ids')?.split(',').includes(changed.id)),
+        'displaced unselected rows are discarded rather than indefinitely materialized');
       get('taskMore').onclick?.();await flush();
       const all=get('taskRows').children.map(row=>row.children[0]?.textContent);
       assert.equal(all.length,59,'all and only queued tasks remain after pagination');
@@ -512,4 +513,57 @@ test('empty initial page and zero-result state filter both render a visible empt
     }
     throw Error('Unexpected URL '+url);
   });
+});
+
+
+test('hundreds of automatic page shifts keep the DOM bounded and history reachable on demand',async()=>{
+  const make=(number:number)=>({
+    ...task(String(number).padStart(8,'0')+'-5555-5555-5555-555555555555',A,'completed'),
+    prompt:'History '+number,rowid:number,
+    createdAt:new Date(Date.parse(when)+number*1000).toISOString()
+  });
+  const history=Array.from({length:60},(_,i)=>make(i+1));
+  let scheduled:(()=>void)|undefined;
+  const previousTimeout=globalThis.setTimeout,previousClear=globalThis.clearTimeout;
+  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
+  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
+  try {
+    await fixture(async(get,_ui,calls)=>{
+      assert.equal(get('taskRows').children.length,50);
+      for(let number=61;number<=210;number++) {
+        history.push(make(number));
+        assert.ok(scheduled);
+        scheduled();await flush();
+        assert.ok(get('taskRows').children.length<=50,
+          'background inserts must not accumulate DOM rows: '+number);
+      }
+      assert.equal(get('taskRows').children.length,50);
+      assert.equal(get('taskMore').hidden,false);
+      for(let i=0;i<10&&!get('taskMore').hidden;i++){
+        get('taskMore').onclick?.();await flush();
+      }
+      const visible=get('taskRows').children.map(row=>row.children[0]?.textContent);
+      assert.equal(visible.length,210,'all historic tasks remain reachable with explicit paging');
+      assert.equal(new Set(visible).size,210,'overlapping cursors must not duplicate rows');
+      assert.equal(get('taskMore').hidden,true,'older pagination terminates after all tasks');
+      for(let number=1;number<=210;number++)
+        assert.ok(visible.includes('History '+number),'missing historic task '+number);
+      assert.ok(calls.some(url=>url.includes('cursor=161')),
+        'paging resumes just below the newest page after all 150 inserts');
+    },async url=>{
+      if(url==='/sessions')return response({sessions:[sessions[0]]});
+      if(url.startsWith('/task-console/tasks?')){
+        const search=new URL(url,'http://relay.local').searchParams;
+        const eligible=history.filter(item=>!search.get('cursor')||item.rowid<Number(search.get('cursor')))
+          .sort((a,b)=>b.rowid-a.rowid);
+        const page=eligible.slice(0,50);
+        return response({tasks:page,counts:{completed:history.length},hasMore:eligible.length>50,
+          nextCursor:eligible.length>50?String(page.at(-1)?.rowid):null});
+      }
+      throw Error('Unexpected URL '+url);
+    });
+  } finally {
+    globalThis.setTimeout=previousTimeout;
+    globalThis.clearTimeout=previousClear;
+  }
 });
