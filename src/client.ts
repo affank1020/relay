@@ -386,6 +386,8 @@ function render(data:Snapshot){
   $('approvals').replaceChildren();
   for(const a of data.approvals.filter(a=>a.state==='pending')){
     const card=el('div','approval','');card.append(el('strong','','Approval required · '+toolLabel(a.tool)));
+    if(a.tool.startsWith('github:'))card.append(el('p','approval-warning',
+      'GitHub write: review the exact repository and content. This action may not be safe to retry if the network fails.'));
     card.append(el('pre','',JSON.stringify(a.args,null,2)));
     for(const approved of [true,false]){
       const button=el('button','action'+(approved?'':' deny'),approved?'Approve action':'Reject') as HTMLButtonElement;

@@ -122,7 +122,8 @@ export class Engine {
       throw new ConversationConflictError('Conversation has pending approvals');
     const outstanding=all.filter(t=>removed.has(t.id)).flatMap(t=>this.store.invocationRecords(t.id))
       .filter(r=>r.state!=='completed' &&
-        !(r.kind==='mcp_read'&&['failed_read','reconciled_read'].includes(r.state)));
+        !(r.kind==='mcp_read'&&['failed_read','reconciled_read'].includes(r.state)) &&
+        !(r.kind==='mcp_write'&&r.state==='denied_before_dispatch'));
     if(outstanding.length) {
       if(outstanding.every(r=>r.kind==='mcp_read'&&['uncertain','dispatched','validating'].includes(r.state)))
         throw new ConversationConflictError('Conversation has uncertain read-only MCP invocations');
@@ -403,7 +404,8 @@ export class Engine {
       if(!joining && !task.parentId && !task.delegation && this.capabilities) {
         // MCP connections/Skills are root-only until the delegated-provider
         // admission contract is generalised. No child gains provider tools.
-        const discovered=await this.capabilities.tools(task,this.store,controller.signal);
+        const discovered=await this.capabilities.tools(task,this.store,controller.signal,
+          (...args)=>this.approve(...args));
         tools.push(...discovered);
       }
       const admitted=tools.filter(tool=>READ_TOOLS.has(tool.name.replace(/^atlas_/,''))).map(tool=>tool.name);
@@ -595,7 +597,8 @@ export class Engine {
     const task=this.store.get<Task>('tasks',a.taskId)!;
     if(task.state!=='awaiting_approval')throw new Error('Task is not awaiting approval');
     a.state=approved?'approved':'rejected';this.store.save('approvals',a);
-    this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,invocationId:a.invocationId,type:'approval',tool:a.tool,state:a.state});
+    this.store.event(task.conversationId,{taskId:task.id,agentId:task.agentId??null,
+      agentRunId:task.agentRunId??null,invocationId:a.invocationId,type:'approval',tool:a.tool,state:a.state});
     return a;
   }
   async stop() { this.stopped=true;for(const c of this.active.values())c.abort();await Promise.allSettled(this.jobs); }
