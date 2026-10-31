@@ -1,5 +1,6 @@
 import type { Task, ExecutionEvent, Approval } from './store.js';
 import { renderMarkdown } from './markdown.js';
+import { mountTaskConsole } from './task-console.js';
 interface Summary { id:string; title:string; modelKey?:string; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
 interface Snapshot { session:Summary; tasks:Task[]; approvals:Approval[]; }
 function $<T extends HTMLElement=HTMLElement>(id:string):T { const n=document.getElementById(id);if(!n)throw new Error('Missing element '+id);return n as T; }
@@ -57,7 +58,7 @@ function renderSessions(){
   $('sessionCount').textContent=String(matched.length);
   const parent=$('sessions');parent.replaceChildren();
   for(const session of matched){
-    const button=el('button','session'+(session.id===current?' selected':''),'') as HTMLButtonElement;
+    const button=el('button','session'+(session.id===current&&!taskConsole.visible?' selected':''),'') as HTMLButtonElement;
     button.type='button';button.title=session.title;
     const title=el('span','session-title',session.title);
     button.append(title);
@@ -164,7 +165,7 @@ function render(data:Snapshot){
     if(nearBottom||!lastView)messages.scrollTop=messages.scrollHeight;
     lastView=serialized;
   }
-  $('title').textContent=data.session.title;
+  if(!taskConsole.visible)$('title').textContent=data.session.title;
   const picker=$<HTMLSelectElement>('modelPicker');
   if(data.session.modelKey&&!configuredModels.some(m=>m.key===data.session.modelKey)&&![...picker.options].some(x=>x.value===data.session.modelKey)){
     const missing=document.createElement('option');missing.value=data.session.modelKey;
@@ -231,12 +232,13 @@ async function poll(){
   finally{polling=false;if(timer)clearTimeout(timer);timer=setTimeout(()=>{void poll();},600);}
 }
 async function select(id:string){
+  closeTaskConsole();
   epoch++;current=id;cursor=0;lastView='';activity.length=0;toolReceipts.clear();receiptVersion=0;$('activity').replaceChildren();remember('relay.conversation',id);
   const generation=epoch;const data=await get<Snapshot>('/sessions/'+id);
   if(generation!==epoch)return;
   render(data);await refresh();void poll();
 }
-async function create(){const picker=$<HTMLSelectElement>('modelPicker');if(picker.selectedOptions[0]?.disabled)throw new Error('Local model offline. Start Ollama or choose another model.');const modelKey=picker.value;const result=await (await api('/sessions',{method:'POST',body:JSON.stringify(modelKey?{modelKey}:{})})).json() as {session:Summary};await select(result.session.id);$<HTMLTextAreaElement>('prompt').focus();}
+async function create(){closeTaskConsole();const picker=$<HTMLSelectElement>('modelPicker');if(picker.selectedOptions[0]?.disabled)throw new Error('Local model offline. Start Ollama or choose another model.');const modelKey=picker.value;const result=await (await api('/sessions',{method:'POST',body:JSON.stringify(modelKey?{modelKey}:{})})).json() as {session:Summary};await select(result.session.id);$<HTMLTextAreaElement>('prompt').focus();}
 async function submit(event:Event){
   event.preventDefault();if(busy||submitting)return;
   const prompt=$<HTMLTextAreaElement>('prompt');const value=prompt.value.trim();if(!value&&!pending)return;
@@ -267,6 +269,30 @@ async function bootstrap(){
     if(!current){const selected=sessions.find(s=>s.id===remembered)||sessions[0];if(selected)await select(selected.id);else await create();}
   }catch(e){if(hosted)hostedError(e,stage);else $<HTMLDialogElement>('login').showModal();}
 }
+const taskConsole=mountTaskConsole(api,async id=>{await select(id);closeSidebar();});
+function closeTaskConsole(){
+  if(!taskConsole.visible)return;
+  taskConsole.hide();
+  for(const id of ['messages','approvals','notice'])$(id).hidden=false;
+  document.querySelector('.composer')?.removeAttribute('hidden');
+  $('toggleInspector').hidden=false;
+  $('title').textContent=knownSessions.find(s=>s.id===current)?.title??'New chat';
+  $('openTaskConsole').setAttribute('aria-pressed','false');
+  renderSessions();
+}
+$('openTaskConsole').onclick=()=>{
+  if(taskConsole.visible){closeTaskConsole();return;}
+  for(const id of ['messages','approvals','notice'])$(id).hidden=true;
+  document.querySelector('.composer')?.setAttribute('hidden','');
+  $('inspector').hidden=true;
+  $('toggleInspector').hidden=true;
+  $('toggleInspector').setAttribute('aria-expanded','false');
+  $('title').textContent='Tasks & agents';
+  $('openTaskConsole').setAttribute('aria-pressed','true');
+  closeSidebar();
+  renderSessions();
+  void taskConsole.show().catch(notify);
+};
 $<HTMLFormElement>('loginForm').onsubmit=async event=>{
   event.preventDefault();if(hosted)return;
   token=$<HTMLInputElement>('token').value;
