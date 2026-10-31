@@ -92,6 +92,7 @@
   <form id="deleteForm">
     <h2 id="deleteHeading">Delete conversation?</h2>
     <p><strong id="deleteName"></strong> will be permanently deleted, including its messages and session data. This cannot be undone.</p>
+    <label id="deleteReadReconcileRow" hidden><input id="deleteReadReconcile" type="checkbox"> I acknowledge that some read-only MCP calls have uncertain results and want to retire those receipts before deletion.</label>
     <p id="deleteError" class="dialog-error" role="alert"></p>
     <div class="dialog-actions"><button id="deleteCancel" type="button">Cancel</button><button id="deleteConfirm" class="destructive" type="submit">Delete permanently</button></div>
   </form>
