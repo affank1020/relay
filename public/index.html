@@ -53,5 +53,26 @@
     <div id="activity" class="activity-list"></div>
   </section>
 </div>
+<div id="sessionMenu" class="session-menu" role="group" aria-label="Conversation actions" hidden>
+  <button id="menuRename" type="button">Rename</button>
+  <button id="menuDelete" type="button" class="destructive">Delete</button>
+</div>
+<dialog id="renameDialog" aria-labelledby="renameHeading">
+  <form id="renameForm">
+    <h2 id="renameHeading">Rename conversation</h2>
+    <label for="renameInput">Name</label>
+    <input id="renameInput" type="text" maxlength="120" required autocomplete="off">
+    <p id="renameError" class="dialog-error" role="alert"></p>
+    <div class="dialog-actions"><button id="renameCancel" type="button">Cancel</button><button id="renameSave" type="submit">Save</button></div>
+  </form>
+</dialog>
+<dialog id="deleteDialog" aria-labelledby="deleteHeading">
+  <form id="deleteForm">
+    <h2 id="deleteHeading">Delete conversation?</h2>
+    <p><strong id="deleteName"></strong> will be permanently deleted, including its messages and session data. This cannot be undone.</p>
+    <p id="deleteError" class="dialog-error" role="alert"></p>
+    <div class="dialog-actions"><button id="deleteCancel" type="button">Cancel</button><button id="deleteConfirm" class="destructive" type="submit">Delete permanently</button></div>
+  </form>
+</dialog>
 <dialog id="login"><form id="loginForm"><div class="wordmark">relay<span class="brand-period">.</span></div><h2>Connect</h2><input id="token" type="password" placeholder="Access token" autocomplete="off" minlength="24" required><button type="submit">Connect</button><p id="error" role="alert"></p></form></dialog>
 </body></html>
