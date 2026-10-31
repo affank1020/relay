@@ -63,7 +63,8 @@ export function streamConversationEvents(
       }
     }
   }
-  req.on('close',close);
+  // IncomingMessage 'close' means the request was fully received, even on
+  // a healthy GET stream. Only the response/socket lifecycle ends SSE.
   res.on('close',close);
   unsubscribe=store.subscribeEvents(conversationId,flush);
   heartbeat=setInterval(()=>{
