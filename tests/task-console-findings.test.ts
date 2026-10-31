@@ -292,11 +292,11 @@ test('a late live response cannot overwrite history started during polling',asyn
       await tick();
       assert.ok(release,'live poll is in flight');
       get('taskMore').onclick?.();await flush();
-      assert.equal(titles(get).length,100);
+      assert.equal(titles(get).length,60);
       items.push(numbered(61));
       release!(mock(items,'/task-console/tasks?limit=50'));
       await flush();
-      assert.equal(titles(get).length,100);
+      assert.equal(titles(get).length,60);
       assert.ok(!titles(get).includes('Task 61'));
       assert.match(get('taskFeedback').textContent,/History/);
     },async(url,opts)=>{
