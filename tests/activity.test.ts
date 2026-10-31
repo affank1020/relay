@@ -27,7 +27,7 @@ class Element {
     return node;
   }
   replaceChildren(...nodes:Element[]){for(const child of this.children)child.parent=null;this.children.splice(0);this.append(...nodes);}
-  get lastElementChild(){return this.children.at(-1)??null;}
+  get lastElementChild():Element|null{return this.children.at(-1)??null;}
   remove(){if(this.parent){const index=this.parent.children.indexOf(this);if(index>=0)this.parent.children.splice(index,1);this.parent=null;}}
   focus(){}
   showModal(){}
