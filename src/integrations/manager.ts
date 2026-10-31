@@ -22,6 +22,8 @@ const GITHUB_READ=[
 ] as const;
 const validId=(id:string)=>/^[a-z][a-z0-9_-]{1,23}$/.test(id);
 const validTool=(id:string)=>/^[a-z][a-z0-9_]{0,63}$/.test(id);
+// Operator-supplied adapters cannot promote arbitrary mutating verbs to read authority.
+const genericRead=(id:string)=>/^(get|list|read|search|fetch|lookup|query)_[a-z0-9_]+$/.test(id);
 export function configuredProviders(env:NodeJS.ProcessEnv):ProviderConfig[] {
   const providers:ProviderConfig[]=[{id:'github',label:'GitHub',url:'https://api.githubcopilot.com/mcp/',
     token:env.RELAY_GITHUB_TOKEN??'',readTools:GITHUB_READ}];
@@ -38,7 +40,7 @@ export function configuredProviders(env:NodeJS.ProcessEnv):ProviderConfig[] {
        typeof v.url!=='string'||typeof v.tokenEnv!=='string'||
        !/^RELAY_MCP_TOKEN_[A-Z0-9_]{1,40}$/.test(v.tokenEnv)||
        !Array.isArray(v.readTools)||v.readTools.length>30||
-       v.readTools.some(t=>typeof t!=='string'||!validTool(t)))
+       v.readTools.some(t=>typeof t!=='string'||!validTool(t)||!genericRead(t)))
       throw new Error('Invalid MCP provider');
     let url:URL;
     try {url=new URL(v.url);}catch {throw new Error('Invalid MCP provider URL');}
