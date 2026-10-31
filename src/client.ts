@@ -22,6 +22,47 @@ function indexToolReceipt(event:ExecutionEvent){
 }
 let configuredModels:{key:string;label:string}[]=[];
 let knownSessions:Summary[]=[];
+let menuTarget:string|null=null, menuAnchor:HTMLButtonElement|null=null, dialogTarget:string|null=null;
+function closeSessionMenu(){
+  const menu=$('sessionMenu');menu.hidden=true;
+  if(menuAnchor)menuAnchor.setAttribute('aria-expanded','false');
+  menuTarget=null;menuAnchor=null;
+}
+function openSessionMenu(id:string,anchor:HTMLButtonElement){
+  const menu=$('sessionMenu');
+  if(menuTarget===id&&!menu.hidden){closeSessionMenu();return;}
+  closeSessionMenu();
+  menuTarget=id;menuAnchor=anchor;anchor.setAttribute('aria-expanded','true');
+  const rect=anchor.getBoundingClientRect();
+  menu.style.left=Math.max(8,Math.min(window.innerWidth-166,rect.right-158))+'px';
+  menu.style.top=Math.max(8,Math.min(window.innerHeight-86,rect.bottom+3))+'px';
+  menu.hidden=false;
+  $<HTMLButtonElement>('menuRename').focus();
+}
+function resetSelection(){
+  epoch++;current=null;cursor=0;lastView='';activity.length=0;toolReceipts.clear();receiptVersion=0;
+  if(timer)clearTimeout(timer);timer=undefined;
+  $('activity').replaceChildren();$('approvals').replaceChildren();$('messages').replaceChildren(emptyConversation());
+  $('title').textContent='New chat';$('cost').textContent='0 tokens';
+  setBusy(false);remember('relay.conversation','');
+  renderSessions();
+}
+function openRename(id:string){
+  const session=knownSessions.find(s=>s.id===id);if(!session)return;
+  closeSessionMenu();dialogTarget=id;
+  $<HTMLInputElement>('renameInput').value=session.title;
+  $('renameError').textContent='';
+  const dialog=$<HTMLDialogElement>('renameDialog');dialog.showModal();
+  $<HTMLInputElement>('renameInput').focus();$<HTMLInputElement>('renameInput').select();
+}
+function openDelete(id:string){
+  const session=knownSessions.find(s=>s.id===id);if(!session)return;
+  closeSessionMenu();dialogTarget=id;
+  $('deleteName').textContent=session.title;
+  $('deleteError').textContent='';
+  $<HTMLDialogElement>('deleteDialog').showModal();
+  $<HTMLButtonElement>('deleteCancel').focus();
+}
 const text=(e:unknown)=>e instanceof Error?e.message:String(e);
 function el(tag:string,className:string,value:string){const n=document.createElement(tag);n.className=className;n.textContent=value;return n;}
 function remember(key:string,value:string){try{window.sessionStorage?.setItem(key,value);}catch{}}
@@ -52,18 +93,24 @@ function currentToolEvents(taskId:string){
   return [...(toolReceipts.get(taskId)?.values()??[])].sort((a,b)=>a.sequence-b.sequence);
 }
 function renderSessions(){
+  closeSessionMenu();
   const q=$<HTMLInputElement>('sessionSearch').value.trim().toLowerCase();
   const matched=knownSessions.filter(s=>s.title.toLowerCase().includes(q));
   $('sessionCount').textContent=String(matched.length);
   const parent=$('sessions');parent.replaceChildren();
   for(const session of matched){
+    const row=el('div','session-row','');
     const button=el('button','session'+(session.id===current?' selected':''),'') as HTMLButtonElement;
     button.type='button';button.title=session.title;
-    const title=el('span','session-title',session.title);
-    button.append(title);
+    button.append(el('span','session-title',session.title));
     if(session.busy)button.append(el('span','session-running',''));
-    button.onclick=()=>{void select(session.id).catch(notify);closeSidebar();};
-    parent.append(button);
+    button.onclick=()=>{closeSessionMenu();void select(session.id).catch(notify);closeSidebar();};
+    const more=el('button','session-more','⋯') as HTMLButtonElement;
+    more.type='button';more.title='Conversation actions';
+    more.setAttribute('aria-label','Actions for '+session.title);
+    more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');
+    more.onclick=event=>{event.stopPropagation();openSessionMenu(session.id,more);};
+    row.append(button,more);parent.append(row);
   }
   if(!matched.length)parent.append(el('p','sidebar-empty',q?'No matching conversations.':'No conversations yet.'));
 }
@@ -227,8 +274,23 @@ async function poll(){
     renderActivity();
     render(snapshot);
     $('notice').textContent=pending?'A send is awaiting confirmation. Retry uses the same request ID.':'';
-  }catch(e){notify('Connection interrupted. Reconnecting safely; no prompt is resubmitted. '+text(e));}
-  finally{polling=false;if(timer)clearTimeout(timer);timer=setTimeout(()=>{void poll();},600);}
+  }catch(e){
+    if(generation===epoch && text(e).includes('Conversation not found')){
+      try {
+        const sessions=await refresh();
+        if(current===id){
+          const fallback=sessions.find(s=>s.id!==id);
+          if(fallback)void select(fallback.id).catch(notify);
+          else resetSelection();
+        }
+      }catch(failure){notify(failure);}
+    }else if(generation===epoch)notify('Connection interrupted. Reconnecting safely; no prompt is resubmitted. '+text(e));
+  }
+  finally{
+    polling=false;
+    if(timer)clearTimeout(timer);
+    if(current)timer=setTimeout(()=>{void poll();},600);
+  }
 }
 async function select(id:string){
   epoch++;current=id;cursor=0;lastView='';activity.length=0;toolReceipts.clear();receiptVersion=0;$('activity').replaceChildren();remember('relay.conversation',id);
@@ -274,7 +336,59 @@ $<HTMLFormElement>('loginForm').onsubmit=async event=>{
   catch(e){$('error').textContent=text(e);}
 };
 $('settings').onclick=()=>{if(hosted){void bootstrap();return;}token='';$<HTMLDialogElement>('login').showModal();};
-$('new').onclick=()=>{void create().then(closeSidebar).catch(notify);};
+$('new').onclick=()=>{closeSessionMenu();void create().then(closeSidebar).catch(notify);};
+$<HTMLButtonElement>('menuRename').onclick=()=>{if(menuTarget)openRename(menuTarget);};
+$<HTMLButtonElement>('menuDelete').onclick=()=>{if(menuTarget)openDelete(menuTarget);};
+$<HTMLButtonElement>('renameCancel').onclick=()=>$<HTMLDialogElement>('renameDialog').close();
+$<HTMLButtonElement>('deleteCancel').onclick=()=>$<HTMLDialogElement>('deleteDialog').close();
+$<HTMLDialogElement>('renameDialog').onclose=()=>{dialogTarget=null;};
+$<HTMLDialogElement>('deleteDialog').onclose=()=>{dialogTarget=null;};
+$<HTMLFormElement>('renameForm').onsubmit=event=>{
+  event.preventDefault();
+  const id=dialogTarget;if(!id)return;
+  const input=$<HTMLInputElement>('renameInput'),title=input.value.trim();
+  if(!title||[...title].length>120||/[\u0000-\u001f\u007f-\u009f]/u.test(title)){
+    $('renameError').textContent='Use 1–120 characters without control characters.';return;
+  }
+  const save=$<HTMLButtonElement>('renameSave');save.disabled=true;
+  void (async()=>{
+    try{
+      await api('/sessions/'+id,{method:'PATCH',body:JSON.stringify({title})});
+      $<HTMLDialogElement>('renameDialog').close();
+      $('notice').textContent='';
+      if(current===id)await select(id);else await refresh();
+    }catch(e){$('renameError').textContent=text(e);}
+    finally{save.disabled=false;}
+  })();
+};
+$<HTMLFormElement>('deleteForm').onsubmit=event=>{
+  event.preventDefault();
+  const id=dialogTarget;if(!id)return;
+  const confirm=$<HTMLButtonElement>('deleteConfirm');confirm.disabled=true;
+  void (async()=>{
+    try{
+      await api('/sessions/'+id,{method:'DELETE'});
+      $<HTMLDialogElement>('deleteDialog').close();
+      if(pending?.conversationId===id){pending=null;remember('relay.pending','');}
+      const wasCurrent=current===id;
+      if(wasCurrent){epoch++;current=null;if(timer)clearTimeout(timer);}
+      const sessions=await refresh();
+      $('notice').textContent='';
+      if(wasCurrent){
+        if(sessions.length)await select(sessions[0].id);
+        else resetSelection();
+      }
+    }catch(e){$('deleteError').textContent=text(e);}
+    finally{confirm.disabled=false;}
+  })();
+};
+document.addEventListener?.('pointerdown',event=>{
+  const target=event.target as Node|null;
+  if(target&&!$('sessionMenu').contains(target)&&!menuAnchor?.contains(target))closeSessionMenu();
+});
+document.addEventListener?.('keydown',event=>{
+  if(event.key==='Escape'&&!$('sessionMenu').hidden){closeSessionMenu();}
+});
 $<HTMLInputElement>('sessionSearch').oninput=renderSessions;
 $('openSidebar').onclick=()=>{document.body?.classList?.add('sidebar-open');};
 // Explicit shortcut, matching the keycap in the sidebar. Do not intercept regular typing.

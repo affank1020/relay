@@ -143,6 +143,30 @@ nav {
 }
 .session:hover { background: var(--surface-hover); color: var(--text); }
 .session.selected { background: var(--surface-elevated); color: var(--text); font-weight: 550; }
+.session-row { display: flex; align-items: center; position: relative; min-width: 0; max-width: 100%; border-radius: 7px; }
+.session-row .session { flex: 1 1 0; }
+.session-row:hover, .session-row:focus-within { background: var(--surface-hover); }
+.session-row .session-more {
+  flex: none; width: 27px; height: 29px; padding: 0;
+  margin-right: 3px; border: 0; border-radius: 6px; background: transparent;
+  color: var(--text-muted); font-size: 20px; line-height: 1;
+  opacity: 0;
+}
+.session-row:hover .session-more, .session-row:focus-within .session-more,
+.session-row .session-more[aria-expanded="true"] { opacity: 1; }
+.session-more:hover { color: var(--text); background: var(--surface-elevated); }
+.session-menu {
+  position: fixed; z-index: 60; width: 158px; padding: 5px;
+  border: 1px solid var(--border-strong); border-radius: 9px;
+  background: var(--surface-elevated); box-shadow: 0 9px 28px #0009;
+}
+.session-menu button {
+  display: block; width: 100%; min-height: 34px; padding: 7px 11px;
+  border: 0; border-radius: 5px; background: transparent;
+  text-align: left; color: var(--text-secondary); font-size: 12.5px;
+}
+.session-menu button:hover, .session-menu button:focus-visible { background: var(--surface-hover); color: var(--text); }
+.session-menu .destructive { color: var(--danger); }
 .session-title { overflow: hidden; flex: 1 1 0; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
 .session-icon { color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
 .session-running {
@@ -398,6 +422,14 @@ dialog p { margin: 0 0 15px; color: var(--text-secondary); font-size: 12px; }
 dialog input { width: 100%; padding: 11px 12px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-elevated); color: var(--text); }
 dialog button[type=submit] { width: 100%; margin-top: 12px; padding: 11px; border: 0; border-radius: 7px; background: var(--accent); color: #191814; font-weight: 600; }
 #error { color: var(--danger); }
+.dialog-error { color: var(--danger); min-height: 16px; margin: 6px 0; }
+dialog form > label { display: block; margin: 10px 0 6px; color: var(--text-secondary); font-size: 12px; }
+dialog .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+dialog .dialog-actions button { width: auto; margin: 0; min-height: 35px; padding: 7px 12px; border: 1px solid var(--border-strong); border-radius: 7px; background: transparent; color: var(--text); font-size: 12px; }
+dialog .dialog-actions button[type=submit] { border-color: transparent; background: var(--accent); color: #191814; }
+dialog .dialog-actions button.destructive[type=submit] { background: #8d343b; color: #fff; }
+dialog .dialog-actions button.destructive[type=submit]:hover { background: #a9444d; }
+dialog #deleteName { color: var(--text); overflow-wrap: anywhere; }
 @media(max-width:1100px) {
   #inspector { position: fixed; top: 0; right: 0; bottom: 0; z-index: 10; width: min(330px, 100vw); box-shadow: -12px 0 35px #0008; }
 }

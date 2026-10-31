@@ -126,3 +126,46 @@ credential to server-enforced read-only MCP tools. Development task execution
 and all mutations stay denied even if Relay's own client is modified.
 Do not disable Auth0 for ChatGPT or expand Atlas permissions for an initial test.
 Rotate both private settings and redeploy if the raw token is exposed.
+
+## Chat management V1: rename, delete and schema V2
+
+The production `src/platform.ts` API uses authenticated, same-origin
+`PATCH /api/sessions/:id` with exactly `{"title":"..."}` (1–120 trimmed
+characters, no control characters) and returns `200 {"session":...}`.
+`DELETE /api/sessions/:id` returns `204` only after database and Pi
+session-directory cleanup, `404` if absent and `409` for any active,
+interrupted, dependent, awaiting-approval or uncertain invocation. Do not
+silently cancel agents to permit deletion. Deletion can respond `503` after
+the DB commit if filesystem cleanup fails; the chat is no longer visible and
+a durable cleanup tombstone is retried on the next process start. The client
+shows this failure without claiming a successful full purge.
+
+**Schema migration:** Relay upgrades `PRAGMA user_version` from 1 to 2 in
+one SQLite transaction. It adds a content-free `retired_usage` ledger and
+`pending_session_deletions` table. A deleted conversation's entire task
+usage is retired once in that transaction; global USD/token/unknown-usage
+budget accounting is cumulative even after deletion and restart. Local
+per-chat totals do not include retired usage. The delete transaction removes
+tasks, event text, approval arguments and tool invocation results, then
+records a cleanup tombstone. Pi session `.jsonl` directories are removed
+without following symlinks. Pending tombstones never make history reappear.
+
+**Predeployment backup:** stop Relay so no writer is active, and back up the
+*entire* `RELAY_DATA_DIR` volume, including `relay.sqlite`, the optional
+`-wal`/`-shm` files and the `sessions/` tree. Alternatively use SQLite's
+`.backup` operation for the database plus a separate session-directory
+backup while the service is stopped. Keep the backup access-controlled since
+it contains private prompts and transcripts. Record the backup location,
+validate that it can be restored and then deploy the V2 image. Do not just
+copy a live WAL database file.
+
+**Rollback:** V1 binaries deliberately refuse to open a V2 database.
+Rollback therefore requires stopping Relay and restoring the full
+pre-migration database *and* matching session backup before starting the V1
+image. This restores old chat history and means any V2-era changes will be
+lost. A permanent delete is not otherwise reversible. A same-schema V2
+image rollback needs no database downgrade.
+
+Verification: `npm run verify` exercises engine/store/HTTP fixtures;
+GitHub Verify also runs deployment checks. Browser preview tests are
+fixtures, not a production deletion or provider/Atlas integration test.
