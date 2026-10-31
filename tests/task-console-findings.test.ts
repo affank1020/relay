@@ -8,7 +8,15 @@ class Element {
   parentElement:Element|null=null;
   dataset:Record<string,string>={};
   className='';textContent='';value='';title='';hidden=false;disabled=false;
-  scrollTop=0;open=false;
+  private scrollPosition=0;
+  open=false;
+  get scrollTop(){return this.scrollPosition;}
+  set scrollTop(value:number){
+    // CSSOM View: detached elements have no layout box and ignore writes.
+    // This deliberately catches scroll restoration before DOM insertion.
+    if(this.className.split(' ').includes('task-result')&&!this.parentElement)return;
+    this.scrollPosition=value;
+  }
   onclick:(()=>void)|null=null;
   onchange:(()=>void)|null=null;
   oninput:(()=>void)|null=null;
@@ -431,7 +439,11 @@ test('streaming result updates preserve scrolled output pane and interactive des
       // Structural changes may rebuild actions, but should restore the result scroll.
       item.state='completed';
       await tick();
-      assert.equal(get('taskDetail').querySelector('.task-result')?.scrollTop,380);
+      const replacement=get('taskDetail').querySelector('.task-result');
+      assert.ok(replacement);
+      assert.notEqual(replacement,pane,'structural changes rebuild the pane');
+      assert.equal(replacement.scrollTop,380,
+        'scroll restoration must happen after the replacement is attached');
       assert.equal(get('taskDetail').querySelector('.task-actions')?.children.some(x=>x.textContent==='Cancel task'),false);
     },async(url,opts)=>{
       if(url==='/task-console/tasks/'+item.id)
@@ -461,5 +473,46 @@ test('first result and first usage receipt become visible in stable detail conta
       assert.equal(pane.textContent,'First streamed text');
       assert.match(usage.textContent,/6 tokens/);
     },async(url,opts)=>mock([item],url,opts));
+  });
+});
+
+
+test('activity replay uses one error node across repeated failures and clears it on recovery',async()=>{
+  await withClock(async tick=>{
+    const taskItem=numbered(1,'running');
+    let fail=true,eventRequests=0;
+    const event={id:'event-recovery',sequence:1,taskId:taskItem.id,
+      conversationId:A,agentRunId:taskItem.id,type:'task',state:'running',
+      timestamp:when,tool:null,invocationId:null};
+    await fixture(async get=>{
+      get('taskRows').children[0].onclick?.();await flush();
+      const timeline=get('taskDetail').querySelector('.task-timeline');
+      assert.ok(timeline);
+      const errors=()=>timeline.children.filter(child=>child.className.split(' ').includes('task-events-error'));
+      assert.equal(errors().length,1);
+      const first=errors()[0];
+      assert.match(first.textContent,/Activity unavailable/);
+      for(let i=0;i<5;i++){
+        await tick();
+        assert.equal(get('taskDetail').querySelector('.task-timeline'),timeline);
+        assert.equal(errors().length,1,'poll '+i+' must reuse the error node');
+        assert.equal(errors()[0],first);
+      }
+      assert.ok(eventRequests>=6,'activity was retried on every foreground poll');
+      fail=false;
+      await tick();
+      assert.equal(errors().length,0,'successful replay removes the previous error');
+      assert.equal(timeline.querySelector('.task-event')?.dataset.eventId,'event-recovery');
+      await tick();
+      assert.equal(errors().length,0,'subsequent successful polls remain clean');
+    },async(url,opts)=>{
+      if(url.includes('/events?')){
+        eventRequests++;
+        if(fail)throw Error('Activity endpoint offline');
+        const after=Number(new URL(url,'http://relay.local').searchParams.get('after'));
+        return response({events:after===0?[event]:[],nextCursor:after===0?1:after,hasMore:false});
+      }
+      return mock([taskItem],url,opts);
+    });
   });
 });
