@@ -163,12 +163,22 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       const response=await read<Page>(taskUrl(status as State,conversation));
       if(generation!==listEpoch||!visible)return;
       const incoming=new Set(response.tasks.map(task=>task.id));
-      for(const id of newestIds)if(!incoming.has(id)&&!olderIds.has(id))tasks.delete(id);
+      // Keep displaced first-page rows. The exclusive pagination cursor still
+      // points below the ORIGINAL page boundary, so dropping a displaced row
+      // makes it unreachable when new tasks arrive while the list is open.
+      for(const id of newestIds)if(!incoming.has(id))olderIds.add(id);
+      const selectionNeedsChecking=selected!==null&&status!=='all'&&
+        newestIds.has(selected)&&!incoming.has(selected);
       newestIds=incoming;
       for(const task of response.tasks)tasks.set(task.id,task);
-      const liveSelection=response.tasks.find(task=>task.id===selected);
-      if(liveSelection && (status!=='all'&&liveSelection.state!==status ||
-          conversation&&liveSelection.conversationId!==conversation))clearSelection();
+      if(selectionNeedsChecking) {
+        // Displacement and a state transition look identical to a filtered page.
+        // Preserve the selected task until its detail can be checked, but remove
+        // unverified actions immediately so a stale approval/cancel can't fire.
+        selectedFingerprint='';
+        detail.replaceChildren(node('p','task-feedback','Checking task state…'));
+        eventList=null;eventMoreButton=null;
+      }
       if(cursor===null) {cursor=response.nextCursor;hasMore=response.hasMore;}
       // An idle refresh updates the newest rows without discarding older pages.
       countView(response.counts);
@@ -412,11 +422,28 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     try {
       const data=await read<Detail>('/task-console/tasks/'+id);
       if(!visible||generation!==detailEpoch)return;
+      if((status!=='all'&&data.task.state!==status) ||
+          (conversation&&data.task.conversationId!==conversation)) {
+        // A task can finish or fail while excluded by the server-side filter,
+        // even if it was previously on an older loaded page.
+        tasks.delete(id);newestIds.delete(id);olderIds.delete(id);
+        clearSelection();
+        renderRows();
+        return;
+      }
+      tasks.set(id,data.task);
       if(detailVersion(data)!==selectedFingerprint)drawDetail(data);
       // Continue any partial replay on every visible poll; once caught up,
       // the same cursor also picks up new task events.
       await loadEvents();
     } catch(error) {
+      if(generation!==detailEpoch||!visible)return;
+      if(status!=='all') {
+        // Fail closed when the server cannot verify a filtered task's state.
+        selectedFingerprint='';
+        detail.replaceChildren(node('p','task-feedback','Task state unavailable. Refresh to retry.'));
+        eventList=null;eventMoreButton=null;
+      }
       message('Task details may be stale: '+errorText(error));
     }
   }
