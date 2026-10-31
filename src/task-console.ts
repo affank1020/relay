@@ -464,8 +464,11 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       await loadEvents();
     } catch(error) {
       if(generation!==detailEpoch||!visible)return;
-      // Do not retain a stale actionable panel when a detail check fails.
-      selectedFingerprint='';
+      // Detached buttons must also be inert: their callbacks are gated by
+      // selectedData, not just by whether the action panel remains mounted.
+      detailEpoch++;
+      selectedData=null;selectedFingerprint='';
+      events=[];eventLoading=false;
       detail.replaceChildren(node('p','task-feedback','Task details unavailable. Refresh to retry.'));
       eventList=null;eventMoreButton=null;
       message('Task details may be stale: '+errorText(error));
@@ -499,6 +502,12 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   search.oninput=renderRows;
   conversationFilter.onchange=()=>{conversation=conversationFilter.value;void reset();};
   more.onclick=()=>{void older();};
-  byId('taskRefresh').onclick=()=>{void loadConversations().then(()=>reset()).catch(error=>message(errorText(error)));};
+  byId('taskRefresh').onclick=()=>{
+    void (async()=>{
+      try {await loadConversations();}
+      catch(error) {message('Conversations unavailable: '+errorText(error));}
+      await reset();
+    })();
+  };
   return {show,hide,get visible(){return visible;}};
 }
