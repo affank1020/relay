@@ -39,3 +39,25 @@ test('HTML-free renderer creates elements via textContent without injecting mode
     assert.equal(markup.children[1].children[0].rel,'noopener noreferrer');
   }finally{Object.defineProperty(globalThis,'document',{configurable:true,value:before});}
 });
+
+test('Markdown links preserve balanced nested and escaped URL parentheses',()=>{
+  const source='[Function](https://en.wikipedia.org/wiki/Function_(mathematics)) '+
+    '[nested](https://example.com/outer(inner(deeper))) '+
+    '[escaped](https://example.com/a\\(b\\))';
+  const links=inlineTokens(source).filter(token=>token.type==='link');
+  assert.deepEqual(links.map(link=>link.text),['Function','nested','escaped']);
+  assert.deepEqual(links.map(link=>link.href),[
+    'https://en.wikipedia.org/wiki/Function_(mathematics)',
+    'https://example.com/outer(inner(deeper))',
+    'https://example.com/a(b)'
+  ]);
+  assert.ok(!inlineTokens(source).some(token=>token.type==='text'&&token.text.includes(') ')),
+    'no orphan closing parenthesis should remain after a valid link');
+});
+
+test('Malformed or unsafe link destinations never become anchors',()=>{
+  const source='[no](javascript:alert(1)) [space](https://example.com/a b) [open](https://example.com/path(a)';
+  const links=inlineTokens(source).filter(token=>token.type==='link');
+  assert.equal(links.length,0);
+  assert.ok(inlineTokens('[valid](https://example.com/a(b)) tail').some(token=>token.type==='text'&&token.text===' tail'));
+});
