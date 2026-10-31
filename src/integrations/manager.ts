@@ -183,14 +183,19 @@ export class ConnectionManager {
       try{
         const available=await this.transport(config).list(signal);
         signal.throwIfAborted();
-        this.states.set(config.id,'ready');
         const admitted=available.filter(t=>
           (config.readTools.includes(t.name) ||
             (config.id==='github'&&!!approve&&!task.parentId&&!task.delegation &&
               !!config.writeRepositories?.length&&isGitHubWrite(t.name))) &&
           validTool(t.name) && safeSchema(t.inputSchema)).slice(0,32);
-        this.inventory.set(config.id,admitted.filter(t=>config.readTools.includes(t.name)).map(t=>t.name));
-        this.writeInventory.set(config.id,admitted.filter(t=>isGitHubWrite(t.name)).map(t=>t.name));
+        // These maps describe provider-wide *root* capabilities in Settings,
+        // not an individual delegated agent's restricted tool snapshot.
+        // A child discovery (or failure) must never hide root write authority.
+        if(!delegated){
+          this.states.set(config.id,'ready');
+          this.inventory.set(config.id,admitted.filter(t=>config.readTools.includes(t.name)).map(t=>t.name));
+          this.writeInventory.set(config.id,admitted.filter(t=>isGitHubWrite(t.name)).map(t=>t.name));
+        }
         for(const tool of admitted){
           const name='mcp_'+config.id+'_'+tool.name;
           // Root-only GitHub writes are never inherited by child agents.
@@ -207,8 +212,11 @@ export class ConnectionManager {
         }
       }catch{
         signal.throwIfAborted();
-        this.states.set(config.id,'offline');this.inventory.delete(config.id);
-        this.writeInventory.delete(config.id);
+        if(!delegated){
+          this.states.set(config.id,'offline');
+          this.inventory.delete(config.id);
+          this.writeInventory.delete(config.id);
+        }
       }
     }
     return result;

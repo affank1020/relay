@@ -337,3 +337,52 @@ test('a dispatched or uncertain GitHub mutation still blocks read reconciliation
     }finally{await engine.stop();store.close();}
   }
 });
+
+
+test('delegated GitHub read discovery never erases root-facing write inventory',async()=>{
+  const store=new Store(':memory:');
+  const root=taskFixture(store);
+  const provider=configuredProviders({
+    RELAY_GITHUB_TOKEN:'root-private-token',
+    RELAY_GITHUB_WRITE_REPOS:'affank1020/relay'
+  })[0];
+  let discoveries=0,failChild=false;
+  const transport:ProviderTransport={
+    list:async()=>{discoveries++;if(failChild)throw new Error('offline scoped discovery');return both;},
+    call:async()=>{throw new Error('no external calls expected');},
+    close:async()=>{}
+  };
+  const manager=new ConnectionManager([provider],()=>true,()=>transport);
+  const approve=async()=>{};
+  const scopedChild:Task={...root,id:randomUUID(),parentId:root.id,
+    delegation:{schemaVersion:1,toolNames:['mcp_github_issue_read'],
+      modelKey:null,context:'',maxTokens:null,maxCostUsd:null}};
+  store.save('tasks',scopedChild);
+  try{
+    const rootTools=await manager.tools(root,store,new AbortController().signal,approve);
+    assert.deepEqual(rootTools.map(tool=>tool.name),[
+      'mcp_github_issue_read','mcp_github_add_issue_comment','mcp_github_create_issue'
+    ]);
+    const original=manager.list()[0];
+    assert.equal(original.state,'ready');
+    assert.deepEqual(original.availableTools,['issue_read']);
+    assert.deepEqual(original.availableWriteTools,['add_issue_comment','create_issue']);
+
+    // Unlike an unscoped child, this child *does* discover GitHub, but is
+    // restricted to a single explicit read tool. Its view is not global status.
+    const childTools=await manager.tools(scopedChild,store,new AbortController().signal,approve);
+    assert.deepEqual(childTools.map(tool=>tool.name),['mcp_github_issue_read']);
+    assert.equal(discoveries,2,'the child really performed remote discovery');
+    assert.equal(manager.list()[0].state,'ready');
+    assert.deepEqual(manager.list()[0].availableTools,original.availableTools);
+    assert.deepEqual(manager.list()[0].availableWriteTools,original.availableWriteTools);
+
+    // Failure of a delegated-only discovery also cannot hide the independently
+    // valid provider-wide root inventory.
+    failChild=true;
+    assert.deepEqual(await manager.tools(scopedChild,store,new AbortController().signal,approve),[]);
+    assert.equal(manager.list()[0].state,'ready');
+    assert.deepEqual(manager.list()[0].availableWriteTools,original.availableWriteTools);
+    assert.deepEqual(manager.list()[0].availableTools,original.availableTools);
+  }finally{await manager.close();store.close();}
+});
