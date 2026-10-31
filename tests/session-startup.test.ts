@@ -57,9 +57,8 @@ test('compiled Relay serves HTML and creates durable conversations', { timeout: 
       method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
       body:JSON.stringify({modelKey:'ollama/qwen3:4b'})
     });
-    assert.equal(localSession.status,201);
-    const selected=await localSession.json() as {session:{modelKey?:string}};
-    assert.equal(selected.session.modelKey,'ollama/qwen3:4b');
+    assert.equal(localSession.status,400,'offline Ollama must not create a new local conversation');
+    assert.match(await localSession.text(),/Local model unavailable/);
     const response = await fetch('http://127.0.0.1:' + port + '/api/sessions', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },

@@ -92,17 +92,31 @@ function emptyConversation(){
 }
 
 async function refresh(){
-  const [state,list]=await Promise.all([get<{provider:string;model:string;atlas:string;defaultModelKey?:string;models?:{key:string;label:string}[]}>('/status'),get<{sessions:Summary[]}>('/sessions')]);
+  const [state,list]=await Promise.all([get<{provider:string;model:string;atlas:string;ollamaOnline?:boolean;defaultModelKey?:string;models?:{key:string;label:string}[]}>('/status'),get<{sessions:Summary[]}>('/sessions')]);
   configuredModels=state.models??[];
   if(configuredModels.length){
     const picker=$<HTMLSelectElement>('modelPicker'),previous=picker.value;
     picker.replaceChildren();
-    for(const option of configuredModels){const item=document.createElement('option');item.value=option.key;item.textContent=option.label;picker.append(item);}
-    picker.value=configuredModels.some(x=>x.key===previous)?previous:(state.defaultModelKey??configuredModels[0].key);
+    for(const option of configuredModels){
+      const item=document.createElement('option');
+      item.value=option.key;
+      const offline=option.key.startsWith('ollama/')&&state.ollamaOnline===false;
+      item.textContent=option.label+(offline?' (offline)':'');
+      item.disabled=offline;
+      picker.append(item);
+    }
+    const pinned=list.sessions.find(c=>c.id===current)?.modelKey;
+    if(pinned?.startsWith('ollama/')&&!configuredModels.some(x=>x.key===pinned)){
+      const missing=document.createElement('option');missing.value=pinned;
+      missing.textContent='MacBook · '+pinned.slice(7)+' (not installed)';
+      missing.disabled=true;picker.append(missing);
+    }
+    picker.value=configuredModels.some(x=>x.key===previous)?previous:(pinned&&[...picker.options].some(x=>x.value===pinned)?pinned:(state.defaultModelKey??configuredModels[0].key));
   }
-  $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===$<HTMLSelectElement>('modelPicker').value)?.label??state.model);
+  const active=$<HTMLSelectElement>('modelPicker').value;
+  $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===active)?.label??(active.startsWith('ollama/')?'MacBook · '+active.slice(7)+' (unavailable)':state.model));
   $('connection').textContent='Pi connected';
-  $('subtitle').textContent=state.atlas==='configured'?'Connected to Atlas · '+configuredModels.length+' models available':'Atlas not configured';
+  $('subtitle').textContent=state.atlas==='configured'?'Connected to Atlas · '+configuredModels.filter(m=>!m.key.startsWith('ollama/')||state.ollamaOnline!==false).length+' models available':'Atlas not configured';
   $('atlasSummary').title=state.atlas==='configured'?'Atlas MCP configured':'Atlas MCP is not configured';
   knownSessions=list.sessions;
   renderSessions();
@@ -153,8 +167,13 @@ function render(data:Snapshot){
   }
   $('title').textContent=data.session.title;
   const picker=$<HTMLSelectElement>('modelPicker');
-  if(data.session.modelKey&&configuredModels.some(m=>m.key===data.session.modelKey))picker.value=data.session.modelKey;
-  $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===picker.value)?.label??'OpenRouter');
+  if(data.session.modelKey&&!configuredModels.some(m=>m.key===data.session.modelKey)&&![...picker.options].some(x=>x.value===data.session.modelKey)){
+    const missing=document.createElement('option');missing.value=data.session.modelKey;
+    missing.textContent=(data.session.modelKey.startsWith('ollama/')?'MacBook · '+data.session.modelKey.slice(7):data.session.modelKey)+' (not installed)';
+    missing.disabled=true;picker.append(missing);
+  }
+  if(data.session.modelKey)picker.value=data.session.modelKey;
+  $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===picker.value)?.label??(picker.value.startsWith('ollama/')?'MacBook · '+picker.value.slice(7)+' (unavailable)':'OpenRouter'));
   $('cost').textContent=data.session.usage.tokens+' tokens'+(data.session.usage.unknown?' · usage incomplete':data.session.modelKey?.startsWith('ollama/')?' · local':' · $'+data.session.costUsd.toFixed(4));
   setBusy(data.session.busy);
   $('approvals').replaceChildren();
@@ -219,7 +238,7 @@ async function select(id:string){
   if(generation!==epoch)return;
   render(data);await refresh();void poll();
 }
-async function create(){const modelKey=$<HTMLSelectElement>('modelPicker').value;const result=await (await api('/sessions',{method:'POST',body:JSON.stringify(modelKey?{modelKey}:{})})).json() as {session:Summary};await select(result.session.id);$<HTMLTextAreaElement>('prompt').focus();}
+async function create(){const picker=$<HTMLSelectElement>('modelPicker');if(picker.selectedOptions[0]?.disabled)throw new Error('Local model offline. Start Ollama or choose another model.');const modelKey=picker.value;const result=await (await api('/sessions',{method:'POST',body:JSON.stringify(modelKey?{modelKey}:{})})).json() as {session:Summary};await select(result.session.id);$<HTMLTextAreaElement>('prompt').focus();}
 async function submit(event:Event){
   event.preventDefault();if(busy||submitting)return;
   const prompt=$<HTMLTextAreaElement>('prompt');const value=prompt.value.trim();if(!value&&!pending)return;
@@ -283,4 +302,6 @@ $('showTasks').onclick=async()=>{
     if(!data.tasks.length)list.append(el('span','sidebar-empty','No recent tasks.'));
   }catch(e){notify(e);}
 };
+// Refresh local model availability while Relay is visible, without restarting a conversation.
+window.setInterval?.(()=>{if(document.visibilityState!=='hidden')void refresh().catch(()=>{});},60_000);
 void bootstrap();
