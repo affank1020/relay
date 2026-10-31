@@ -219,7 +219,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       if(generation!==listEpoch||!visible||mode!=='history')return;
       // Reject nonadvancing or malformed cursor responses rather than creating
       // an endless older-page loop. Repeated IDs are deduplicated by Map.
-      if(page.hasMore&&(!page.nextCursor||!/^\\d+$/.test(page.nextCursor)||
+      if(page.hasMore&&(!page.nextCursor||!/^\d+$/.test(page.nextCursor)||
           Number(page.nextCursor)>=Number(requestedCursor)))
         throw new Error('Invalid task page cursor');
       for(const task of page.tasks)tasks.set(task.id,task);
