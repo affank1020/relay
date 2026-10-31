@@ -2,23 +2,61 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark"><title>Relay · Agent control plane</title>
+<meta name="color-scheme" content="dark"><meta name="theme-color" content="#101017">
+<title>Relay · AI workspace</title>
 <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
 </head>
 <body>
 <div class="shell">
-  <aside>
-    <div class="brand"><span class="logo">R</span><div><b>Relay</b><small>Agent control plane</small></div></div>
-    <button id="new" class="new">＋ New conversation</button>
-    <button id="showTasks" class="new">Tasks &amp; agents</button><nav id="taskList" aria-label="Tasks"></nav><p class="section-label">CONVERSATIONS</p>
+  <aside id="sidebar" aria-label="Workspace navigation">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">R</span>
+      <div class="brand-copy"><b>Relay</b><small>Personal AI workspace</small></div>
+      <button id="closeSidebar" class="icon-button mobile-only" title="Close navigation" aria-label="Close navigation">×</button>
+    </div>
+    <button id="new" class="primary-new"><span aria-hidden="true">＋</span> New chat <span class="keycap">⌘ K</span></button>
+    <div class="search-wrap">
+      <span aria-hidden="true">⌕</span>
+      <input id="sessionSearch" type="search" aria-label="Search conversations" placeholder="Search conversations" autocomplete="off">
+    </div>
+    <div class="sidebar-heading"><span>Recent conversations</span><span id="sessionCount"></span></div>
     <nav id="sessions" aria-label="Conversations"></nav>
-    <footer><span class="dot"></span><span id="connection">Disconnected</span><button id="settings" title="Reconnect">⚙</button></footer>
+    <div class="sidebar-bottom">
+      <button id="showTasks" class="secondary-action" aria-expanded="false" aria-controls="taskList"><span aria-hidden="true">◷</span> Tasks &amp; agents <span aria-hidden="true" class="chevron">⌄</span></button>
+      <nav id="taskList" aria-label="Recent tasks" hidden></nav>
+      <a class="secondary-action atlas-link" href="https://atlas.affankhan.dev" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">◈</span> Open Atlas <span aria-hidden="true">↗</span></a>
+      <footer><span class="dot" aria-hidden="true"></span><span id="connection">Connecting…</span><button id="settings" title="Reconnect" aria-label="Reconnect">↻</button></footer>
+    </div>
   </aside>
   <main>
-    <header><div><h1 id="title">New conversation</h1><small id="subtitle">Pi · OpenRouter</small></div><div><span id="state">Idle</span> <button id="toggleInspector" class="action" aria-expanded="false" aria-controls="inspector">Activity</button></div></header>
-    <section id="messages" class="messages" aria-live="polite"><div class="empty"><span class="spark">✳</span><h2>Your agents, in one place.</h2><p>Start a conversation using Pi and OpenRouter. Follow agent tasks and Atlas activity alongside your conversation.</p></div></section>
-    <div id="approvals" aria-live="polite"></div><p id="notice" role="status"></p><section class="composer"><form id="form"><textarea id="prompt" rows="2" maxlength="6000" aria-label="Message" placeholder="Message Relay…"></textarea><div class="compose-row"><span>Enter to send · Shift+Enter for a new line</span><div class="controls"><button id="stop" type="button" hidden>Stop</button><button id="send" type="submit" aria-label="Send">↑</button></div></div></form><div class="meta"><label for="modelPicker">Model</label><select id="modelPicker" aria-label="Inference model"></select><span id="model">Pi + OpenRouter</span><span id="cost">Session $0.0000</span></div></section>
-  </main><section id="inspector" aria-label="Execution inspector" hidden><h2>Execution activity</h2><p>Selected and executing Nodes are reported separately. Unknown means Atlas supplied no execution receipt.</p><div id="activity"></div></section>
+    <header class="topbar">
+      <div class="topbar-title"><button id="openSidebar" class="icon-button mobile-only" aria-label="Open navigation">☰</button>
+        <div><h1 id="title">New conversation</h1><small id="subtitle">Your connected tools are ready when you need them</small></div>
+      </div>
+      <div class="topbar-actions"><span id="state" class="run-state">Idle</span><button id="toggleInspector" class="action" aria-expanded="false" aria-controls="inspector">◈ <span>Activity</span></button></div>
+    </header>
+    <section id="messages" class="messages" aria-live="polite">
+      <div class="empty"><span class="spark" aria-hidden="true">✳</span><h2>What are we working on?</h2><p>Ask anything, or work with your Atlas projects and agents.</p></div>
+    </section>
+    <div id="approvals" aria-live="polite"></div>
+    <p id="notice" role="status"></p>
+    <section class="composer" aria-label="Message composer">
+      <form id="form">
+        <textarea id="prompt" rows="2" maxlength="6000" aria-label="Message" placeholder="Ask Relay anything…" autocomplete="off"></textarea>
+        <div class="compose-row"><div class="composer-left"><span class="composer-hint">Enter to send · Shift+Enter for a new line</span></div>
+          <div class="controls"><button id="stop" type="button" hidden>Stop</button><button id="send" type="submit" aria-label="Send message" title="Send message">↑</button></div>
+        </div>
+      </form>
+      <div class="meta"><div class="model-control"><label for="modelPicker">Model</label><select id="modelPicker" aria-label="Inference model"></select></div><span id="model" class="model-detail">Pi + OpenRouter</span><span id="cost" class="usage-detail">0 tokens</span></div>
+    </section>
+  </main>
+  <section id="inspector" aria-label="Execution inspector" hidden>
+    <div class="inspector-head"><div><span class="eyebrow">LIVE EXECUTION</span><h2>Activity</h2></div><button id="closeInspector" class="icon-button" aria-label="Close activity">×</button></div>
+    <p class="inspector-intro">Real events from Pi and Atlas. No inferred actions or model-generated activity summaries.</p>
+    <div id="atlasSummary" class="atlas-summary"><span class="status-orb"></span><div><b>Atlas MCP</b><small>Connection status follows Relay configuration</small></div></div>
+    <div id="activity" class="activity-list"></div>
+    <p class="inspector-foot">Node execution is shown only when Atlas returns an actual execution receipt.</p>
+  </section>
 </div>
-<dialog id="login"><form id="loginForm"><div class="logo">R</div><h2>Connect to Relay</h2><p>Enter the Relay access token from your server configuration. The token remains in this tab and is never sent to OpenRouter.</p><input id="token" type="password" placeholder="Access token" autocomplete="off" minlength="24" required><button type="submit">Connect</button><p id="error" role="alert"></p></form></dialog>
+<dialog id="login"><form id="loginForm"><div class="logo">R</div><h2>Connect to Relay</h2><p>Enter your private Relay access token. It stays in this browser tab and is not sent to your model provider.</p><input id="token" type="password" placeholder="Access token" autocomplete="off" minlength="24" required><button type="submit">Connect</button><p id="error" role="alert"></p></form></dialog>
 </body></html>
