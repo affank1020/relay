@@ -14,7 +14,7 @@ export interface AtlasCheckoutFact {
 export interface AtlasNodeFact { id:string; name?:string; status?:'online'|'offline'; }
 export interface AtlasGitFact {
   checkoutId:string; branch?:string; repository?:string; dirty?:boolean;
-  changedFiles?:number; available:true;
+  changedFiles?:number; changedFilesTruncated?:boolean; available:true;
 }
 export interface AtlasWorktreeFact { id:string; rootPath:string; branch?:string; head?:string; }
 export interface AtlasResourceObservation {
@@ -91,7 +91,9 @@ export function observeAtlasResult(
     if(!checkoutId||resolvedCheckout?.id!==checkoutId||data.available!==true)return null;
     const git:AtlasGitFact={checkoutId,available:true,branch:branch(data.branch),
       repository:repository(data.originRepository),dirty:typeof data.dirty==='boolean'?data.dirty:undefined,
-      changedFiles:Array.isArray(data.changes)?Math.min(data.changes.length,2000):undefined};
+      changedFiles:Array.isArray(data.changes)?Math.min(data.changes.length,2000):undefined,
+      changedFilesTruncated:data.truncated===true||
+        (Array.isArray(data.changes)&&data.changes.length>2000)};
     const resources:AtlasResourceRef[]=[{type:'checkout',id:checkoutId}];
     if(git.repository)resources.push({type:'repository',id:git.repository});
     if(git.repository&&git.branch)resources.push({type:'branch',id:git.repository+':'+git.branch});
@@ -116,35 +118,47 @@ export interface AtlasCheckoutView {
   checkoutId:string; name?:string; rootPath?:string; logicalWorkspaceId?:string;
   projectId?:string; nodeId?:string; nodeName?:string; nodeStatus?:string;
   placementStatus?:string; branch?:string; repository?:string; dirty?:boolean;
-  changedFiles?:number; gitObservedAt?:string; placementObservedAt?:string;
-  nodeObservedAt?:string; agentRunId?:string; taskId?:string;
-  lastFailureAt?:string; lastFailureState?:string; worktrees?:AtlasWorktreeFact[];
+  changedFiles?:number; changedFilesTruncated?:boolean; gitObservedAt?:string;
+  placementObservedAt?:string; placementSupersededAt?:string;
+  nodeObservedAt?:string; agentRunId?:string; taskId:string;
+  lastFailureAt?:string; lastFailureState?:string;
+  lastFailureTool?:'workspace_git_status'|'workspace_git_list_worktrees';
+  worktrees?:AtlasWorktreeFact[];
 }
-/** Pure, bounded projection. Sorting and ID based replacement make replay idempotent. */
+/**
+ * Pure replay projection. Resource state is *per originating task*, not one
+ * conversation-wide checkout card: a later task must not steal or inherit a
+ * previous task's Git or Node observation. Cross-task placement reads are
+ * considered only to flag an older snapshot as superseded.
+ */
 export function projectAtlasCheckouts(events:ReadonlyArray<AtlasAwarenessEvent>):AtlasCheckoutView[] {
   const observed=new Set<string>();
   const checkouts=new Map<string,AtlasCheckoutView>();
   const nodes=new Map<string,{fact:AtlasNodeFact;at:string}>();
+  const latestPlacements=new Map<string,{fact:AtlasCheckoutFact;at:string}>();
   const ordered=[...events].sort((a,b)=>a.sequence-b.sequence);
   for(const event of ordered){
     if(observed.has(event.id))continue;
     observed.add(event.id);
     const fact=event.type==='atlas_resource'&&event.state==='completed'?event.atlasResource:undefined;
     if(fact?.schemaVersion===1&&fact.providerId==='atlas'){
-      if(fact.node)nodes.set(fact.node.id,{fact:fact.node,at:event.timestamp});
+      if(fact.checkout)latestPlacements.set(fact.checkout.id,{fact:fact.checkout,at:event.timestamp});
+      if(!event.taskId)continue;
+      if(fact.node)nodes.set(event.taskId+':'+fact.node.id,{fact:fact.node,at:event.timestamp});
       const id=fact.checkout?.id??fact.git?.checkoutId??
         (fact.worktrees?event.workspaceId:undefined);
       if(!id)continue;
-      let view=checkouts.get(id);
-      if(!view){view={checkoutId:id};checkouts.set(id,view);}
+      const key=event.taskId+':'+id;
+      let view=checkouts.get(key);
+      if(!view){view={checkoutId:id,taskId:event.taskId};checkouts.set(key,view);}
       if(fact.checkout){
         const c=fact.checkout;
-        // An old Git receipt belongs to the old physical checkout placement.
-        // Moving Nodes, changing roots or archiving invalidates that snapshot.
+        // Physical placement changes invalidate Git reads within this task.
         if((view.nodeId&&view.nodeId!==c.nodeId)||
            (view.rootPath&&view.rootPath!==c.rootPath)||c.status==='archived'){
           view.branch=undefined;view.repository=undefined;view.dirty=undefined;
-          view.changedFiles=undefined;view.gitObservedAt=undefined;view.worktrees=undefined;
+          view.changedFiles=undefined;view.changedFilesTruncated=undefined;
+          view.gitObservedAt=undefined;view.worktrees=undefined;
         }
         view.name=c.name;view.rootPath=c.rootPath;view.nodeId=c.nodeId;
         view.logicalWorkspaceId=c.logicalWorkspaceId;view.projectId=c.projectId;
@@ -153,19 +167,30 @@ export function projectAtlasCheckouts(events:ReadonlyArray<AtlasAwarenessEvent>)
       if(fact.git){
         view.branch=fact.git.branch;view.repository=fact.git.repository;
         view.dirty=fact.git.dirty;view.changedFiles=fact.git.changedFiles;
+        view.changedFilesTruncated=fact.git.changedFilesTruncated;
         view.gitObservedAt=event.timestamp;
       }
       if(fact.worktrees)view.worktrees=fact.worktrees;
       if(event.agentRunId)view.agentRunId=event.agentRunId;
-      if(event.taskId)view.taskId=event.taskId;
-    } else if(event.type==='tool'&&event.tool?.startsWith('workspace_')&&
+    } else if(event.type==='tool'&&event.taskId&&
+      (event.tool==='workspace_git_status'||event.tool==='workspace_git_list_worktrees')&&
       ['failed','denied','cancelled'].includes(event.state)&&event.workspaceId){
-      const view=checkouts.get(event.workspaceId);
-      if(view){view.lastFailureAt=event.timestamp;view.lastFailureState=event.state;}
+      const view=checkouts.get(event.taskId+':'+event.workspaceId);
+      if(view){
+        view.lastFailureAt=event.timestamp;view.lastFailureState=event.state;
+        view.lastFailureTool=event.tool;
+      }
     }
   }
   return [...checkouts.values()].slice(-32).map(view=>{
-    const node=view.nodeId?nodes.get(view.nodeId):undefined;
-    return {...view,nodeName:node?.fact.name,nodeStatus:node?.fact.status,nodeObservedAt:node?.at};
+    const node=view.nodeId?nodes.get(view.taskId+':'+view.nodeId):undefined;
+    const latest=latestPlacements.get(view.checkoutId);
+    const laterPlacement=latest && (
+      (view.nodeId&&latest.fact.nodeId&&view.nodeId!==latest.fact.nodeId)||
+      (view.rootPath&&latest.fact.rootPath&&view.rootPath!==latest.fact.rootPath)||
+      (latest.fact.status==='archived'&&view.placementStatus!=='archived')
+    );
+    return {...view,nodeName:node?.fact.name,nodeStatus:node?.fact.status,
+      nodeObservedAt:node?.at,placementSupersededAt:laterPlacement?latest.at:undefined};
   });
 }

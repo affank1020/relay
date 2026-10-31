@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { observeAtlasResult, projectAtlasCheckouts } from '../src/atlas-awareness.js';
+import { gitChangeLabel } from '../src/atlas-awareness-ui.js';
 import { Gateway, type AtlasTransport } from '../src/gateway.js';
 import { Store, type Task } from '../src/store.js';
 
@@ -152,6 +153,95 @@ test('read-only worktree operation produces scoped, bounded worktree facts',asyn
     assert.equal(tree?.branch,'atlas/feature');
     assert.equal(tree?.rootPath,'/Users/example/relay');
   }finally{store.close();}
+});
+
+test('two tasks inspecting the same checkout retain separate Git and Node provenance',async()=>{
+  const store=new Store(':memory:');store.save('conversations',{id:'conv'});
+  const gateway=new Gateway(store,fixture(),{},async()=>{});
+  const second={...task(),id:'task-b',agentRunId:'child-run-b'};
+  const signal=new AbortController().signal;
+  try{
+    await gateway.invoke(task(),'git-A','workspace_git_status',{checkoutId:checkout},signal);
+    const first=project(store)[0];
+    assert.equal(first.taskId,'task');
+    assert.equal(first.branch,'atlas/feature');
+    await gateway.invoke(second,'placement-B','get_workspace',{checkoutId:checkout},signal);
+    const views=project(store);
+    assert.equal(views.length,2);
+    const a=views.find(v=>v.taskId==='task')!;
+    const b=views.find(v=>v.taskId==='task-b')!;
+    assert.equal(a.agentRunId,'child-run');
+    assert.equal(a.branch,'atlas/feature');
+    assert.equal(a.nodeName,'Mac');
+    assert.equal(b.agentRunId,'child-run-b');
+    assert.equal(b.branch,undefined,'placement read must not borrow A Git receipt');
+    assert.equal(b.gitObservedAt,undefined);
+    assert.equal(b.nodeName,undefined,'node status must remain scoped to the task which queried it');
+    assert.equal(b.nodeId,mac);
+    await gateway.invoke(second,'git-B','workspace_git_status',{checkoutId:checkout},signal);
+    const withGit=project(store);
+    assert.equal(withGit.find(v=>v.taskId==='task-b')?.branch,'atlas/feature');
+    assert.equal(withGit.find(v=>v.taskId==='task')?.branch,'atlas/feature');
+    assert.equal(projectAtlasCheckouts([...store.events('conv'),...store.events('conv')]).length,2);
+  }finally{store.close();}
+});
+
+test('reassignment in another task flags the old snapshot without transferring its Git state',async()=>{
+  const store=new Store(':memory:');store.save('conversations',{id:'conv'});
+  const gateway=new Gateway(store,fixture(),{},async()=>{});
+  try{
+    await gateway.invoke(task(),'git-A','workspace_git_status',{checkoutId:checkout},new AbortController().signal);
+    const moved=observeAtlasResult('get_workspace',{checkoutId:checkout},{
+      id:checkout,rootPath:'/srv/moved-relay',nodeId:linux,status:'active'});
+    assert.ok(moved);
+    store.event('conv',{taskId:'task-b',agentRunId:'child-run-b',invocationId:'placement-B',
+      tool:'get_workspace',type:'atlas_resource',state:'completed',workspaceId:checkout,
+      atlasResource:moved});
+    const a=project(store).find(v=>v.taskId==='task')!;
+    const b=project(store).find(v=>v.taskId==='task-b')!;
+    assert.equal(a.branch,'atlas/feature','previous observation remains attached to task A');
+    assert.ok(a.placementSupersededAt,'history is labelled superseded by later authoritative placement');
+    assert.equal(b.branch,undefined);
+    assert.equal(b.nodeId,linux);
+    assert.equal(b.placementSupersededAt,undefined);
+  }finally{store.close();}
+});
+
+test('file errors cannot make an earlier successful Git read appear failed',async()=>{
+  const store=new Store(':memory:');store.save('conversations',{id:'conv'});
+  const gateway=new Gateway(store,fixture(),{},async()=>{});
+  const signal=new AbortController().signal;
+  try{
+    await gateway.invoke(task(),'git-ok','workspace_git_status',{checkoutId:checkout},signal);
+    await assert.rejects(gateway.invoke(task(),'file-failed','workspace_read_file',
+      {checkoutId:checkout,path:'missing.txt'},signal),/Atlas invocation failed/);
+    const view=project(store)[0];
+    assert.equal(view.branch,'atlas/feature');
+    assert.equal(view.gitObservedAt!==undefined,true);
+    assert.equal(view.lastFailureAt,undefined);
+    assert.equal(view.lastFailureTool,undefined);
+    const base=fixture();
+    const gitFails=new Gateway(store,{...base,call:async(name,args,s)=>{
+      if(name==='workspace_git_status')throw Error('git failure');
+      return base.call(name,args,s);
+    }},{},async()=>{});
+    await assert.rejects(gitFails.invoke(task(),'git-failed','workspace_git_status',
+      {checkoutId:checkout},signal),/Atlas invocation failed/);
+    assert.equal(project(store)[0].lastFailureTool,'workspace_git_status');
+  }finally{store.close();}
+});
+
+test('truncated Atlas Git results preserve the lower-bound count in the UI',()=>{
+  const data=observeAtlasResult('workspace_git_status',{checkoutId:checkout},{
+    available:true,branch:'main',dirty:true,truncated:true,
+    changes:Array.from({length:500},(_,i)=>({path:'file-'+i}))
+  },{id:checkout,nodeId:mac});
+  assert.equal(data?.git?.changedFiles,500);
+  assert.equal(data?.git?.changedFilesTruncated,true);
+  assert.equal(gitChangeLabel(data!.git!), '500+ changed files');
+  assert.equal(gitChangeLabel({dirty:true}), 'Changed files not enumerated');
+  assert.equal(gitChangeLabel({dirty:false,changedFiles:0}),'Clean');
+  assert.equal(gitChangeLabel({dirty:true,changedFiles:1,changedFilesTruncated:false}),'1 changed file');
 });
 
 test('ordinary conversations and denied operations never manufacture observations',async()=>{

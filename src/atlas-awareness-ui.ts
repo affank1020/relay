@@ -15,6 +15,14 @@ function stale(value?:string):boolean {
   return !value || !Number.isFinite(Date.parse(value)) || Date.now()-Date.parse(value)>5*60_000;
 }
 
+/** Truncated counts are lower bounds; no inferred exact totals. */
+export function gitChangeLabel(view:Pick<AtlasCheckoutView,'dirty'|'changedFiles'|'changedFilesTruncated'>):string {
+  if(view.dirty===undefined)return 'Change state unknown';
+  if(!view.dirty)return 'Clean';
+  if(view.changedFiles===undefined)return 'Changed files not enumerated';
+  return view.changedFiles+(view.changedFilesTruncated?'+':'')+' changed '+(view.changedFiles===1&&!view.changedFilesTruncated?'file':'files');
+}
+
 /** Context is optional, read-only and scoped to the observed task. */
 export function renderAtlasCheckoutViews(parent:HTMLElement,views:AtlasCheckoutView[]):void {
   parent.replaceChildren();
@@ -23,9 +31,11 @@ export function renderAtlasCheckoutViews(parent:HTMLElement,views:AtlasCheckoutV
     const header=element('summary','atlas-observed-head');
     const name=view.name??view.repository??'Checkout';
     const title=element('span','atlas-observed-title',name);
-    const status=view.placementStatus==='archived'?'Archived':
+    const status=view.placementSupersededAt?'Previous placement':
+      view.placementStatus==='archived'?'Archived':
       view.nodeStatus==='offline'?'Node offline':
-      view.lastFailureAt&&(!view.gitObservedAt||view.lastFailureAt>view.gitObservedAt)?'Inspection failed':
+      view.lastFailureTool==='workspace_git_status'&&view.lastFailureAt&&
+        (!view.gitObservedAt||view.lastFailureAt>view.gitObservedAt)?'Git inspection failed':
       stale(view.gitObservedAt)?'Context only':'Git observed';
     header.append(title,element('span','atlas-observed-status',status));
     card.append(header);
@@ -35,12 +45,16 @@ export function renderAtlasCheckoutViews(parent:HTMLElement,views:AtlasCheckoutV
         [view.repository,view.branch].filter(Boolean).join(' · ')));
     }
     if(view.gitObservedAt){
-      const changeLabel=view.dirty===undefined?'Change state unknown':
-        view.dirty?((view.changedFiles??0)+' changed files'):'Clean';
+      const changeLabel=gitChangeLabel(view);
       body.append(element('div','atlas-observed-muted',
         changeLabel+' · Git read '+time(view.gitObservedAt)+(stale(view.gitObservedAt)?' (stale)':'')));
     }else{
       body.append(element('div','atlas-observed-muted','Git state not verified'));
+    }
+    if(view.placementSupersededAt)body.append(element('div','atlas-observed-muted',
+      'Checkout placement changed after this observation · '+time(view.placementSupersededAt)));
+    if(view.lastFailureTool==='workspace_git_list_worktrees'&&view.lastFailureAt){
+      body.append(element('div','atlas-observed-muted','Worktree read failed · '+time(view.lastFailureAt)));
     }
     if(view.nodeId){
       const label=view.nodeName??view.nodeId;
