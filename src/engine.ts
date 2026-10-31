@@ -433,7 +433,11 @@ export class Engine {
         // Children receive only their exact delegated read-only subset.
         const discovered=await this.capabilities.tools(task,this.store,controller.signal,
           (...args)=>this.approve(...args));
-        for(const tool of discovered)registryReadNames.add(tool.name);
+        // Only read tools may become child-admissible by name. A root GitHub
+        // write is explicitly not inheritable even when the root has consent.
+        for(const tool of discovered)
+          if(!['mcp_github_create_issue','mcp_github_add_issue_comment'].includes(tool.name))
+            registryReadNames.add(tool.name);
         tools.push(...discovered);
       }
       const admitted=tools.filter(tool=>registryReadNames.has(tool.name) ||
