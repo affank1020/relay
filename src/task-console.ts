@@ -38,9 +38,9 @@ function button(text:string,action:()=>void,className='action') {
   return element;
 }
 function errorText(error:unknown) {return error instanceof Error?error.message:'Request failed';}
-function taskUrl(state:State,conversation:string) {
+function taskUrl(state:string,conversation:string) {
   const query=new URLSearchParams({limit:'50'});
-  if(state!=='all' as State)query.set('state',state);
+  if(state!=='all')query.set('state',state);
   if(conversation)query.set('conversationId',conversation);
   return '/task-console/tasks?'+query.toString();
 }
@@ -68,7 +68,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   let hasMore=false;
   let listEpoch=0;
   let detailEpoch=0;
-  let pendingList=false;
+  let pendingEpoch=-1;
   let timer:ReturnType<typeof setTimeout>|undefined;
   let events:ExecutionEvent[]=[];
   let eventCursor=0;
@@ -131,10 +131,10 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       row.title=task.prompt;
       if(list.children[index]!==row)list.insertBefore(row,list.children[index]??null);
     }
-    if(!filtered.length&&!pendingList&&tasks.size===0) {
-      const empty=node('p','task-feedback','No tasks match this filter.');
-      list.append(empty);
-    }
+    const placeholder=list.querySelector('.task-rows-empty');
+    if(!filtered.length&&pendingEpoch!==listEpoch) {
+      if(!placeholder)list.append(node('p','task-feedback task-rows-empty','No tasks match this filter.'));
+    } else placeholder?.remove();
     more.hidden=!hasMore;
   }
   async function loadConversations() {
@@ -152,9 +152,9 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     conversation=conversationFilter.value;
   }
   async function firstPage() {
-    if(pendingList||!visible)return;
-    pendingList=true;
+    if(pendingEpoch===listEpoch||!visible)return;
     const generation=listEpoch;
+    pendingEpoch=generation;
     try {
       const response=await read<Page>(taskUrl(status as State,conversation));
       if(generation!==listEpoch||!visible)return;
@@ -166,10 +166,10 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       renderRows();
     } catch(error) {
       if(generation===listEpoch)message('Connection unavailable — displaying last received task data. '+errorText(error));
-    } finally {pendingList=false;}
+    } finally {if(pendingEpoch===generation)pendingEpoch=-1;}
   }
   async function older() {
-    if(!cursor||!hasMore||!visible||pendingList)return;
+    if(!cursor||!hasMore||!visible||pendingEpoch===listEpoch)return;
     more.disabled=true;
     const generation=listEpoch;
     try {
@@ -299,7 +299,9 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       }
       if(eventList.children[index]!==item)eventList.insertBefore(item,eventList.children[index]??null);
     }
-    if(!items.length)eventList.append(node('p','task-feedback','No recorded events yet.'));
+    const placeholder=eventList.querySelector('.task-events-empty');
+    if(!items.length){if(!placeholder)eventList.append(node('p','task-feedback task-events-empty','No recorded events yet.'));}
+    else placeholder?.remove();
     if(eventMoreButton) {
       eventMoreButton.hidden=!eventMore;
       eventMoreButton.disabled=eventLoading;
@@ -326,15 +328,17 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       if(generation===detailEpoch&&eventList)eventList.append(node('p','task-error','Activity unavailable: '+errorText(error)));
       eventMore=false;
     } finally {
-      eventLoading=false;
-      if(eventMoreButton) {eventMoreButton.hidden=!eventMore;eventMoreButton.disabled=false;}
+      if(generation===detailEpoch) {
+        eventLoading=false;
+        if(eventMoreButton) {eventMoreButton.hidden=!eventMore;eventMoreButton.disabled=false;}
+      }
     }
   }
   async function inspect(id:string) {
     selected=id;
     detailEpoch++;
     const generation=detailEpoch;
-    events=[];eventCursor=0;eventMore=false;
+    events=[];eventCursor=0;eventMore=false;eventLoading=false;
     selectedData=null;selectedFingerprint='';
     renderRows();
     detail.replaceChildren(node('p','task-feedback','Loading task…'));
