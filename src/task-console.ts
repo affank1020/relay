@@ -69,6 +69,11 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   let hasMore=false;
   let paginationInitialized=false;
   let newestBoundary:number|null=null;
+  // The deep-history cursor must advance independently of gaps created when
+  // new tasks push rows off the first page.
+  let gapFloor:number|null=null;
+  let gapCursor:string|null=null;
+  let gapScanStart:number|null=null;
   let pagingRevision=0;
   let initialPageLoaded=false;
   let olderCheckOffset=0;
@@ -145,7 +150,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     if(!filtered.length&&initialPageLoaded) {
       if(!placeholder)list.append(node('p','task-feedback task-rows-empty','No tasks match this filter.'));
     } else placeholder?.remove();
-    more.hidden=!hasMore;
+    more.hidden=!(hasMore||gapCursor!==null||
+      (newestBoundary!==null&&gapFloor!==null&&newestBoundary>gapFloor));
   }
   async function loadConversations() {
     const response=await read<{sessions:Conversation[]}>('/sessions');
@@ -176,8 +182,9 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
         for(const id of tasks.keys())if(!incoming.has(id))tasks.delete(id);
         olderIds.clear();
         if(selected&&!incoming.has(selected))clearSelection();
-        if(cursor!==null||hasMore)pagingRevision++;
+        if(cursor!==null||hasMore||gapCursor!==null||newestBoundary!==null)pagingRevision++;
         cursor=null;hasMore=false;paginationInitialized=true;newestBoundary=null;
+        gapFloor=null;gapCursor=null;gapScanStart=null;
       } else {
         const boundary=Number(response.nextCursor);
         if(!Number.isSafeInteger(boundary)||boundary<1)
@@ -224,14 +231,14 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
           }
         }
 
-        // The newest page's oldest rowid is a cursor into all remaining
-        // history. When new inserts move this boundary forward, reset the
-        // paging cursor to bridge the gap on the NEXT explicit older click.
-        // A stable boundary never reopens exhausted pagination.
-        if(!paginationInitialized||newestBoundary===null||boundary>newestBoundary) {
+        // Only initialize the deep history frontier once per filter reset.
+        // Polls that move the newest-page boundary never rewind it. Any gap
+        // between the initial and current boundary is separately pageable
+        // after the deep history has been read.
+        if(!paginationInitialized) {
           cursor=response.nextCursor;hasMore=true;
-          pagingRevision++;
           paginationInitialized=true;
+          gapFloor=boundary;
         }
         newestBoundary=Math.max(newestBoundary??boundary,boundary);
       }
@@ -249,15 +256,43 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     } finally {if(pendingEpoch===generation)pendingEpoch=-1;}
   }
   async function older() {
-    if(!cursor||!hasMore||!visible||pendingEpoch===listEpoch)return;
-    more.disabled=true;
+    if(!visible||pendingEpoch===listEpoch||more.disabled)return;
+    const deep=hasMore&&cursor!==null;
+    if(!deep) {
+      if(gapCursor===null) {
+        if(newestBoundary===null||gapFloor===null||newestBoundary<=gapFloor)return;
+        // Freeze one gap scan at this high-water mark. Later inserts are
+        // handled by a subsequent scan, never by resetting this cursor.
+        gapScanStart=newestBoundary;
+        gapCursor=String(newestBoundary);
+      }
+    }
+    const pageCursor=deep?cursor!:gapCursor!;
     const generation=listEpoch,revision=pagingRevision;
+    more.disabled=true;
     try {
-      const url=taskUrl(status as State,conversation)+'&cursor='+encodeURIComponent(cursor);
+      const url=taskUrl(status as State,conversation)+'&cursor='+encodeURIComponent(pageCursor);
       const response=await read<Page>(url);
       if(generation!==listEpoch||revision!==pagingRevision||!visible)return;
-      for(const task of response.tasks){tasks.set(task.id,task);olderIds.add(task.id);}
-      cursor=response.nextCursor;hasMore=response.hasMore;
+      for(const task of response.tasks){
+        tasks.set(task.id,task);
+        if(!newestIds.has(task.id))olderIds.add(task.id);
+      }
+      if(deep) {
+        // This frontier progresses monotonically toward the oldest row, even
+        // while polling reports new tasks above it.
+        cursor=response.nextCursor;hasMore=response.hasMore;
+      } else {
+        // Finish the snapshot once a page reaches the previously covered
+        // boundary, even if its 50 results overlap already loaded rows.
+        const next=Number(response.nextCursor);
+        if(response.hasMore&&Number.isSafeInteger(next)&&next>gapFloor!) {
+          gapCursor=response.nextCursor;
+        } else {
+          gapFloor=gapScanStart;
+          gapCursor=null;gapScanStart=null;
+        }
+      }
       renderRows();
     } catch(error) {message(errorText(error));}
     finally {more.disabled=false;}
@@ -275,7 +310,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   async function reset() {
     listEpoch++;
     clearSelection();
-    cursor=null;hasMore=false;paginationInitialized=false;newestBoundary=null;pagingRevision++;
+    cursor=null;hasMore=false;paginationInitialized=false;newestBoundary=null;
+    gapFloor=null;gapCursor=null;gapScanStart=null;pagingRevision++;
     initialPageLoaded=false;olderCheckOffset=0;
     newestIds.clear();olderIds.clear();tasks.clear();pinnedId=null;rows.clear();list.replaceChildren();
     message('Loading tasks…');
