@@ -89,7 +89,7 @@ test('Activity details stay expanded across idle polls and newly prepended event
   assert.strictEqual(list.children[1],original,'new events must not replace the expanded row');
   assert.equal(original.open,true);
 
-  const second=element('sessions').children[1];
+  const second=element('sessions').children[1].children.find(x=>x.className.includes('session'))!;
   assert.ok(second.onclick);
   second.onclick();
   await flush();
@@ -173,8 +173,9 @@ test('newly titled first-message chats are searchable without navigation or refr
   assert.equal(sessionListings,2,'send path should not require a third sessions refresh');
   const matches=element('sessions').children;
   assert.equal(matches.length,1);
-  assert.equal(matches[0].title,'Investigate build failures');
-  assert.ok(matches[0].children.some(child=>child.textContent==='Investigate build failures'));
+  const conversationButton=matches[0].children.find(child=>child.className.includes('session'))!;
+  assert.equal(conversationButton.title,'Investigate build failures');
+  assert.ok(conversationButton.children.some(child=>child.textContent==='Investigate build failures'));
   assert.ok(nextPoll,'polling remains scheduled');
 });
 

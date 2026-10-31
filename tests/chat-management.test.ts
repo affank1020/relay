@@ -120,8 +120,8 @@ test('refuses queued, interrupted, pending-approval and uncertain invocation rec
     store.save('tasks',interrupted);
     await assert.rejects(engine.deleteConversation(c.id),ConversationConflictError);
     store.save('tasks',task);
+    await engine.stop(); // Wait for the completed job to release its active controller.
     await engine.deleteConversation(c.id);
-    await engine.stop();
   });
 });
 
@@ -175,7 +175,10 @@ test('cleanup failure leaves durable tombstone and never resurrects private hist
 
 test('HTTP contract enforces bearer token, origin, validation, 409 conflict and 204 deletion',async()=>{
   await fixture(async(store)=>{
-    const engine=new Engine(store,harness(),limits);
+    let release!:()=>void;
+    const blocker=new Promise<void>(resolve=>{release=resolve;});
+    const gateHarness=harness();
+    const engine=new Engine(store,{...gateHarness,run:async request=>{await blocker;request.onUsage(usage);return 'fixture answer';}},limits);
     const token='relay-chat-management-test-token';
     const server=createPlatform(engine,token,'.','cohere/north-mini-code:free');
     server.listen(0,'127.0.0.1');
@@ -198,10 +201,13 @@ test('HTTP contract enforces bearer token, origin, validation, 409 conflict and 
       assert.equal(rename.status,200);
       assert.equal((await rename.json() as {session:{title:string}}).session.title,'My saved chat');
       const active=engine.enqueue(c.id,'queued','request-123');
+      await until(()=>engine.tasks().find(t=>t.id===active.id)?.state==='running');
       const conflict=await call('/sessions/'+c.id,'DELETE');
       assert.equal(conflict.status,409);
       assert.equal(store.get('conversations',c.id)!==undefined,true);
+      release();
       await until(()=>engine.tasks().find(t=>t.id===active.id)?.state==='completed');
+      await engine.stop(); // Wait for active-controller release before DELETE.
       const done=await call('/sessions/'+c.id,'DELETE');
       assert.equal(done.status,204);assert.equal(await done.text(),'');
       assert.equal((await call('/sessions/'+c.id,'DELETE')).status,404);
