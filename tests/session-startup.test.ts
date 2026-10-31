@@ -40,7 +40,7 @@ test('compiled Relay serves HTML and creates durable conversations', { timeout: 
     assert.ok(port, 'Server must report its ephemeral port');
     const root = await fetch('http://127.0.0.1:' + port + '/');
     assert.equal(root.status, 200, 'Compiled server must serve HTML from dist/public');
-    assert.match(await root.text(), /Relay · Agent control plane/);
+    assert.match(await root.text(), /Relay · AI workspace/);
     const client = await fetch('http://127.0.0.1:' + port + '/app.js');
     assert.equal(client.status, 200, 'Compiled browser entrypoint must exist');
     await client.text();
