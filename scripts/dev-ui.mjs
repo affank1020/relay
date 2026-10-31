@@ -60,6 +60,30 @@ const server=createServer(async(req,res)=>{
     if(path==='/api/status'&&req.method==='GET')return json(res,200,{provider:'Preview',model:models[0].key,models,defaultModelKey:models[0].key,atlas:'mock'});
     if(path==='/api/sessions'&&req.method==='GET')return json(res,200,{sessions:sessions.map(summary)});
     if(path==='/api/sessions'&&req.method==='POST'){const b=await readBody(req);if(b.modelKey&&!models.some(m=>m.key===b.modelKey))return json(res,400,{error:'Invalid model'});return json(res,201,{session:summary(newSession('New conversation',b.modelKey||models[0].key))});}
+    if(path==='/api/task-console/tasks'&&req.method==='GET'){
+      const state=url.searchParams.get('state')||'all',conversation=url.searchParams.get('conversationId')||'';
+      const limit=Number(url.searchParams.get('limit')||50),cursor=url.searchParams.get('cursor');
+      if(!Number.isInteger(limit)||limit<1||limit>100)return json(res,400,{error:'Invalid task page limit'});
+      const scoped=tasks.filter(t=>!conversation||t.conversationId===conversation);
+      const counts=Object.fromEntries([...new Set(scoped.map(t=>t.state))].map(s=>[s,scoped.filter(t=>t.state===s).length]));
+      const ordered=[...scoped].reverse().filter(t=>state==='all'||t.state===state);
+      const from=cursor?Number(cursor):0;
+      if(!Number.isSafeInteger(from)||from<0)return json(res,400,{error:'Invalid task cursor'});
+      const page=ordered.slice(from,from+limit),hasMore=ordered.length>from+limit;
+      return json(res,200,{tasks:page,counts,hasMore,nextCursor:hasMore?String(from+limit):null});
+    }
+    const detail=path.match(/^\/api\/task-console\/tasks\/([a-f0-9-]+)$/);
+    if(detail&&req.method==='GET'){
+      const t=tasks.find(task=>task.id===detail[1]);if(!t)return json(res,404,{error:'Task not found'});
+      const conversation=sessions.find(s=>s.id===t.conversationId);
+      return json(res,200,{task:t,conversation:conversation?{id:conversation.id,title:conversation.title,modelKey:conversation.modelKey}:null,children:tasks.filter(task=>task.parentId===t.id),approvals:[]});
+    }
+    const cancel=path.match(/^\/api\/tasks\/([a-f0-9-]+)\/cancel$/);
+    if(cancel&&req.method==='POST'){
+      const t=tasks.find(task=>task.id===cancel[1]);if(!t)return json(res,404,{error:'Task not found'});
+      if(!['completed','failed','cancelled','interrupted'].includes(t.state)){t.state='cancelled';const s=sessions.find(x=>x.id===t.conversationId);if(s)emit(s,t,'task','cancelled');}
+      return json(res,200,{task:t});
+    }
     if(path==='/api/tasks'&&req.method==='GET')return json(res,200,{tasks:[...tasks].reverse()});
     const m=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/events|\/messages|\/abort)?$/);
     if(m){
