@@ -5,6 +5,8 @@ import { AtlasContextPicker } from './atlas-picker.js';
 import type { AtlasContext } from './atlas-context.js';
 import { projectAtlasCheckouts } from './atlas-awareness.js';
 import { renderAtlasCheckoutViews } from './atlas-awareness-ui.js';
+import { projectAtlasDetails } from './atlas-awareness-details.js';
+import { renderAtlasDetailViews } from './atlas-awareness-details-ui.js';
 import { readLiveChatEvents } from './live-chat.js';
 interface Summary { id:string; title:string; modelKey?:string; atlasContext?:AtlasContext|null; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
 interface Snapshot { session:Summary; tasks:Task[]; approvals:Approval[]; }
@@ -253,7 +255,9 @@ function render(data:Snapshot){
     renderSessions();
   }
   const messages=$('messages');
-  const observedViews=projectAtlasCheckouts([...atlasObservations.values()]);
+  const observations=[...atlasObservations.values()];
+  const observedViews=projectAtlasCheckouts(observations);
+  const observedDetails=projectAtlasDetails(observations);
   const firstPaint=!lastView;
   const nearBottom=messages.scrollHeight-messages.scrollTop-messages.clientHeight<120;
   if(!data.tasks.length) {
@@ -294,10 +298,12 @@ function render(data:Snapshot){
         row.receiptKey=receiptKey;
       }
       const matching=observedViews.filter(view=>view.taskId===task.id);
-      const awarenessKey=JSON.stringify(matching)+'|'+matching.map(view=>
+      const details=observedDetails.filter(view=>view.taskId===task.id);
+      const awarenessKey=JSON.stringify(matching)+'|'+JSON.stringify(details)+'|'+matching.map(view=>
         view.gitObservedAt&&Date.now()-Date.parse(view.gitObservedAt)>5*60_000?'stale':'recent').join(',');
       if(row.awarenessKey!==awarenessKey){
         renderAtlasCheckoutViews(row.awareness,matching);
+        renderAtlasDetailViews(row.awareness,details);
         row.awarenessKey=awarenessKey;
       }
       const terminal=['completed','failed','interrupted','cancelled'].includes(task.state);
