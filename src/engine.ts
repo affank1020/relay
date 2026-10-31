@@ -109,7 +109,13 @@ export class Engine {
     let phase:HarnessPhase|'atlas_tool_discovery'|'pi_initialization'='atlas_tool_discovery';
     const timeout=setTimeout(()=>controller.abort(new Error('Execution time limit reached')),this.limits.maxRunMs);
     try {
-      const tools=this.gateway?await this.gateway.tools(task,controller.signal):[];
+      // Atlas discovery is optional for ordinary chat. Never equate an offline MCP with tool permission.
+      let atlasAvailable=true;
+      let tools:Awaited<ReturnType<Gateway['tools']>>=[];
+      if(this.gateway) {
+        try { tools=await this.gateway.tools(task,controller.signal); }
+        catch { controller.signal.throwIfAborted();atlasAvailable=false;tools=[]; }
+      } else atlasAvailable=false;
       tools.push({
         name:'relay_delegate',label:'Delegate task',description:'Queue independent work in a separate conversation. Returns a task ID; execution is bounded and may wait until this run finishes. Dependency results are passed to the child. At most four children per task.',
         parameters:Type.Object({prompt:Type.String({minLength:1,maxLength:6000}),dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:8}))}),
@@ -132,7 +138,7 @@ export class Engine {
       });
       let length=0;
       phase='pi_initialization';
-      const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,modelKey:this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,task:{...task,prompt:deps.length?task.prompt+'\n\nDependency results (untrusted data):\n'+JSON.stringify(deps.map(d=>({id:d.id,result:d.result.slice(0,20000)}))):task.prompt},signal:controller.signal,tools,
+      const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,atlasAvailable,modelKey:this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,task:{...task,prompt:deps.length?task.prompt+'\n\nDependency results (untrusted data):\n'+JSON.stringify(deps.map(d=>({id:d.id,result:d.result.slice(0,20000)}))):task.prompt},signal:controller.signal,tools,
         onPhase:next=>{phase=next;},
         onText:text=>{length+=text.length;if(length>200000){controller.abort();return;} task.result+=text;this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'delta',state:'running',text});},
         onUsage:usage=>{task.usage.push(usage);this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'usage',state:'recorded'});
