@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { test } from 'node:test';
 import { PiHarness } from '../src/harness.js';
+import { startOllamaProxy } from '../src/ollama-proxy.js';
 import { loadRelayModels } from '../src/models.js';
 import type { Task } from '../src/store.js';
 
@@ -38,6 +39,8 @@ test('Pi local model preflight and streamed inference send Ollama loopback Host 
   if(!address||typeof address==='string')throw new Error('Expected local TCP server');
   const root=await mkdtemp(join(tmpdir(),'relay-ollama-host-'));
   const registry=loadRelayModels({RELAY_OLLAMA_URL:'http://127.0.0.1:'+address.port+'/v1',RELAY_OLLAMA_MODELS:'qwen3:4b'});
+  const proxy=await startOllamaProxy(registry.ollama!.baseUrl);
+  registry.ollama!.baseUrl=proxy.baseUrl;
   const task:Task={id:randomUUID(),conversationId:randomUUID(),requestId:'host-check-01',
     prompt:'Say connected',state:'running',createdAt:new Date().toISOString(),parentId:null,
     dependencies:[],attemptOf:null,result:'',error:null,usage:[]};
@@ -50,6 +53,7 @@ test('Pi local model preflight and streamed inference send Ollama loopback Host 
     assert.ok(seen.some(x=>x==='GET /v1/models localhost:11434'),'preflight must rewrite host');
     assert.ok(seen.some(x=>x==='POST /v1/chat/completions localhost:11434'),'Pi inference must rewrite host');
   }finally{
+    await proxy.close();
     server.closeAllConnections();server.close();
     await rm(root,{recursive:true,force:true});
   }
