@@ -25,3 +25,13 @@ test('the localhost preview does not inject a persistent sample-data banner', ()
   assert.match(preview, /127\.0\.0\.1/, 'preview should remain loopback-only');
   assert.match(preview, /__dev_reload\.js/, 'hot reload remains available');
 });
+ 
+test('long chat names truncate instead of widening the sidebar', () => {
+  const css=source('public/style.css');
+  assert.match(css,/aside \{[^}]*max-width:\s*242px[^}]*min-width:\s*0/s);
+  assert.match(css,/#sessions \{[^}]*min-width:\s*0/s);
+  assert.match(css,/\.session \{[^}]*min-width:\s*0[^}]*overflow:\s*hidden/s);
+  assert.match(css,/\.session-title \{[^}]*min-width:\s*0[^}]*text-overflow:\s*ellipsis/s);
+  assert.match(css,/@media\(max-width:850px\)[\s\S]*?max-width:\s*220px/);
+  assert.match(css,/@media\(max-width:700px\)[\s\S]*?max-width:\s*min\(290px, 88vw\)/);
+});
