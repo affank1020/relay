@@ -234,11 +234,15 @@ test('new tasks cannot strand a displaced first-page row beyond the saved pagina
       assert.equal(get('taskRows').children.length,50,'switching selection drops the displaced pinned row');
       assert.ok(!get('taskRows').children.some(row=>row.children[0]?.textContent==='Number 11'));
       get('taskMore').onclick?.();await flush();
+      assert.equal(get('taskRows').children.length,60,'deep history reaches the original oldest task first');
+      assert.ok(calls.some(url=>url.includes('cursor=11')),'deep pagination does not rewind');
+      assert.equal(get('taskMore').hidden,false,'displaced newest-page gap remains available');
+      get('taskMore').onclick?.();await flush();
       const titles=get('taskRows').children.map(row=>row.children[0]?.textContent);
       assert.equal(titles.length,61,'the complete 60→61 history remains reachable');
       assert.equal(new Set(titles).size,61,'no task appears twice');
       for(let i=1;i<=61;i++)assert.ok(titles.includes('Number '+i),'missing rowid '+i);
-      assert.ok(calls.some(url=>url.includes('cursor=12')),'pagination rebases to include the displaced rowid 11');
+      assert.ok(calls.some(url=>url.includes('cursor=12')),'separate gap cursor recovers displaced rowid 11');
       assert.equal(displaced.rowid,11);
     },async url=>{
       if(url==='/sessions')return response({sessions:[sessions[0]]});
@@ -569,5 +573,76 @@ test('hundreds of automatic page shifts keep the DOM bounded and history reachab
   } finally {
     globalThis.setTimeout=previousTimeout;
     globalThis.clearTimeout=previousClear;
+  }
+});
+
+
+test('interleaved manual pagination and new arrivals never rewind deep-history progress',async()=>{
+  const make=(id:number)=>({
+    ...task(String(id).padStart(8,'0')+'-6666-6666-6666-666666666666',A,'completed'),
+    prompt:'Interleaved '+id,rowid:id,
+    createdAt:new Date(Date.parse(when)+id*1000).toISOString()
+  });
+  const persisted=Array.from({length:200},(_,i)=>make(i+1));
+  let scheduled:(()=>void)|undefined;
+  const originalTimer=globalThis.setTimeout,originalClear=globalThis.clearTimeout;
+  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
+  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
+  try {
+    await fixture(async(get,_ui,calls)=>{
+      const pageCursors=()=>calls.filter(url=>url.startsWith('/task-console/tasks?')&&url.includes('cursor='))
+        .map(url=>Number(new URL(url,'http://relay.local').searchParams.get('cursor')));
+      assert.equal(get('taskRows').children.length,50);
+      assert.ok(scheduled);
+
+      get('taskMore').onclick?.();await flush(); // 150..101
+      persisted.push(make(201));
+      scheduled();await flush();
+      get('taskMore').onclick?.();await flush(); // 100..51, not 151..102
+      persisted.push(make(202));
+      scheduled();await flush();
+      get('taskMore').onclick?.();await flush(); // 50..1
+      assert.deepEqual(pageCursors().slice(0,3),[151,101,51],
+        'deep cursor must advance monotonically even across newest-page shifts');
+      assert.ok(get('taskRows').children.some(item=>item.children[0]?.textContent==='Interleaved 1'));
+      assert.equal(get('taskRows').children.length,200,
+        'only genuinely displaced newest-page rows remain unloaded');
+      assert.equal(get('taskMore').hidden,false,'the two displaced rows are still reachable');
+
+      get('taskMore').onclick?.();await flush(); // gap snapshot 153..151
+      assert.equal(pageCursors()[3],153);
+      let visible=get('taskRows').children.map(item=>item.children[0]?.textContent);
+      assert.equal(new Set(visible).size,202);
+      assert.equal(visible.length,202);
+      assert.equal(get('taskMore').hidden,true);
+
+      // A new insert after finishing the gap creates a NEW, independent gap.
+      persisted.push(make(203));scheduled();await flush();
+      assert.equal(get('taskMore').hidden,false);
+      get('taskMore').onclick?.();await flush();
+      assert.equal(pageCursors()[4],154,'new gap starts above the previously filled boundary');
+      visible=get('taskRows').children.map(item=>item.children[0]?.textContent);
+      assert.equal(new Set(visible).size,203);
+      assert.equal(get('taskMore').hidden,true);
+    },async url=>{
+      if(url==='/sessions')return response({sessions:[sessions[0]]});
+      if(url.startsWith('/task-console/task-states?')){
+        const ids=new URL(url,'http://relay.local').searchParams.get('ids')?.split(',')??[];
+        return response({states:Object.fromEntries(persisted.filter(item=>ids.includes(item.id))
+          .map(item=>[item.id,{state:item.state,conversationId:item.conversationId}]))});
+      }
+      if(url.startsWith('/task-console/tasks?')){
+        const query=new URL(url,'http://relay.local').searchParams;
+        const filtered=persisted.filter(item=>!query.get('cursor')||item.rowid<Number(query.get('cursor')))
+          .sort((a,b)=>b.rowid-a.rowid);
+        const page=filtered.slice(0,50);
+        return response({tasks:page,counts:{completed:persisted.length},
+          hasMore:filtered.length>50,nextCursor:filtered.length>50?String(page.at(-1)?.rowid):null});
+      }
+      throw Error('Unexpected request '+url);
+    });
+  } finally {
+    globalThis.setTimeout=originalTimer;
+    globalThis.clearTimeout=originalClear;
   }
 });
