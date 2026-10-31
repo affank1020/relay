@@ -2,7 +2,7 @@ import { mkdir, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { Task, Usage } from './store.js';
-import type { RelayModels } from './models.js';
+import { refreshOllamaModels, type RelayModels } from './models.js';
 
 export type HarnessPhase = 'preparing_directories' | 'loading_model' | 'checking_local_provider' | 'loading_resources' | 'opening_session' | 'creating_session' | 'running_inference' | 'finalizing_response';
 export interface HarnessRequest { version:1; task:Task; modelKey?:string; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; }
@@ -24,21 +24,33 @@ export class PiHarness implements Harness {
     const sessionDir=join(this.root,'sessions',task.conversationId);
     await Promise.all([mkdir(cwd,{recursive:true}),mkdir(agentDir,{recursive:true}),mkdir(sessionDir,{recursive:true})]);
     onPhase?.('loading_model');
-    this.runtime ??= ModelRuntime.create({allowModelNetwork:true,modelRefreshTimeoutMs:15000,authPath:join(agentDir,'auth.json'),modelsPath:null}).then(runtime=>{
-      if(this.registry?.ollama)runtime.registerProvider('ollama',{
+    this.runtime ??= ModelRuntime.create({allowModelNetwork:true,modelRefreshTimeoutMs:15000,authPath:join(agentDir,'auth.json'),modelsPath:null})
+      .catch(e=>{this.runtime=undefined;throw e;});
+    const modelRuntime=await this.runtime;
+    signal.throwIfAborted();
+    const key=modelKey??this.registry?.defaultKey??'openrouter/'+this.modelId;
+    if(key.startsWith('ollama/')&&this.registry) {
+      await refreshOllamaModels(this.registry);
+      if(this.registry.ollama?.online===false)throw new LocalProviderUnavailableError('offline');
+    }
+    const selected=this.registry?.models.find(x=>x.key===key);
+    if(this.registry && !selected) {
+      if(key.startsWith('ollama/'))throw new LocalProviderUnavailableError('missing_model');
+      throw new Error('Selected model is not configured');
+    }
+    const provider=selected?.provider??'openrouter';
+    const id=selected?.id??this.modelId;
+    if(this.registry?.ollama&&provider==='ollama') {
+      modelRuntime.registerProvider('ollama',{
         baseUrl:this.registry.ollama.baseUrl,api:'openai-completions',apiKey:'ollama',
         models:this.registry.ollama.modelIds.map(id=>({id,name:id,reasoning:false,input:['text' as const],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:8192,maxTokens:4096,compat:{supportsDeveloperRole:false,supportsReasoningEffort:false}}))
       });
-      return runtime;
-    }).catch(e=>{this.runtime=undefined;throw e;});
-    const modelRuntime=await this.runtime;
-    const key=modelKey??this.registry?.defaultKey??'openrouter/'+this.modelId;
-    const selected=this.registry?.models.find(x=>x.key===key);
-    if(this.registry && !selected)throw new Error('Selected model is not configured');
-    const provider=selected?.provider??'openrouter';
-    const id=selected?.id??this.modelId;
+    }
     const model=modelRuntime.getModel(provider,id);
-    if(!model)throw new Error('Configured model is unavailable');
+    if(!model) {
+      if(provider==='ollama')throw new LocalProviderUnavailableError('missing_model');
+      throw new Error('Configured model is unavailable');
+    }
     if(provider==='ollama'){
       onPhase?.('checking_local_provider');
       let response:Response;

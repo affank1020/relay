@@ -92,13 +92,26 @@ function emptyConversation(){
 }
 
 async function refresh(){
-  const [state,list]=await Promise.all([get<{provider:string;model:string;atlas:string;defaultModelKey?:string;models?:{key:string;label:string}[]}>('/status'),get<{sessions:Summary[]}>('/sessions')]);
+  const [state,list]=await Promise.all([get<{provider:string;model:string;atlas:string;ollamaOnline?:boolean;defaultModelKey?:string;models?:{key:string;label:string}[]}>('/status'),get<{sessions:Summary[]}>('/sessions')]);
   configuredModels=state.models??[];
   if(configuredModels.length){
     const picker=$<HTMLSelectElement>('modelPicker'),previous=picker.value;
     picker.replaceChildren();
-    for(const option of configuredModels){const item=document.createElement('option');item.value=option.key;item.textContent=option.label;picker.append(item);}
-    picker.value=configuredModels.some(x=>x.key===previous)?previous:(state.defaultModelKey??configuredModels[0].key);
+    for(const option of configuredModels){
+      const item=document.createElement('option');
+      item.value=option.key;
+      const offline=option.key.startsWith('ollama/')&&state.ollamaOnline===false;
+      item.textContent=option.label+(offline?' (offline)':'');
+      item.disabled=offline;
+      picker.append(item);
+    }
+    const pinned=list.sessions.find(c=>c.id===current)?.modelKey;
+    if(pinned?.startsWith('ollama/')&&!configuredModels.some(x=>x.key===pinned)){
+      const missing=document.createElement('option');missing.value=pinned;
+      missing.textContent='MacBook · '+pinned.slice(7)+' (not installed)';
+      missing.disabled=true;picker.append(missing);
+    }
+    picker.value=configuredModels.some(x=>x.key===previous)?previous:(pinned&&[...picker.options].some(x=>x.value===pinned)?pinned:(state.defaultModelKey??configuredModels[0].key));
   }
   $('connection').textContent=state.provider==='Preview'?'Local preview':'Pi connected';
   const atlas=$('atlasSummary');
@@ -153,7 +166,12 @@ function render(data:Snapshot){
   }
   $('title').textContent=data.session.title;
   const picker=$<HTMLSelectElement>('modelPicker');
-  if(data.session.modelKey&&configuredModels.some(m=>m.key===data.session.modelKey))picker.value=data.session.modelKey;
+  if(data.session.modelKey&&!configuredModels.some(m=>m.key===data.session.modelKey)&&![...picker.options].some(x=>x.value===data.session.modelKey)){
+    const missing=document.createElement('option');missing.value=data.session.modelKey;
+    missing.textContent=(data.session.modelKey.startsWith('ollama/')?'MacBook · '+data.session.modelKey.slice(7):data.session.modelKey)+' (not installed)';
+    missing.disabled=true;picker.append(missing);
+  }
+  if(data.session.modelKey)picker.value=data.session.modelKey;
   $('cost').textContent=data.session.usage.tokens+' tokens'+(data.session.usage.unknown?' · usage incomplete':data.session.modelKey?.startsWith('ollama/')?' · local':' · $'+data.session.costUsd.toFixed(4));
   setBusy(data.session.busy);
   $('approvals').replaceChildren();
@@ -218,7 +236,7 @@ async function select(id:string){
   if(generation!==epoch)return;
   render(data);await refresh();void poll();
 }
-async function create(){const modelKey=$<HTMLSelectElement>('modelPicker').value;const result=await (await api('/sessions',{method:'POST',body:JSON.stringify(modelKey?{modelKey}:{})})).json() as {session:Summary};await select(result.session.id);$<HTMLTextAreaElement>('prompt').focus();}
+async function create(){const picker=$<HTMLSelectElement>('modelPicker');if(picker.selectedOptions[0]?.disabled)throw new Error('Local model offline. Start Ollama or choose another model.');const modelKey=picker.value;const result=await (await api('/sessions',{method:'POST',body:JSON.stringify(modelKey?{modelKey}:{})})).json() as {session:Summary};await select(result.session.id);$<HTMLTextAreaElement>('prompt').focus();}
 async function submit(event:Event){
   event.preventDefault();if(busy||submitting)return;
   const prompt=$<HTMLTextAreaElement>('prompt');const value=prompt.value.trim();if(!value&&!pending)return;
@@ -268,4 +286,6 @@ $<HTMLFormElement>('form').onsubmit=event=>{void submit(event);};
 $('stop').onclick=()=>{if(current)void api('/sessions/'+current+'/abort',{method:'POST',body:'{}'}).then(()=>poll()).catch(notify);};
 $<HTMLTextAreaElement>('prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$<HTMLFormElement>('form').requestSubmit();}};
 $('toggleInspector').onclick=()=>{const panel=$('inspector');panel.hidden=!panel.hidden;$('toggleInspector').setAttribute('aria-expanded',String(!panel.hidden));};
+// Refresh optional Ollama availability without changing conversations.
+window.setInterval?.(()=>{if(document.visibilityState!=='hidden')void refresh().catch(()=>{});},60_000);
 void bootstrap();
