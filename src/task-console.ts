@@ -64,6 +64,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   let selected:string|null=null;
   let selectedData:Detail|null=null;
   let selectedFingerprint='';
+  let selectedStructure='';
   // Live replaces only the newest page. History freezes loaded rows and
   // moves ONE exclusive cursor strictly toward older persisted row IDs.
   let mode:'live'|'history'='live';
@@ -237,7 +238,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   function clearSelection() {
     // Invalidate pending detail/event reads and detached mutation callbacks.
     detailEpoch++;
-    selected=null;selectedData=null;selectedFingerprint='';
+    selected=null;selectedData=null;selectedFingerprint='';selectedStructure='';
     events=[];eventCursor=0;eventMore=false;eventLoading=false;
     eventList=null;eventMoreButton=null;
     detail.replaceChildren(node('p','task-feedback','Select a task to inspect its work.'));
@@ -264,13 +265,286 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     }
     detail.append(wrapper);
   }
+  function detailStructureVersion(data:Detail) {
+    const task=data.task;
+    return JSON.stringify([task.id,task.prompt,task.state,task.error,task.createdAt,
+      task.parentId,task.dependencies,task.attemptOf,
+      data.conversation?.id,data.conversation?.modelKey,
+      data.approvals,data.children.map(child=>[child.id,child.prompt,child.state])]);
+  }
   function detailVersion(data:Detail) {
-    return [data.task.state,data.task.error,data.task.result.length,data.approvals.map(approval=>approval.id+approval.state).join(','),data.children.map(child=>child.id+child.state).join(',')].join('|');
+    // Usage can change independently of state/result during inference or tools.
+    // Compare result content too, not just its length.
+    return JSON.stringify([detailStructureVersion(data),data.task.result,data.task.usage]);
+  }
+  function usageText(usage:Task['usage']) {
+    const tokens=usage.reduce((sum,u)=>sum+(u.input??0)+(u.output??0),0);
+    const incomplete=usage.some(u=>u.input===null||u.output===null);
+    const cost=usage.reduce((sum,u)=>sum+(u.costUsd??0),0);
+    const priced=usage.some(u=>u.costUsd!==null);
+    const costLabel=priced?'
+    const heading=node('div','task-detail-head','');
+    heading.append(node('h2','',short(task.prompt,180)||'Untitled task'),node('span','task-status state-'+task.state,label(task.state)));
+    detail.append(heading);
+    const meta=node('div','task-detail-meta','');
+    meta.append(node('span','',timestamp(task.createdAt)));
+    if(data.conversation?.modelKey)meta.append(node('span','','Model selection: '+data.conversation.modelKey));
+    meta.append(node('span','','Task '+task.id.slice(0,8)));
+    detail.append(meta);
+    const actions=node('div','task-actions','');
+    if(data.conversation)actions.append(button('Open conversation',()=>{void openConversation(task.conversationId).catch(error=>message(errorText(error)));}));
+    if(actionable.has(task.state)) {
+      actions.append(button('Cancel task',()=>{
+        if(!window.confirm('Cancel this task? A dispatched operation may not be reversible.'))return;
+        void mutate('/tasks/'+task.id+'/cancel',{},task.id);
+      },'action task-danger'));
+    }
+    if(retryable.has(task.state)) {
+      actions.append(button('Retry task',()=>{
+        if(!window.confirm('I have reconciled any dispatched or uncertain tool effects. Retrying will start a new conversation and could repeat work. Continue?'))return;
+        void mutate('/tasks/'+task.id+'/retry',{reconciled:true},task.id,true);
+      }));
+    }
+    detail.append(actions);
+    if(task.error)detail.append(node('p','task-error',task.error));
+    const resultHeading=node('h3','task-section-heading','Result');
+    resultHeading.hidden=!task.result;
+    detail.append(resultHeading);
+    // Keep a stable scroll container even before first output arrives.
+    const resultPane=node('div','task-result',task.result);
+    resultPane.hidden=!task.result;
+    resultPane.scrollTop=previousScrollTop;
+    detail.append(resultPane);
+    relation('Parent',task.parentId?[task.parentId]:[]);
+    relation('Dependencies',task.dependencies);
+    relation('Child tasks',data.children.map(child=>child.id));
+    relation('Previous attempt',task.attemptOf?[task.attemptOf]:[]);
+    if(data.approvals.length) {
+      detail.append(node('h3','task-section-heading','Approvals'));
+      for(const approval of data.approvals) {
+        const item=node('div','task-approval','');
+        const name=node('div','',label(approval.tool)+' · '+label(approval.state));
+        item.append(name);
+        const disclosure=node('details','','');
+        disclosure.append(node('summary','','Action arguments'));
+        disclosure.append(node('pre','',JSON.stringify(approval.args,null,2)));
+        item.append(disclosure);
+        if(approval.state==='pending'&&task.state==='awaiting_approval') {
+          const controls=node('div','task-actions','');
+          controls.append(button('Approve',()=>{void mutate('/approvals/'+approval.id,{approved:true},task.id);}));
+          controls.append(button('Reject',()=>{void mutate('/approvals/'+approval.id,{approved:false},task.id);},'action task-danger'));
+          item.append(controls);
+        }
+        detail.append(item);
+      }
+    }
+    const usageLine=node('p','task-detail-meta task-usage',usageText(task.usage));
+    usageLine.hidden=!task.usage.length;
+    detail.append(usageLine);
+    detail.append(node('h3','task-section-heading','Execution activity'));
+    eventList=node('div','task-timeline','');
+    detail.append(eventList);
+    eventMoreButton=button('Load more activity',()=>{void loadEvents();},'action task-more');
+    detail.append(eventMoreButton);
+    renderEvents();
+  }
+  function renderEvents() {
+    if(!eventList)return;
+    const known=new Map([...eventList.children].map(child=>[(child as HTMLElement).dataset.eventId,child as HTMLElement]));
+    const items=events.slice(-120);
+    const shown=new Set(items.map(event=>event.id));
+    for(const [id,row] of known)if(!id||!shown.has(id))row.remove();
+    for(const [index,event] of items.entries()) {
+      let item=known.get(event.id);
+      if(!item) {
+        item=node('div','task-event','');
+        item.dataset.eventId=event.id;
+        const head=node('div','task-event-head','');
+        head.append(node('span','',event.type==='tool'?label(event.tool):label(event.type)),node('span','task-event-state',label(event.state)),node('time','',timestamp(event.timestamp)));
+        item.append(head);
+        const labels=[
+          event.tool?'Tool: '+label(event.tool):'',
+          event.atlasOperationId?'Atlas operation: '+event.atlasOperationId:'',
+          event.selectedNodeId?'Selected node: '+event.selectedNodeId:'',
+          event.executingNodeId?'Executing node (reported receipt): '+event.executingNodeId:'',
+          event.agentRunId&&event.agentRunId!==event.taskId?'Agent run: '+event.agentRunId:'',
+          event.invocationId?'Invocation: '+event.invocationId:''
+        ].filter(Boolean);
+        if(labels.length)item.append(node('p','task-event-fields',labels.join(' · ')));
+      }
+      if(eventList.children[index]!==item)eventList.insertBefore(item,eventList.children[index]??null);
+    }
+    const placeholder=eventList.querySelector('.task-events-empty');
+    if(!items.length){
+      const emptyText=eventMore?'Scanning activity history…':'No recorded events yet.';
+      if(!placeholder)eventList.append(node('p','task-feedback task-events-empty',emptyText));
+      else placeholder.textContent=emptyText;
+    } else placeholder?.remove();
+    if(eventMoreButton) {
+      eventMoreButton.hidden=!eventMore;
+      eventMoreButton.disabled=eventLoading;
+    }
+  }
+  async function loadEvents() {
+    if(eventLoading||!selected||!selectedData||!visible)return;
+    const generation=detailEpoch;
+    const taskId=selected;
+    const conversationId=selectedData.task.conversationId;
+    eventLoading=true;
+    try {
+      const seen=new Set(events.map(event=>event.id));
+      // Existing /sessions/:id/events returns up to 500 events per page across
+      // ALL tasks in that conversation. Walk a bounded number of pages per tick
+      // so activity for a child task is not stranded behind unrelated events.
+      for(let page=0;page<4;page++) {
+        const replay=await read<{events:ExecutionEvent[];nextCursor:number;hasMore:boolean}>('/sessions/'+conversationId+'/events?after='+eventCursor);
+        if(!visible||generation!==detailEpoch||selected!==taskId)return;
+        if(!Number.isSafeInteger(replay.nextCursor)||replay.nextCursor<eventCursor||
+            replay.hasMore&&replay.nextCursor===eventCursor)throw new Error('Invalid activity cursor');
+        for(const event of replay.events) {
+          if(event.taskId!==taskId||event.type==='delta'||seen.has(event.id))continue;
+          seen.add(event.id);events.push(event);
+        }
+        if(events.length>120)events=events.slice(-120);
+        eventCursor=replay.nextCursor;
+        eventMore=replay.hasMore;
+        if(!eventMore)break;
+      }
+      renderEvents();
+    } catch(error) {
+      if(generation===detailEpoch&&eventList)eventList.append(node('p','task-error','Activity unavailable: '+errorText(error)));
+    } finally {
+      if(generation===detailEpoch) {
+        eventLoading=false;
+        if(eventMoreButton) {eventMoreButton.hidden=!eventMore;eventMoreButton.disabled=false;}
+      }
+    }
+  }
+  async function inspect(id:string) {
+    selected=id;
+    detailEpoch++;
+    const generation=detailEpoch;
+    events=[];eventCursor=0;eventMore=false;eventLoading=false;
+    selectedData=null;selectedFingerprint='';
+    renderRows();
+    detail.replaceChildren(node('p','task-feedback','Loading task…'));
+    try {
+      const data=await read<Detail>('/task-console/tasks/'+id);
+      if(!visible||generation!==detailEpoch)return;
+      drawDetail(data);
+      await loadEvents();
+    } catch(error) {
+      if(generation===detailEpoch)detail.replaceChildren(node('p','task-error','Task unavailable: '+errorText(error)));
+    }
+  }
+  async function mutate(path:string,payload:Record<string,unknown>,id:string,retry=false) {
+    if(busyAction||!visible||selected!==id||selectedData?.task.id!==id)return;
+    const generation=detailEpoch;
+    busyAction=true;
+    try {
+      const response=await read<{task?:Task}>(path,{method:'POST',body:JSON.stringify(payload)});
+      if(!visible||generation!==detailEpoch||selected!==id)return;
+      if(mode==='live')await loadLive();
+      if(!visible||generation!==detailEpoch||selected!==id)return;
+      if(retry&&response.task) {
+        message('Retry queued in a new conversation.');
+        await inspect(response.task.id);
+      } else await inspect(id);
+    } catch(error) {
+      if(generation===detailEpoch&&selected===id) {
+        message('Action not confirmed: '+errorText(error));
+        await inspect(id);
+      }
+    } finally {busyAction=false;}
+  }
+  async function refreshSelected() {
+    if(!selected||!visible||busyAction)return;
+    const id=selected,generation=detailEpoch;
+    try {
+      const data=await read<Detail>('/task-console/tasks/'+id);
+      if(!visible||generation!==detailEpoch)return;
+      // Selection is independent of list scope, including related tasks
+      // and tasks whose state changes while browsing frozen history.
+      if(detailVersion(data)!==selectedFingerprint)drawDetail(data);
+      // Continue any partial replay on every visible poll; once caught up,
+      // the same cursor also picks up new task events.
+      await loadEvents();
+    } catch(error) {
+      if(generation!==detailEpoch||!visible)return;
+      // Detached buttons must also be inert: their callbacks are gated by
+      // selectedData, not just by whether the action panel remains mounted.
+      detailEpoch++;
+      selectedData=null;selectedFingerprint='';selectedStructure='';
+      events=[];eventLoading=false;
+      detail.replaceChildren(node('p','task-feedback','Task details unavailable. Refresh to retry.'));
+      eventList=null;eventMoreButton=null;
+      message('Task details may be stale: '+errorText(error));
+    }
+  }
+  function schedule() {
+    if(timer)clearTimeout(timer);
+    if(!visible)return;
+    timer=setTimeout(async()=>{
+      if(visible&&document.visibilityState!=='hidden') {
+        if(mode==='live')await loadLive();
+        else await checkHistoryUpdates();
+        await refreshSelected();
+      }
+      schedule();
+    },4000);
+  }
+  async function show() {
+    if(visible)return;
+    visible=true;root.hidden=false;
+    try {await loadConversations();} catch(error) {message('Conversations unavailable: '+errorText(error));}
+    await reset();
+    schedule();
+  }
+  function hide() {
+    visible=false;root.hidden=true;
+    listEpoch++;detailEpoch++;
+    if(timer)clearTimeout(timer);
+    timer=undefined;
+  }
+  search.oninput=renderRows;
+  conversationFilter.onchange=()=>{conversation=conversationFilter.value;void reset();};
+  more.onclick=()=>{void older();};
+  byId('taskRefresh').onclick=()=>{
+    void (async()=>{
+      try {await loadConversations();}
+      catch(error) {message('Conversations unavailable: '+errorText(error));}
+      await reset();
+    })();
+  };
+  return {show,hide,get visible(){return visible;}};
+}
++cost.toFixed(4)+(usage.some(u=>u.costKind==='estimated')?' estimated':''):'cost unavailable';
+    return 'Usage: '+tokens+' tokens'+(incomplete?' (incomplete)':'')+' · '+costLabel;
   }
   function drawDetail(data:Detail) {
+    const task=data.task;
+    const structure=detailStructureVersion(data);
+    const oldResult=detail.querySelector('.task-result') as HTMLElement|null;
+    const oldUsage=detail.querySelector('.task-usage') as HTMLElement|null;
+    // Ordinary streaming output and usage receipts must not replace the
+    // selected pane: preserve scroll position, focused controls and open
+    // approval disclosures by mutating only the changing text nodes.
+    if(selectedData?.task.id===task.id&&selectedStructure===structure&&oldResult&&oldUsage) {
+      const scrollTop=oldResult.scrollTop;
+      if(oldResult.textContent!==task.result)oldResult.textContent=task.result;
+      oldResult.hidden=!task.result;
+      oldResult.scrollTop=scrollTop;
+      const usage=usageText(task.usage);
+      if(oldUsage.textContent!==usage)oldUsage.textContent=usage;
+      oldUsage.hidden=!task.usage.length;
+      selectedData=data;
+      selectedFingerprint=detailVersion(data);
+      return;
+    }
+    const previousScrollTop=selectedData?.task.id===task.id&&oldResult?oldResult.scrollTop:0;
     selectedData=data;
     selectedFingerprint=detailVersion(data);
-    const task=data.task;
+    selectedStructure=structure;
     detail.replaceChildren();
     const heading=node('div','task-detail-head','');
     heading.append(node('h2','',short(task.prompt,180)||'Untitled task'),node('span','task-status state-'+task.state,label(task.state)));
@@ -467,7 +741,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       // Detached buttons must also be inert: their callbacks are gated by
       // selectedData, not just by whether the action panel remains mounted.
       detailEpoch++;
-      selectedData=null;selectedFingerprint='';
+      selectedData=null;selectedFingerprint='';selectedStructure='';
       events=[];eventLoading=false;
       detail.replaceChildren(node('p','task-feedback','Task details unavailable. Refresh to retry.'));
       eventList=null;eventMoreButton=null;
