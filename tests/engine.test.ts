@@ -151,3 +151,22 @@ test('provider rate limit shows actionable safe error without retrying',async()=
     assert.doesNotMatch(task.error||'',/credentials|secret|Bearer /i);
   } finally {await engine.stop();store.close();}
 });
+
+test('local model choice persists through execution and explicit reconciliation retry',async()=>{
+  const store=new Store(':memory:');
+  const registry={defaultKey:'openrouter/cohere/north-mini-code:free',models:[{key:'openrouter/cohere/north-mini-code:free',provider:'openrouter' as const,id:'cohere/north-mini-code:free',label:'Cloud'},{key:'ollama/qwen3:4b',provider:'ollama' as const,id:'qwen3:4b',label:'MacBook'}],ollama:{baseUrl:'http://127.0.0.1:11434/v1',modelIds:['qwen3:4b']}};
+  const chosen:string[]=[];
+  const engine=new Engine(store,fixtureHarness(async request=>{chosen.push(request.modelKey||'missing');throw new Error('fixture failure');}),limits,undefined,{},registry);
+  try{
+    assert.throws(()=>engine.conversation('ollama/missing'),/Invalid model selection/);
+    const conversation=engine.conversation('ollama/qwen3:4b');
+    assert.equal(store.get<{modelKey?:string}>('conversations',conversation.id)?.modelKey,'ollama/qwen3:4b');
+    const original=engine.enqueue(conversation.id,'local test','local-choice-001');
+    await until(()=>engine.tasks().find(t=>t.id===original.id)?.state==='failed');
+    assert.deepEqual(chosen,['ollama/qwen3:4b']);
+    const retry=engine.retry(original.id,true);
+    await until(()=>engine.tasks().find(t=>t.id===retry.id)?.state==='failed');
+    assert.deepEqual(chosen,['ollama/qwen3:4b','ollama/qwen3:4b']);
+    assert.equal(store.get<{modelKey?:string}>('conversations',retry.conversationId)?.modelKey,'ollama/qwen3:4b');
+  }finally{await engine.stop();store.close();}
+});
