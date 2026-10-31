@@ -105,9 +105,16 @@ async function refresh(){
       item.disabled=offline;
       picker.append(item);
     }
-    picker.value=configuredModels.some(x=>x.key===previous)?previous:(state.defaultModelKey??configuredModels[0].key);
+    const pinned=list.sessions.find(c=>c.id===current)?.modelKey;
+    if(pinned?.startsWith('ollama/')&&!configuredModels.some(x=>x.key===pinned)){
+      const missing=document.createElement('option');missing.value=pinned;
+      missing.textContent='MacBook · '+pinned.slice(7)+' (not installed)';
+      missing.disabled=true;picker.append(missing);
+    }
+    picker.value=configuredModels.some(x=>x.key===previous)?previous:(pinned&&[...picker.options].some(x=>x.value===pinned)?pinned:(state.defaultModelKey??configuredModels[0].key));
   }
-  $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===$<HTMLSelectElement>('modelPicker').value)?.label??state.model);
+  const active=$<HTMLSelectElement>('modelPicker').value;
+  $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===active)?.label??(active.startsWith('ollama/')?'MacBook · '+active.slice(7)+' (unavailable)':state.model));
   $('connection').textContent='Pi connected';
   $('subtitle').textContent=state.atlas==='configured'?'Connected to Atlas · '+configuredModels.filter(m=>!m.key.startsWith('ollama/')||state.ollamaOnline!==false).length+' models available':'Atlas not configured';
   $('atlasSummary').title=state.atlas==='configured'?'Atlas MCP configured':'Atlas MCP is not configured';
@@ -160,8 +167,13 @@ function render(data:Snapshot){
   }
   $('title').textContent=data.session.title;
   const picker=$<HTMLSelectElement>('modelPicker');
-  if(data.session.modelKey&&configuredModels.some(m=>m.key===data.session.modelKey))picker.value=data.session.modelKey;
-  $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===picker.value)?.label??'OpenRouter');
+  if(data.session.modelKey&&!configuredModels.some(m=>m.key===data.session.modelKey)&&![...picker.options].some(x=>x.value===data.session.modelKey)){
+    const missing=document.createElement('option');missing.value=data.session.modelKey;
+    missing.textContent=(data.session.modelKey.startsWith('ollama/')?'MacBook · '+data.session.modelKey.slice(7):data.session.modelKey)+' (not installed)';
+    missing.disabled=true;picker.append(missing);
+  }
+  if(data.session.modelKey)picker.value=data.session.modelKey;
+  $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===picker.value)?.label??(picker.value.startsWith('ollama/')?'MacBook · '+picker.value.slice(7)+' (unavailable)':'OpenRouter'));
   $('cost').textContent=data.session.usage.tokens+' tokens'+(data.session.usage.unknown?' · usage incomplete':data.session.modelKey?.startsWith('ollama/')?' · local':' · $'+data.session.costUsd.toFixed(4));
   setBusy(data.session.busy);
   $('approvals').replaceChildren();
