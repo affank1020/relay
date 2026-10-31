@@ -34,7 +34,7 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
       const expected=Buffer.from(token);
       if(got.length!==expected.length||!timingSafeEqual(got,expected))return send(res,401,{error:'Invalid Relay token'});
       if(req.headers.origin && new URL(req.headers.origin).host!==req.headers.host)return send(res,403,{error:'Origin not permitted'});
-      if(path==='/api/status'&&req.method==='GET')return send(res,200,{harness:'Pi',provider:'OpenRouter',model,models:modelRegistry?.models??[],defaultModelKey:modelRegistry?.defaultKey,atlas:engine.gateway?'configured':'not configured',active:engine.tasks().filter(t=>['running','awaiting_approval'].includes(t.state)).length,maxActive:engine.limits.concurrency,usage:engine.usage(),limits:engine.limits});
+      if(path==='/api/status'&&req.method==='GET')return send(res,200,{harness:'Pi',provider:modelRegistry?.ollama?'OpenRouter + Ollama':'OpenRouter',model,models:modelRegistry?.models??[],defaultModelKey:modelRegistry?.defaultKey,atlas:engine.gateway?'configured':'not configured',active:engine.tasks().filter(t=>['running','awaiting_approval'].includes(t.state)).length,maxActive:engine.limits.concurrency,usage:engine.usage(),limits:engine.limits});
       if(path==='/api/sessions'&&req.method==='GET')return send(res,200,{sessions:engine.store.all<Conversation>('conversations').reverse().map(summary)});
       if(path==='/api/sessions'&&req.method==='POST'){
         const data=await body(req);
