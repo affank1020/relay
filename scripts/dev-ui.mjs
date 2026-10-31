@@ -64,13 +64,16 @@ const server=createServer(async(req,res)=>{
       const state=url.searchParams.get('state')||'all',conversation=url.searchParams.get('conversationId')||'';
       const limit=Number(url.searchParams.get('limit')||50),cursor=url.searchParams.get('cursor');
       if(!Number.isInteger(limit)||limit<1||limit>100)return json(res,400,{error:'Invalid task page limit'});
-      const scoped=tasks.filter(t=>!conversation||t.conversationId===conversation);
-      const counts=Object.fromEntries([...new Set(scoped.map(t=>t.state))].map(s=>[s,scoped.filter(t=>t.state===s).length]));
-      const ordered=[...scoped].reverse().filter(t=>state==='all'||t.state===state);
-      const from=cursor?Number(cursor):0;
-      if(!Number.isSafeInteger(from)||from<0)return json(res,400,{error:'Invalid task cursor'});
-      const page=ordered.slice(from,from+limit),hasMore=ordered.length>from+limit;
-      return json(res,200,{tasks:page,counts,hasMore,nextCursor:hasMore?String(from+limit):null});
+      const scoped=tasks.map((task,index)=>({task,rowid:index+1})).filter(row=>!conversation||row.task.conversationId===conversation);
+      const counts=Object.fromEntries([...new Set(scoped.map(row=>row.task.state))]
+        .map(state=>[state,scoped.filter(row=>row.task.state===state).length]));
+      const upper=cursor===null?null:Number(cursor);
+      if(upper!==null&&(!Number.isSafeInteger(upper)||upper<1))return json(res,400,{error:'Invalid task cursor'});
+      const eligible=[...scoped].reverse().filter(row=>(state==='all'||row.task.state===state)&&
+        (upper===null||row.rowid<upper));
+      const page=eligible.slice(0,limit),hasMore=eligible.length>limit;
+      return json(res,200,{tasks:page.map(row=>row.task),counts,hasMore,
+        nextCursor:hasMore?String(page[page.length-1].rowid):null});
     }
     const detail=path.match(/^\/api\/task-console\/tasks\/([a-f0-9-]+)$/);
     if(detail&&req.method==='GET'){
