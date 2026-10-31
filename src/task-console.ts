@@ -325,7 +325,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
         const item=node('div','task-approval','');
         const name=node('div','',label(approval.tool)+' · '+label(approval.state));
         item.append(name);
-        const disclosure=node('details','','');
+        const disclosure=node('details','task-approval-disclosure','');
         disclosure.append(node('summary','','Action arguments'));
         disclosure.append(node('pre','',JSON.stringify(approval.args,null,2)));
         item.append(disclosure);
