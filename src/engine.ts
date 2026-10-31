@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Type } from '@sinclair/typebox';
-import { Store, terminal, type Task, type Conversation, type Approval, type Usage } from './store.js';
+import { Store, terminal, type Task, type Conversation, type Approval, type Usage, type InvocationRecord } from './store.js';
 import { LocalProviderUnavailableError, ProviderRateLimitError, type Harness, type HarnessPhase } from './harness.js';
 import type { RelayModels } from './models.js';
 import type { CapabilityRegistry } from './capabilities.js';
@@ -15,6 +15,13 @@ export interface Limits { concurrency:number; queue:number; sessionUsd:number; g
 export class ConversationConflictError extends Error {}
 export class ConversationNotFoundError extends Error {}
 export class SessionCleanupError extends Error {}
+// Deletion and read-only reconciliation must agree on which side effects are
+// terminal. Only pre-dispatch denied GitHub writes are known to be harmless:
+// dispatched or uncertain mutations are never eligible for read reconciliation.
+const settledInvocation=(record:InvocationRecord):boolean=>
+  record.state==='completed' ||
+  (record.kind==='mcp_read' && ['failed_read','reconciled_read'].includes(record.state)) ||
+  (record.kind==='mcp_write' && record.state==='denied_before_dispatch');
 export class Engine {
   private active=new Map<string,AbortController>();
   private scheduled=false;
@@ -42,6 +49,20 @@ export class Engine {
         }
       }
       for(const approval of store.all<Approval>('approvals'))if(approval.state==='pending') { approval.state='rejected';store.save('approvals',approval); }
+      // A GitHub write remains strictly pre-dispatch until its ledger state
+      // becomes 'dispatched', synchronously before the network call. Crashes
+      // during user review cannot leave an ambiguous pending write forever.
+      // Dispatched/uncertain records are NEVER downgraded or replayed.
+      for(const row of store.db.prepare('SELECT id,data FROM invocations').all()){
+        const record=JSON.parse(String(row.data)) as {id:string;taskId?:string;kind?:string;state?:string;
+          toolName?:string;invocationId?:string};
+        if(record.kind!=='mcp_write'||record.state!=='validating')continue;
+        store.save('invocations',{...record,state:'denied_before_dispatch'});
+        const task=record.taskId?store.get<Task>('tasks',record.taskId):undefined;
+        if(task)store.event(task.conversationId,{taskId:task.id,agentId:task.agentId??null,
+          agentRunId:task.agentRunId??null,tool:record.toolName??null,
+          invocationId:record.invocationId??null,type:'tool',state:'denied'});
+      }
     });
   }
   start() {
@@ -123,8 +144,7 @@ export class Engine {
     if(this.store.all<Approval>('approvals').some(a=>removed.has(a.taskId)&&a.state==='pending'))
       throw new ConversationConflictError('Conversation has pending approvals');
     const outstanding=all.filter(t=>removed.has(t.id)).flatMap(t=>this.store.invocationRecords(t.id))
-      .filter(r=>r.state!=='completed' &&
-        !(r.kind==='mcp_read'&&['failed_read','reconciled_read'].includes(r.state)));
+      .filter(r=>!settledInvocation(r));
     if(outstanding.length) {
       if(outstanding.every(r=>r.kind==='mcp_read'&&['uncertain','dispatched','validating'].includes(r.state)))
         throw new ConversationConflictError('Conversation has uncertain read-only MCP invocations');
@@ -179,8 +199,7 @@ export class Engine {
     if(this.store.all<Approval>('approvals').some(a=>a.state==='pending'&&owned.some(t=>t.id===a.taskId)))
       throw new ConversationConflictError('Conversation has pending approvals');
     const records=owned.flatMap(task=>this.store.invocationRecords(task.id).map(record=>({task,record})));
-    const blocking=records.filter(({record})=>record.state!=='completed' &&
-      !(record.kind==='mcp_read'&&['failed_read','reconciled_read'].includes(record.state)));
+    const blocking=records.filter(({record})=>!settledInvocation(record));
     if(blocking.some(({record})=>record.kind!=='mcp_read' ||
         !['uncertain','dispatched','validating'].includes(record.state)))
       throw new ConversationConflictError('Conversation has uncertain tool invocations');
@@ -190,8 +209,8 @@ export class Engine {
       for(const {task,record} of blocking){
         this.store.save('invocations',{...record,state:'reconciled_read',
           reconciledAt:new Date().toISOString()});
-        this.store.event(conversationId,{taskId:task.id,agentRunId:task.id,
-          invocationId:record.invocationId??null,tool:record.toolName??null,
+        this.store.event(conversationId,{taskId:task.id,agentId:task.agentId??null,
+          agentRunId:task.agentRunId??null,invocationId:record.invocationId??null,tool:record.toolName??null,
           type:'reconciliation',state:'read_reconciled'});
       }
     });
@@ -412,8 +431,13 @@ export class Engine {
         // An MCP tool is read-authorized because the server-side registry
         // admitted it, NOT because a tool name happens to start with mcp_.
         // Children receive only their exact delegated read-only subset.
-        const discovered=await this.capabilities.tools(task,this.store,controller.signal);
-        for(const tool of discovered)registryReadNames.add(tool.name);
+        const discovered=await this.capabilities.tools(task,this.store,controller.signal,
+          (...args)=>this.approve(...args));
+        // Only read tools may become child-admissible by name. A root GitHub
+        // write is explicitly not inheritable even when the root has consent.
+        for(const tool of discovered)
+          if(!['mcp_github_create_issue','mcp_github_add_issue_comment'].includes(tool.name))
+            registryReadNames.add(tool.name);
         tools.push(...discovered);
       }
       const admitted=tools.filter(tool=>registryReadNames.has(tool.name) ||
@@ -599,14 +623,26 @@ export class Engine {
     const approval:Approval={id:randomUUID(),taskId:task.id,invocationId,tool,args,state:'pending'};
     this.store.save('approvals',approval);task.state='awaiting_approval';this.store.save('tasks',task);
     this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.agentRunId??null,agentId:task.agentId??null,invocationId,type:'approval',tool,state:'pending'});
-    while(true) {
-      signal.throwIfAborted();
-      const current=this.store.get<Approval>('approvals',approval.id)!;
-      if(current.state!=='pending') {
-        if(current.state==='rejected')throw new Error('Approval rejected');
-        task.state='running';this.store.save('tasks',task);return;
+    try {
+      while(true) {
+        signal.throwIfAborted();
+        const current=this.store.get<Approval>('approvals',approval.id)!;
+        if(current.state!=='pending') {
+          if(current.state==='rejected')throw new Error('Approval rejected');
+          task.state='running';this.store.save('tasks',task);return;
+        }
+        await delay(200,undefined,{signal});
       }
-      await delay(200,undefined,{signal});
+    }catch(error){
+      // Aborted/killed tasks must not leave an actionable approval in the UI.
+      const current=this.store.get<Approval>('approvals',approval.id);
+      if(current?.state==='pending'){
+        current.state='rejected';
+        this.store.save('approvals',current);
+        this.store.event(task.conversationId,{taskId:task.id,agentId:task.agentId??null,
+          agentRunId:task.agentRunId??null,invocationId,tool,type:'approval',state:'rejected'});
+      }
+      throw error;
     }
   }
   decide(id:string,approved:boolean) {
@@ -614,7 +650,8 @@ export class Engine {
     const task=this.store.get<Task>('tasks',a.taskId)!;
     if(task.state!=='awaiting_approval')throw new Error('Task is not awaiting approval');
     a.state=approved?'approved':'rejected';this.store.save('approvals',a);
-    this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,invocationId:a.invocationId,type:'approval',tool:a.tool,state:a.state});
+    this.store.event(task.conversationId,{taskId:task.id,agentId:task.agentId??null,
+      agentRunId:task.agentRunId??null,invocationId:a.invocationId,type:'approval',tool:a.tool,state:a.state});
     return a;
   }
   async stop() { this.stopped=true;for(const c of this.active.values())c.abort();await Promise.allSettled(this.jobs); }

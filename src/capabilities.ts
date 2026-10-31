@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { TrustedSkills } from './skills/registry.js';
 import { fetchPinnedGitSkill, skillDigest, validRecord, SkillPackageError,
   type GitSkillCandidate, type ReviewedGitSkill } from './skills/git.js';
-import { configuredProviders, ConnectionManager, type ProviderConfig, type ProviderTransport } from './integrations/manager.js';
+import { configuredProviders, ConnectionManager, type ProviderConfig, type ProviderTransport, type WriteApproval } from './integrations/manager.js';
 import type { Store, Task } from './store.js';
 
 interface Settings {
@@ -70,7 +70,9 @@ export class CapabilityRegistry {
   }
   async list(){return {skills:await this.skills.list(),integrations:this.connections.list()};}
   async skillPaths(){return this.skills.permittedPaths();}
-  async tools(task:Task,store:Store,signal:AbortSignal){return this.connections.tools(task,store,signal);}
+  async tools(task:Task,store:Store,signal:AbortSignal,approve?:WriteApproval){
+    return this.connections.tools(task,store,signal,approve);
+  }
   async update(kind:'skills'|'integrations',id:string,enabled:boolean){
     if(typeof enabled!=='boolean'||!(kind==='skills'?this.skills.contains(id):this.connections.contains(id)))
       throw new SkillPackageError('Unknown capability',404);

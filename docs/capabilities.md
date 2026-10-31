@@ -65,8 +65,10 @@ a PAT or permit the agent to install a Skill itself.
 The built-in GitHub provider uses the official Streamable HTTP endpoint:
 https://api.githubcopilot.com/mcp/
 
-Set RELAY_GITHUB_TOKEN to a read-scoped personal access token **on the server**
-only, then enable GitHub through Skills & integrations. No credential is returned
+Set RELAY_GITHUB_TOKEN to a minimally scoped token **on the server** only,
+then enable GitHub through Skills & integrations. For read-only use, grant only
+read privileges; GitHub mutations additionally require operator write-repository
+scope and separate per-operation approval (documented below). No credential is returned
 by the API, browser, tool receipt or log. Keep token scope as narrow as possible,
 and grant private repository access only if you intend the model to see it.
 
@@ -83,10 +85,11 @@ tool inventory are bounded. Extra providers must use recognised read verbs.
 External servers and schema metadata remain untrusted: an operator must
 review each provider's actual side-effect behaviour before allowing it.
 
-At runtime, Relay admits only exact configured read tools from live discovery;
-schema checks and revocation are enforced again on invocation. No automatic
-MCP write or new Skill installation is implemented. GitHub mutation will require
-a separate explicit user approval and auditable policy in a later slice.
+At runtime, Relay admits only exact configured read tools and, when explicitly
+operator-enabled, the narrow GitHub issue write operations from live discovery;
+schema checks and revocation are enforced again on invocation. All generic MCP
+providers remain read-only. No model-driven installation or broad MCP mutation
+policy exists.
 
 Receipts use provider, invocation, task and current run identity, lifecycle and
 safe timestamps. Generic event payloads do not include arguments, results or
@@ -103,7 +106,7 @@ offline providers and redaction. GitHub CI verifies the production container.
 A live credentialed GitHub MCP smoke needs an operator-owned token and a
 user-selected read-only repository; fixtures alone do not establish that.
 
-Current omissions: private Git Skill imports, explicit write approval,
+Current omissions: private Git Skill imports, broader GitHub mutation permissions,
 per-agent scoped grants beyond global opt-in, live remote credential validation,
 MCP provider reconnect/health beyond discovery status and conversation memory.
 
@@ -114,7 +117,7 @@ MCP provider reconnect/health beyond discovery status and conversation memory.
 | Normal chat, persisted sessions, rename/delete | Implemented | Resume/reconnect robustness tracked in #25 |
 | Hosted/local model choices | Implemented baseline | More model policies and provider resilience |
 | Skills | Bundled opt-in text Skills + reviewed immutable public GitHub snapshots | Private/internal sources, granular scope grants |
-| MCP | Restricted server-side read adapters in this slice | Explicit GitHub write approval |
+| MCP | Restricted read adapters plus exact-repository approved GitHub issue writes | More mutation types with independent policies |
 | Memory/preferences | Missing | Separate, source-attributed user-controlled store |
 | Attachments and file handling | Missing | Upload/storage, content validation and deletion |
 | Multimodal input | Missing | Image/audio paths with clear retention |
@@ -153,3 +156,35 @@ without the transcript, arguments, tool output, or invocation IDs. The endpoint 
 interrupted or unknown operations and never reconciles Atlas tool actions or
 unclassified invocation records. This acknowledges uncertain *read receipts*,
 not successful execution, and it does not silently reissue a tool call.
+
+
+## GitHub write approvals (issue creation and issue/PR comments)
+
+GitHub mutation is **disabled by default**, regardless of the credential's scope.
+An operator must configure a minimally scoped RELAY_GITHUB_TOKEN and set
+RELAY_GITHUB_WRITE_REPOS to up to eight exact comma-separated owner/repo entries.
+No wildcard, browser endpoint, organization-wide or model-provided permission
+is accepted. The user must also enable GitHub under Skills & integrations.
+
+Only GitHub's discovered create_issue and add_issue_comment MCP tools are
+eligible. The server rechecks exact repository, operation, argument shape,
+body/title limits and current integration enablement on invocation and after
+approval. No other GitHub mutations, and no third-party provider mutations,
+are admitted. Only root agent sessions can receive these write tools; children
+and inference-only join continuations do not inherit mutation permissions.
+
+For every operation, the task pauses and the existing authenticated approval
+interface shows the exact repository, issue number/title and content. No
+lasting grant is established. A rejected, cancelled or revoked operation
+before dispatch is recorded as denied_before_dispatch and never sent; this
+known terminal denial does not prevent chat deletion. Approved requests are
+marked dispatched before calling GitHub. A successful returned response
+produces a terminal receipt without persisting raw response content in event
+telemetry. A transport timeout, provider error, cancellation or ambiguous
+outcome after dispatch is *uncertain*: no automatic replay or retry. Such
+records block conversation deletion and require operator investigation of the
+actual GitHub issue before any further action. No automatic write-side-effect
+reconciliation is provided in this slice.
+
+Production credential smoke is **not** implied by fixture tests. Verify with a
+restricted test repository and a deliberately scoped operator credential.
