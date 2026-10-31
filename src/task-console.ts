@@ -62,32 +62,19 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   let status='all';
   let conversation='';
   let selected:string|null=null;
-  // Relation links intentionally open tasks outside the active list filters.
-  let inspectingRelation=false;
-  let pinnedId:string|null=null;
   let selectedData:Detail|null=null;
   let selectedFingerprint='';
+  // Live replaces only the newest page. History freezes loaded rows and
+  // moves ONE exclusive cursor strictly toward older persisted row IDs.
+  let mode:'live'|'history'='live';
   let cursor:string|null=null;
   let hasMore=false;
-  let paginationInitialized=false;
-  let newestBoundary:number|null=null;
-  // The deep-history cursor must advance independently of gaps created when
-  // new tasks push rows off the first page.
-  let gapFloor:number|null=null;
-  let gapCursor:string|null=null;
-  let gapScanStart:number|null=null;
-  // An older task may join an already-exhausted state filter. A separate
-  // deliberate rescan can discover it without discarding the loaded history.
-  let membershipCursor:string|null=null;
-  let matchingCount=0;
-  let pagingRevision=0;
   let initialPageLoaded=false;
-  let olderCheckOffset=0;
-  let newestIds=new Set<string>();
-  let olderIds=new Set<string>();
+  let liveFingerprint='';
   let listEpoch=0;
   let detailEpoch=0;
   let pendingEpoch=-1;
+  let loadingOlder=false;
   let timer:ReturnType<typeof setTimeout>|undefined;
   let events:ExecutionEvent[]=[];
   let eventCursor=0;
@@ -113,7 +100,6 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   }
   function countView(counts:Counts) {
     const sum=states.reduce((total,state)=>total+(counts[state]??0),0);
-    matchingCount=status==='all'?sum:counts[status as State]??0;
     for(const state of filters) {
       const value=countNodes.get(state);
       if(value)value.textContent=String(state==='all'?sum:counts[state as State]??0);
@@ -122,17 +108,12 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       control?.setAttribute('aria-pressed',String(state===status));
     }
   }
-  function needsMembershipScan() {
-    // Only after exhausting the deep frontier. A count difference means that
-    // some previously out-of-filter old task may now match.
-    if(!paginationInitialized||hasMore||gapCursor!==null||
-        newestBoundary!==null&&gapFloor!==null&&newestBoundary>gapFloor)return false;
-    let loaded=0;
-    for(const task of tasks.values()) {
-      if((status==='all'||task.state===status)&&
-          (!conversation||task.conversationId===conversation))loaded++;
-    }
-    return matchingCount>loaded;
+  function fingerprint(page:Page) {
+    return JSON.stringify([page.tasks.map(task=>[task.id,task.state]),
+      states.map(state=>page.counts[state]??0)]);
+  }
+  function historyNotice(updates=false) {
+    message(updates?'New task updates available · Refresh':'History · Refresh for latest tasks');
   }
   function renderRows() {
     const needle=search.value.trim().toLowerCase();
@@ -169,8 +150,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     if(!filtered.length&&initialPageLoaded) {
       if(!placeholder)list.append(node('p','task-feedback task-rows-empty','No tasks match this filter.'));
     } else placeholder?.remove();
-    more.hidden=!(hasMore||gapCursor!==null||membershipCursor!==null||needsMembershipScan()||
-      (newestBoundary!==null&&gapFloor!==null&&newestBoundary>gapFloor));
+    more.hidden=!hasMore;
+    more.disabled=loadingOlder;
   }
   async function loadConversations() {
     const response=await read<{sessions:Conversation[]}>('/sessions');
@@ -186,149 +167,75 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     conversationFilter.value=previous&&conversations.has(previous)?previous:'';
     conversation=conversationFilter.value;
   }
-  async function firstPage() {
-    if(pendingEpoch===listEpoch||!visible)return;
+  async function loadLive() {
+    if(pendingEpoch===listEpoch||!visible||mode!=='live')return;
     const generation=listEpoch;
     pendingEpoch=generation;
     try {
-      const response=await read<Page>(taskUrl(status as State,conversation));
-      if(generation!==listEpoch||!visible)return;
-      const incoming=new Set(response.tasks.map(task=>task.id));
-      if(pinnedId&&incoming.has(pinnedId))pinnedId=null;
-      if(!response.hasMore) {
-        // An exhaustive filtered page is authoritative, including for any
-        // previously loaded older rows.
-        for(const id of tasks.keys())if(!incoming.has(id))tasks.delete(id);
-        olderIds.clear();
-        if(selected&&!incoming.has(selected)&&!inspectingRelation)clearSelection();
-        if(cursor!==null||hasMore||gapCursor!==null||newestBoundary!==null)pagingRevision++;
-        cursor=null;hasMore=false;paginationInitialized=true;newestBoundary=null;
-        gapFloor=null;gapCursor=null;gapScanStart=null;membershipCursor=null;
-      } else {
-        const boundary=Number(response.nextCursor);
-        if(!Number.isSafeInteger(boundary)||boundary<1)
-          throw new Error('Invalid newest-page cursor');
-        const missing=[...newestIds].filter(id=>!incoming.has(id));
-        const pinned=selected&&missing.includes(selected)&&!olderIds.has(selected)?selected:null;
-        if(pinned)pinnedId=pinned;
-
-        // Automatically displaced rows are not automatically loaded history.
-        // Drop them from the DOM and cache; pagination is rebased to include
-        // them again on demand. Keep only one actively selected/pinned row.
-        for(const id of missing)if(!olderIds.has(id)&&id!==pinned)tasks.delete(id);
-
-        // Manually paged older rows are retained by user choice. Periodically
-        // reconcile their states with a bounded read-only projection.
-        const older=[...olderIds].filter(id=>!incoming.has(id));
-        const capacity=50-(pinned?1:0);
-        const checkOlder:string[]=[];
-        if(capacity>0&&older.length) {
-          for(let i=0;i<Math.min(capacity,older.length);i++)
-            checkOlder.push(older[(olderCheckOffset+i)%older.length]);
-          olderCheckOffset=(olderCheckOffset+checkOlder.length)%older.length;
-        }
-        const check=pinned?[pinned,...checkOlder]:checkOlder;
-        if(check.length) {
-          if(pinned&&status!=='all') {
-            selectedFingerprint='';
-            detail.replaceChildren(node('p','task-feedback','Checking task state…'));
-            eventList=null;eventMoreButton=null;
-          }
-          const responseStates=await read<{states:Record<string,{state:State;conversationId:string}>}>(
-            '/task-console/task-states?ids='+encodeURIComponent(check.join(',')));
-          if(generation!==listEpoch||!visible)return;
-          for(const id of check) {
-            const state=responseStates.states[id];
-            if(!state||(status!=='all'&&state.state!==status)||
-                (conversation&&state.conversationId!==conversation)) {
-              tasks.delete(id);olderIds.delete(id);
-              if(selected===id)clearSelection();
-            } else {
-              const cached=tasks.get(id);
-              if(cached)tasks.set(id,{...cached,state:state.state});
-            }
-          }
-        }
-
-        // Only initialize the deep history frontier once per filter reset.
-        // Polls that move the newest-page boundary never rewind it. Any gap
-        // between the initial and current boundary is separately pageable
-        // after the deep history has been read.
-        if(!paginationInitialized||gapFloor===null) {
-          // This includes the normal 50→51 transition after an initially
-          // exhaustive page: the first nonexhaustive response creates history.
-          cursor=response.nextCursor;hasMore=true;
-          paginationInitialized=true;
-          gapFloor=boundary;
-        }
-        newestBoundary=Math.max(newestBoundary??boundary,boundary);
-      }
-      newestIds=incoming;
-      for(const task of response.tasks) {
-        tasks.set(task.id,task);
-        olderIds.delete(task.id);
-      }
+      const page=await read<Page>(taskUrl(status,conversation));
+      if(generation!==listEpoch||!visible||mode!=='live')return;
+      // No automatic history accumulation. If a task falls off the newest
+      // page, it is recovered only by a deliberate history paging action.
+      tasks.clear();
+      for(const task of page.tasks)tasks.set(task.id,task);
+      cursor=page.nextCursor;hasMore=page.hasMore;
+      liveFingerprint=fingerprint(page);
       initialPageLoaded=true;
-      countView(response.counts);
+      countView(page.counts);
       message('');
       renderRows();
     } catch(error) {
-      if(generation===listEpoch)message('Connection unavailable — displaying last received task data. '+errorText(error));
-    } finally {if(pendingEpoch===generation)pendingEpoch=-1;}
+      if(generation===listEpoch&&mode==='live')message('Connection unavailable: '+errorText(error));
+    } finally {
+      if(pendingEpoch===generation)pendingEpoch=-1;
+    }
+  }
+  async function checkHistoryUpdates() {
+    if(!visible||mode!=='history')return;
+    const generation=listEpoch;
+    try {
+      const page=await read<Page>(taskUrl(status,conversation));
+      if(generation!==listEpoch||!visible||mode!=='history')return;
+      // The history snapshot and counts stay untouched; only the notice is
+      // updated. State changes and new tasks appear after explicit Refresh.
+      historyNotice(fingerprint(page)!==liveFingerprint);
+    } catch(error) {
+      if(generation===listEpoch&&mode==='history')
+        message('History · Update check unavailable: '+errorText(error));
+    }
   }
   async function older() {
-    if(!visible||pendingEpoch===listEpoch||more.disabled)return;
-    const deep=hasMore&&cursor!==null;
-    let kind:'deep'|'gap'|'membership'=deep?'deep':'gap';
-    if(!deep&&gapCursor===null) {
-      if(newestBoundary!==null&&gapFloor!==null&&newestBoundary>gapFloor) {
-        // A fixed high-water mark prevents new inserts restarting the gap scan.
-        gapScanStart=newestBoundary;
-        gapCursor=String(newestBoundary);
-      } else kind='membership';
-    }
-    if(kind==='membership'&&membershipCursor===null) {
-      if(!needsMembershipScan()||newestBoundary===null)return;
-      // Reconcile an older task becoming eligible after the deep cursor
-      // reached EOF. Continue scanning on deliberate clicks, not background
-      // polls, so loaded history and memory remain under user control.
-      membershipCursor=String(newestBoundary);
-    }
-    const pageCursor=kind==='deep'?cursor!:kind==='gap'?gapCursor!:membershipCursor!;
-    const generation=listEpoch,revision=pagingRevision;
-    more.disabled=true;
+    if(!visible||!hasMore||!cursor||loadingOlder)return;
+    // Enter history immediately so an in-flight live poll cannot replace
+    // the frozen first page while the first older request is pending.
+    mode='history';
+    historyNotice();
+    loadingOlder=true;
+    renderRows();
+    const generation=listEpoch,requestedCursor=cursor;
     try {
-      const url=taskUrl(status as State,conversation)+'&cursor='+encodeURIComponent(pageCursor);
-      const response=await read<Page>(url);
-      if(generation!==listEpoch||revision!==pagingRevision||!visible)return;
-      for(const task of response.tasks){
-        tasks.set(task.id,task);
-        if(!newestIds.has(task.id))olderIds.add(task.id);
-      }
-      if(kind==='deep') {
-        cursor=response.nextCursor;hasMore=response.hasMore;
-      } else if(kind==='gap') {
-        // The gap ends once we reach the oldest boundary already covered by
-        // deep history, even if the returned page overlaps known task IDs.
-        const next=Number(response.nextCursor);
-        if(response.hasMore&&Number.isSafeInteger(next)&&next>gapFloor!) {
-          gapCursor=response.nextCursor;
-        } else {
-          gapFloor=gapScanStart;
-          gapCursor=null;gapScanStart=null;
-        }
-      } else {
-        membershipCursor=response.hasMore?response.nextCursor:null;
-      }
+      const url=taskUrl(status,conversation)+'&cursor='+encodeURIComponent(requestedCursor);
+      const page=await read<Page>(url);
+      if(generation!==listEpoch||!visible||mode!=='history')return;
+      // Reject nonadvancing or malformed cursor responses rather than creating
+      // an endless older-page loop. Repeated IDs are deduplicated by Map.
+      if(page.hasMore&&(!page.nextCursor||!/^\\d+$/.test(page.nextCursor)||
+          Number(page.nextCursor)>=Number(requestedCursor)))
+        throw new Error('Invalid task page cursor');
+      for(const task of page.tasks)tasks.set(task.id,task);
+      cursor=page.nextCursor;hasMore=page.hasMore;
       renderRows();
-    } catch(error) {message(errorText(error));}
-    finally {more.disabled=false;}
+    } catch(error) {
+      if(generation===listEpoch&&mode==='history')message('History unavailable: '+errorText(error));
+    } finally {
+      if(generation===listEpoch){
+        loadingOlder=false;
+        renderRows();
+      }
+    }
   }
   function clearSelection() {
-    // Invalidate any pending detail or event request before removing actionable controls.
-    inspectingRelation=false;
-    if(pinnedId&&!newestIds.has(pinnedId)&&!olderIds.has(pinnedId))tasks.delete(pinnedId);
-    pinnedId=null;
+    // Invalidate pending detail/event reads and detached mutation callbacks.
     detailEpoch++;
     selected=null;selectedData=null;selectedFingerprint='';
     events=[];eventCursor=0;eventMore=false;eventLoading=false;
@@ -337,15 +244,13 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   }
   async function reset() {
     listEpoch++;
+    mode='live';
     clearSelection();
-    cursor=null;hasMore=false;paginationInitialized=false;newestBoundary=null;
-    gapFloor=null;gapCursor=null;gapScanStart=null;membershipCursor=null;
-    matchingCount=0;pagingRevision++;
-    initialPageLoaded=false;olderCheckOffset=0;
-    newestIds.clear();olderIds.clear();tasks.clear();pinnedId=null;rows.clear();list.replaceChildren();
+    cursor=null;hasMore=false;initialPageLoaded=false;liveFingerprint='';
+    loadingOlder=false;pendingEpoch=-1;
+    tasks.clear();rows.clear();list.replaceChildren();
     message('Loading tasks…');
-    if(!visible)return;
-    await firstPage();
+    if(visible)await loadLive();
   }
   function relation(title:string,ids:string[]) {
     if(!ids.length)return;
@@ -353,7 +258,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     wrapper.append(node('span','task-label',title));
     for(const id of ids) {
       const task=tasks.get(id);
-      const action=button(short(task?.prompt||id,90),()=>{void inspect(id,true);},'task-relation-link');
+      const action=button(short(task?.prompt||id,90),()=>{void inspect(id);},'task-relation-link');
       action.title=id;
       wrapper.append(action);
     }
@@ -508,13 +413,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       }
     }
   }
-  async function inspect(id:string,fromRelation=false) {
-    if(pinnedId&&pinnedId!==id) {
-      if(!newestIds.has(pinnedId)&&!olderIds.has(pinnedId))tasks.delete(pinnedId);
-      pinnedId=null;
-    }
+  async function inspect(id:string) {
     selected=id;
-    inspectingRelation=fromRelation;
     detailEpoch++;
     const generation=detailEpoch;
     events=[];eventCursor=0;eventMore=false;eventLoading=false;
@@ -537,7 +437,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     try {
       const response=await read<{task?:Task}>(path,{method:'POST',body:JSON.stringify(payload)});
       if(!visible||generation!==detailEpoch||selected!==id)return;
-      await firstPage();
+      if(mode==='live')await loadLive();
       if(!visible||generation!==detailEpoch||selected!==id)return;
       if(retry&&response.task) {
         message('Retry queued in a new conversation.');
@@ -556,28 +456,18 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     try {
       const data=await read<Detail>('/task-console/tasks/'+id);
       if(!visible||generation!==detailEpoch)return;
-      if(!inspectingRelation&&((status!=='all'&&data.task.state!==status) ||
-          (conversation&&data.task.conversationId!==conversation))) {
-        // A task can finish or fail while excluded by the server-side filter,
-        // even if it was previously on an older loaded page.
-        tasks.delete(id);newestIds.delete(id);olderIds.delete(id);
-        clearSelection();
-        renderRows();
-        return;
-      }
-      if(tasks.has(id))tasks.set(id,data.task);
+      // Selection is independent of list scope, including related tasks
+      // and tasks whose state changes while browsing frozen history.
       if(detailVersion(data)!==selectedFingerprint)drawDetail(data);
       // Continue any partial replay on every visible poll; once caught up,
       // the same cursor also picks up new task events.
       await loadEvents();
     } catch(error) {
       if(generation!==detailEpoch||!visible)return;
-      if(status!=='all') {
-        // Fail closed when the server cannot verify a filtered task's state.
-        selectedFingerprint='';
-        detail.replaceChildren(node('p','task-feedback','Task state unavailable. Refresh to retry.'));
-        eventList=null;eventMoreButton=null;
-      }
+      // Do not retain a stale actionable panel when a detail check fails.
+      selectedFingerprint='';
+      detail.replaceChildren(node('p','task-feedback','Task details unavailable. Refresh to retry.'));
+      eventList=null;eventMoreButton=null;
       message('Task details may be stale: '+errorText(error));
     }
   }
@@ -586,7 +476,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     if(!visible)return;
     timer=setTimeout(async()=>{
       if(visible&&document.visibilityState!=='hidden') {
-        await firstPage();
+        if(mode==='live')await loadLive();
+        else await checkHistoryUpdates();
         await refreshSelected();
       }
       schedule();
