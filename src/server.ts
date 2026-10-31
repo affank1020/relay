@@ -6,6 +6,7 @@ import { PiHarness } from './harness.js';
 import { CapabilityRegistry } from './capabilities.js';
 import { Engine } from './engine.js';
 import { McpTransport } from './gateway.js';
+import { parseAtlasWebOrigin } from './atlas-navigation.js';
 import { createPlatform } from './platform.js';
 import { loadRelayModels } from './models.js';
 import { startOllamaProxy } from './ollama-proxy.js';
@@ -31,6 +32,8 @@ if (atlasUrl && !/^[a-f0-9]{64}$/.test(atlasToken))
 if (!atlasUrl && atlasToken)
   throw new Error('ATLAS_MCP_URL is required when ATLAS_MCP_TOKEN is configured');
 const atlas=atlasUrl ? new McpTransport(atlasUrl,atlasToken) : undefined;
+// The web origin is for navigation only and is not an MCP endpoint or token target.
+const atlasWebOrigin=parseAtlasWebOrigin(process.env.ATLAS_WEB_ORIGIN);
 const devTasks:unknown=JSON.parse(process.env.RELAY_ATLAS_DEV_TASKS || '{}');
 if(!devTasks||typeof devTasks!=='object'||Array.isArray(devTasks)||Object.entries(devTasks).some(([id,names])=>!id.match(/^[a-f0-9-]{36}$/i)||!Array.isArray(names)||names.some(n=>typeof n!=='string'||!n.match(/^[a-z][a-z0-9_-]{0,63}$/))))throw new Error('Invalid development task allowlist');
 const number=(key:string,fallback:number)=>Number(process.env[key]??fallback);
@@ -40,7 +43,7 @@ const engine=new Engine(store,new PiHarness(root,model,modelRegistry,capabilitie
   sessionTokens:number('RELAY_SESSION_TOKEN_LIMIT',0),reserveUsd:number('RELAY_RUN_RESERVATION_USD',0),
   maxRunMs:number('RELAY_RUN_TIMEOUT_MS',600000)
 },atlas,devTasks as Record<string,string[]>,modelRegistry,capabilities);
-const server=createPlatform(engine,token,join(dirname(fileURLToPath(import.meta.url)),'public'),model,modelRegistry,capabilities);
+const server=createPlatform(engine,token,join(dirname(fileURLToPath(import.meta.url)),'public'),model,modelRegistry,capabilities,atlasWebOrigin);
 server.listen(Number(process.env.PORT||8765),process.env.HOST||'0.0.0.0',()=>{
   const address=server.address();console.log('Relay started on port '+(address&&typeof address==='object'?address.port:'unknown'));engine.start();
 });

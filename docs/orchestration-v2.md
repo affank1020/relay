@@ -28,6 +28,35 @@ A running task interrupted by restart is marked `interrupted` and is **not** rep
 
 Child and nested-agent usage, including join continuation usage, counts against the originating root conversation's session cap. A child chat deleted after parent synthesis retires its numeric usage to a distinct originating-family ledger, in the same SQLite transaction as the global retirement and transcript purge. Future parent turns still pay for that spending. The family ledger contains no child transcript, output or tool arguments. Deleting a completed root chat also deletes its completed hidden child/grandchild session tree in one SQLite transaction, with each session's retired global usage and durable filesystem-cleanup tombstone preserved. Root deletion then clears the family's retired usage (global retired usage remains). Unfinished, unreconciled, uncertain, or externally referenced work blocks the entire deletion without partially purging data. Child results cannot be deleted while a parent or synthesis still needs them.
 
+## B2 follow-up: scoped MCP child reads and typed handoffs
+
+A parent can now request `relay_delegate({profile, tools, ...})`, using a
+data-only profile template (`general`, `researcher`, `reviewer`, or `implementer`).
+Profiles affect output guidance only: they cannot expand a model, Skills,
+filesystem or tool budget. Child Skills are disabled by default, even if the
+user enabled trusted Skills for their main chat.
+
+Non-Atlas, operator-enabled MCP reads (including the GitHub read allowlist)
+can be delegated **only by exact tool name** when the parent actually
+discovered that read tool. Nested agents may only narrow that set; every
+child's current persisted snapshot, execution run and server/provider policy
+are checked again immediately before MCP dispatch. No general MCP writes or
+unapproved root tool inheritance are introduced. An offline integration yields
+no admitted child tools.
+
+A profile asks the child model to return a bounded JSON `relayHandoff` with
+summary, reported evidence URLs, reported artifacts and open questions. Relay
+accepts only bounded strings and HTTPS URLs without embedded credentials, and
+persists an optional `Task.handoff` projection. Invalid/non-JSON answers
+fall back to a compact 2,000-character task-detail summary, while parent
+synthesis still receives up to 12,000 characters of the plain-text report.
+Reports longer than that carry an explicit truncation flag. For nested
+children, plain-text synthesis is taken from their terminal join run, not
+their earlier preliminary reply. These fields are explicitly
+**agent-reported and unverified**; neither the task console nor synthesis
+treats their assertions as tool receipts. Nested children populate the
+handoff after their own synthesis completes. Existing tasks remain readable.
+
 ## What remains
 
-Further slices should add configurable agent profiles backed by trusted Skills, provider-wide capability admission, robust aggregate cost reservations, external side-effect receipts across all connector providers, explicit approval slot release, richer retry/recovery controls and browser/device QA. This first slice does **not** claim those are delivered. CI fixture tests are not a credentialed multi-agent production smoke.
+Further slices should add user-editable/Skill-backed profile manifests, explicit per-child Skill admission, robust aggregate cost reservations, external side-effect receipts across additional connectors, approval slot release, richer retry/recovery controls and browser/device QA. This first slice does **not** claim those are delivered. CI fixture tests are not a credentialed multi-agent production smoke.

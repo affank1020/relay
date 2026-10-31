@@ -268,7 +268,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   function detailStructureVersion(data:Detail) {
     const task=data.task;
     return JSON.stringify([task.id,task.prompt,task.state,task.error,task.createdAt,
-      task.parentId,task.dependencies,task.attemptOf,task.retryDetachedFromParentId,task.agentId,task.agentRunId,task.joinTaskId,task.continuationOf,
+      task.parentId,task.dependencies,task.attemptOf,task.retryDetachedFromParentId,task.delegation?.profile,task.handoff,task.agentId,task.agentRunId,task.joinTaskId,task.continuationOf,
       data.conversation?.id,data.conversation?.modelKey,
       data.approvals,data.children.map(child=>[child.id,child.prompt,child.state])]);
   }
@@ -317,6 +317,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     if(data.conversation?.modelKey)meta.append(node('span','','Model selection: '+data.conversation.modelKey));
     meta.append(node('span','','Task '+task.id.slice(0,8)));
     if(task.agentRunId)meta.append(node('span','','Run '+task.agentRunId.slice(0,8)));
+    if(task.delegation?.profile)meta.append(node('span','','Profile: '+label(task.delegation.profile)));
     detail.append(meta);
     const actions=node('div','task-actions','');
     if(data.conversation&&!data.conversation.internal)actions.append(button('Open conversation',()=>{void openConversation(task.conversationId).catch(error=>message(errorText(error)));}));
@@ -345,6 +346,24 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     // CSSOM View ignores scrollTop writes on detached elements. Apply only
     // after the replacement pane has a layout box (and content).
     if(task.result)resultPane.scrollTop=previousScrollTop;
+    if(task.handoff){
+      detail.append(node('h3','task-section-heading','Agent-reported handoff (unverified)'));
+      detail.append(node('p','task-feedback',task.handoff.summary));
+      for(const [heading,items] of [
+        ['Reported evidence',task.handoff.evidence],
+        ['Reported artifacts',task.handoff.artifacts]
+      ] as const){
+        if(!items.length)continue;
+        detail.append(node('span','task-label',heading));
+        for(const item of items)detail.append(node('p','task-feedback',
+          item.label+(item.url?' · '+item.url:'')));
+      }
+      if(task.handoff.openQuestions.length){
+        detail.append(node('span','task-label','Open questions'));
+        for(const question of task.handoff.openQuestions)
+          detail.append(node('p','task-feedback',question));
+      }
+    }
     relation('Parent',task.parentId?[task.parentId]:[]);
     relation('Dependencies',task.dependencies);
     relation('Child tasks',data.children.map(child=>child.id));
