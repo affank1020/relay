@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CapabilityRegistry } from '../src/capabilities.js';
 import { fetchPinnedGitSkill, validSource } from '../src/skills/git.js';
-import { PiHarness } from '../src/harness.js';
+import { PiHarness, skillInstructionBudget } from '../src/harness.js';
 import { Store, type Task } from '../src/store.js';
 import { Engine } from '../src/engine.js';
 import { createPlatform } from '../src/platform.js';
@@ -181,4 +181,35 @@ test('Git Skill management endpoints require authentication and explicit content
     await new Promise<void>(resolve=>server.close(()=>resolve()));
     await engine.stop();store.close();await registry.close();await rm(root,{recursive:true,force:true});
   }
+});
+
+
+test('aggregate Skill context admission is model-bounded, skips excess instructions without loading them',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'relay-git-skill-budget-'));
+  const large='---\nname: large-fixture\ndescription: A long reviewed Skill used to verify context budgets.\n---\n'+'A'.repeat(20_000);
+  const {fetcher}=fakeFetcher(large);
+  const registry=new CapabilityRegistry(root,bundled,[],undefined,fetcher);
+  try {
+    const preview=await registry.previewGitSkill(source);
+    const installed=await registry.installGitSkill(preview.previewId,preview.sha256,true);
+    await registry.update('skills',installed.id,true);
+    await registry.update('skills','prepare-pr',true);
+    assert.equal(skillInstructionBudget(8192,4096),1024);
+    assert.equal(skillInstructionBudget(32768,4096),8192);
+    assert.equal(skillInstructionBudget(8192,8192),0);
+    assert.equal(skillInstructionBudget(NaN,4096),0);
+    const small=await registry.skills.snapshot(skillInstructionBudget(8192,4096));
+    assert.deepEqual(small.paths.map(p=>p.name),['prepare-pr']);
+    assert.deepEqual(small.skipped,['large-fixture']);
+    assert.ok(Buffer.byteLength(small.instructions,'utf8')<=1024);
+    assert.doesNotMatch(small.instructions,/A{100}/);
+    const none=await registry.skills.snapshot(0);
+    assert.deepEqual(none.paths,[]);
+    assert.deepEqual(none.skipped,['prepare-pr','large-fixture']);
+    const expanded=await registry.skills.snapshot(16_384);
+    assert.deepEqual(expanded.skipped,['large-fixture']);
+    // The full file is still persisted and reviewed; skipping is only for
+    // this inference, so other larger-context models may admit it.
+    assert.equal((await registry.list()).skills.find(s=>s.name==='large-fixture')?.enabled,true);
+  }finally {await registry.close();await rm(root,{recursive:true,force:true});}
 });

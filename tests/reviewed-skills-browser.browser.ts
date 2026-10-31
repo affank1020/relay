@@ -14,10 +14,17 @@ test('real browser previews, explicitly installs, enables and revokes a pinned G
   const root=await mkdtemp(join(tmpdir(),'relay-git-browser-'));
   const content='---\nname: browser-skill\ndescription: Reviewed Skill used by a real browser test.\n---\n' +
     'These instructions are untrusted until reviewed and explicitly approved.\n';
-  const mockedFetch=((_:unknown)=>Promise.resolve(new Response(JSON.stringify({
-    type:'file',name:'SKILL.md',encoding:'base64',
-    content:Buffer.from(content).toString('base64')
-  })))) as typeof fetch;
+  let releasePreview!:()=>void,previewRequested!:()=>void;
+  const pendingPreview=new Promise<void>(resolve=>{releasePreview=resolve;});
+  const firstPreviewStarted=new Promise<void>(resolve=>{previewRequested=resolve;});
+  let firstPreview=true;
+  const mockedFetch=(async (_:unknown)=>{
+    if(firstPreview){firstPreview=false;previewRequested();await pendingPreview;}
+    return new Response(JSON.stringify({
+      type:'file',name:'SKILL.md',encoding:'base64',
+      content:Buffer.from(content).toString('base64')
+    }));
+  }) as typeof fetch;
   const registry=new CapabilityRegistry(root,join(process.cwd(),'skills'),[],undefined,mockedFetch);
   const store=new Store(':memory:');
   const harness={version:1 as const,capabilities:{persistence:true,cancellation:true,tools:true},run:async()=>''};
@@ -40,6 +47,19 @@ test('real browser previews, explicitly installs, enables and revokes a pinned G
     await page.locator('#gitSkillRepo').fill('reviewed-skills');
     await page.locator('#gitSkillCommit').fill('a'.repeat(40));
     await page.locator('#gitSkillPath').fill('SKILL.md');
+    const staleResponse=page.waitForResponse(response=>response.request().method()==='POST' &&
+      response.url().endsWith('/api/skills/git/preview'));
+    await page.locator('#gitSkillPreviewButton').click();
+    await firstPreviewStarted;
+    // Editing a field while the remote fetch is pending invalidates that
+    // request; the stale response must never become approvable.
+    await page.locator('#gitSkillRepo').fill('changed-repository');
+    releasePreview();
+    assert.equal((await staleResponse).status(),200);
+    await page.waitForFunction(()=>!((document.querySelector('#gitSkillPreviewButton') as HTMLButtonElement).disabled));
+    assert.equal(await page.locator('#gitSkillReview').isHidden(),true);
+    assert.equal(await page.locator('#gitSkillInstall').isDisabled(),true);
+    await page.locator('#gitSkillRepo').fill('reviewed-skills');
     await page.locator('#gitSkillPreviewButton').click();
     await page.locator('#gitSkillReview').waitFor({state:'visible'});
     assert.equal(await page.locator('#gitSkillReviewText').textContent(),content);

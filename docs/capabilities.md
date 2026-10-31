@@ -19,6 +19,17 @@ disabled. Enabling Skill instructions never grants tools.
 
 Enable/disable preferences persist atomically under
 RELAY_DATA_DIR/capabilities.json (0600). Updates are server-authenticated.
+For each inference, the server also limits the **aggregate enabled Skill text**
+to a conservative fraction of the selected model's actual context window,
+reserving space for the model's output, ordinary prompt and chat history.
+Admitted Skill text is charged by UTF-8 bytes, not an optimistic average
+tokens-per-character estimate. Oversized Skills are skipped (not truncated)
+for that inference, and the activity stream records `skill/skipped_context`
+with the Skill name; skipped Skills are never advertised as loaded. Users
+can disable Skills or select a model with a larger window. A skipped Skill
+remains installed and enabled for future runs that have sufficient context.
+The limit cannot prevent otherwise normal chats from continuing.
+
 A task loads its current authorised Skill set when it begins. Child tasks
 load their own current authorised set rather than inheriting arbitrary parent
 credentials or a free-form instruction that grants capabilities. The next slice adds a **reviewed, revision-pinned GitHub Skill workflow**:
