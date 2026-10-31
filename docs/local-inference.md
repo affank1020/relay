@@ -34,7 +34,8 @@ The server persists all chat prompts/outputs on the VPS even for local inference
 2. On the VPS host:
 
    ```sh
-   curl --fail --max-time 10 https://<mac-name>.<tailnet-name>.ts.net:10000/v1/models
+   curl --fail --max-time 10 -H 'Host: localhost:11434' \
+     https://<mac-name>.<tailnet-name>.ts.net:10000/v1/models
    ```
 
 3. Verify it **also works inside the Relay container**. Host DNS and Docker
@@ -43,10 +44,13 @@ The server persists all chat prompts/outputs on the VPS even for local inference
    ```sh
    cd ~/relay
    docker compose -f compose.yaml -f compose.ingress.yaml exec -T relay \
-      node -e "fetch(process.argv[1],{signal:AbortSignal.timeout(10000)}).then(r=>{console.log('HTTP',r.status);if(!r.ok)process.exitCode=1}).catch(e=>{console.error(e.cause?.code||e.name);process.exitCode=1})" \
+      node -e "fetch(process.argv[1],{headers:{Host:'localhost:11434'},signal:AbortSignal.timeout(10000)}).then(r=>{console.log('HTTP',r.status);if(!r.ok)process.exitCode=1}).catch(e=>{console.error(e.cause?.code||e.name);process.exitCode=1})" \
       "https://<mac-name>.<tailnet-name>.ts.net:10000/v1/models"
    ```
 
+   Ollama rejects non-loopback Host headers with HTTP 403. Relay deliberately
+   sends `Host: localhost:11434` for both Pi inference and model discovery;
+   this doesn't change HTTPS certificate validation or Tailscale routing.
    If the container cannot reach MagicDNS, inspect the VPS DNS and Tailscale
    routing from Docker rather than making Ollama public.
 
@@ -54,11 +58,11 @@ The server persists all chat prompts/outputs on the VPS even for local inference
 
    ```dotenv
    RELAY_OLLAMA_URL=https://<mac-name>.<tailnet-name>.ts.net:10000/v1
-   RELAY_OLLAMA_MODELS=<exact-4b-id-from-ollama-list>
+   RELAY_OLLAMA_MODELS=qwen3:4b,qwen3:8b
    ```
 
-   When larger models finish downloading, append the installed IDs
-   comma-separated. Do not commit the private tailnet name or credentials.
+   These two Qwen models were confirmed installed on the Mac on
+   31 October 2026. Add other installed IDs comma-separated when ready. Do not commit the private tailnet name or credentials.
    The URL validator accepts tailnet HTTPS on standard port 443 or
    Tailscale Serve ports 8443 and 10000, and loopback HTTP for development. Existing `RELAY_MODEL` and OpenRouter key remain in place.
 
