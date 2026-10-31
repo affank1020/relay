@@ -7,6 +7,19 @@ const hosted=window.location.protocol==='https:';
 let token='',current:string|null=null,busy=false,polling=false,timer:ReturnType<typeof setTimeout>|undefined,cursor=0,epoch=0,lastView='',submitting=false;
 let pending:{conversationId:string;message:string;requestId:string}|null=null;
 const activity:ExecutionEvent[]=[];
+// Separate durable-in-session receipt index from the capped activity inspector.
+// One latest event per tool invocation is retained for each task, including old
+// turns and paginated history replayed when a conversation is reopened.
+const toolReceipts=new Map<string,Map<string,ExecutionEvent>>();
+let receiptVersion=0;
+function indexToolReceipt(event:ExecutionEvent){
+  if(event.type!=='tool'||!event.invocationId||!event.taskId)return;
+  let task=toolReceipts.get(event.taskId);
+  if(!task){task=new Map();toolReceipts.set(event.taskId,task);}
+  if(task.get(event.invocationId)?.id===event.id)return;
+  task.set(event.invocationId,event);
+  receiptVersion++;
+}
 let configuredModels:{key:string;label:string}[]=[];
 let knownSessions:Summary[]=[];
 const text=(e:unknown)=>e instanceof Error?e.message:String(e);
@@ -34,13 +47,8 @@ function setBusy(value:boolean){
 function toolLabel(tool:string|null){
   return (tool||'Atlas action').replace(/^atlas_/,'').replace(/^workspace_/,'Workspace · ').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
 }
-function currentToolEvents(taskId?:string){
-  const byCall=new Map<string,ExecutionEvent>();
-  for(const event of activity){
-    if(event.type!=='tool'||!event.invocationId||(taskId && event.taskId!==taskId))continue;
-    byCall.set(event.invocationId,event);
-  }
-  return [...byCall.values()].sort((a,b)=>a.sequence-b.sequence);
+function currentToolEvents(taskId:string){
+  return [...(toolReceipts.get(taskId)?.values()??[])].sort((a,b)=>a.sequence-b.sequence);
 }
 function renderSessions(){
   const q=$<HTMLInputElement>('sessionSearch').value.trim().toLowerCase();
@@ -101,7 +109,15 @@ async function refresh(){
   return list.sessions;
 }
 function render(data:Snapshot){
-  const serialized=JSON.stringify({tasks:data.tasks,tools:currentToolEvents().map(e=>[e.id,e.state,e.sequence])});
+  // Enqueue retitles the first message server-side. Keep the searchable
+  // sidebar in sync with the authoritative snapshot, not only /sessions.
+  const known=knownSessions.find(s=>s.id===data.session.id);
+  if(known && (known.title!==data.session.title || known.busy!==data.session.busy)){
+    known.title=data.session.title;
+    known.busy=data.session.busy;
+    renderSessions();
+  }
+  const serialized=JSON.stringify(data.tasks)+'|'+receiptVersion;
   if(serialized!==lastView){
     const messages=$('messages');const nearBottom=messages.scrollHeight-messages.scrollTop-messages.clientHeight<120;
     messages.replaceChildren();
@@ -184,8 +200,11 @@ async function poll(){
   try{
     const [snapshot,replay]=await Promise.all([get<Snapshot>('/sessions/'+id),get<{events:ExecutionEvent[];nextCursor:number;hasMore:boolean}>('/sessions/'+id+'/events?after='+cursor)]);
     if(generation!==epoch)return;
-    render(snapshot);
-    for(const event of replay.events)if(event.sequence>cursor&&event.type!=='delta')activity.push(event);
+    for(const event of replay.events){
+      if(event.sequence<=cursor||event.type==='delta')continue;
+      indexToolReceipt(event);
+      activity.push(event);
+    }
     cursor=replay.nextCursor;
     if(activity.length>300)activity.splice(0,activity.length-300);
     renderActivity();
@@ -195,7 +214,7 @@ async function poll(){
   finally{polling=false;if(timer)clearTimeout(timer);timer=setTimeout(()=>{void poll();},600);}
 }
 async function select(id:string){
-  epoch++;current=id;cursor=0;lastView='';activity.length=0;$('activity').replaceChildren();remember('relay.conversation',id);
+  epoch++;current=id;cursor=0;lastView='';activity.length=0;toolReceipts.clear();receiptVersion=0;$('activity').replaceChildren();remember('relay.conversation',id);
   const generation=epoch;const data=await get<Snapshot>('/sessions/'+id);
   if(generation!==epoch)return;
   render(data);await refresh();void poll();
