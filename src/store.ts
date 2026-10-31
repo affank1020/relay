@@ -13,6 +13,8 @@ export interface Task { id: string; conversationId: string; requestId: string; p
   /** Absent on legacy tasks, never fabricated during migration. */
   agentId?: string; agentRunId?: string; modelKey?: string;
   delegation?: import('./orchestration.js').DelegationSnapshot;
+  /** Bounded, untrusted model-authored report; never an execution receipt. */
+  handoff?: import('./handoff.js').AgentHandoff;
   kind?: 'agent' | 'join'; continuationOf?: string; joinTaskId?: string;
   /** Snapshot retained when a failed dependent task is retried in a new conversation. */
   retryDependencyResults?: import('./orchestration.js').DependencyReceipt[];

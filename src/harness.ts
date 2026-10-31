@@ -87,11 +87,14 @@ export class PiHarness implements Harness {
     }
     onPhase?.('loading_resources');
     const settingsManager=SettingsManager.inMemory();
-    const trusted=await this.capabilityRegistry?.skillPaths()??[];
+    // A globally enabled Skill does not automatically become child authority.
+    // Child Skills will require explicit scoped admission in a later slice.
+    const rootSkillScope=!task.parentId&&!task.delegation;
+    const trusted=rootSkillScope?(await this.capabilityRegistry?.skillPaths()??[]):[];
     // Pi normally advertises Skills only when an authorised read/bash tool can
     // open them. Relay grants neither, so include just validated trusted Skill
     // instructions directly, never arbitrary filesystem content.
-    const skillInstructions=await this.capabilityRegistry?.skills.promptContent()??'';
+    const skillInstructions=rootSkillScope?(await this.capabilityRegistry?.skills.promptContent()??''):'';
     const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager,noExtensions:true,disabledBuiltinExtensions:['mcp'],
       noSkills:false,additionalSkillPaths:trusted.map(s=>s.path),
       skillsOverride:current=>({...current,skills:current.skills.filter(s=>trusted.some(t=>s.name===t.name&&s.filePath===t.path))}),

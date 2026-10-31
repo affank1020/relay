@@ -104,6 +104,24 @@ test('real Pi loads only enabled Skills before inference',{timeout:65000},async(
 });
 
 
+test('delegated child cannot inherit enabled root Skills from Pi resource loader',{timeout:65000},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'relay-pi-child-skill-'));
+  const registry=await CapabilityRegistry.open(root,join(process.cwd(),'skills'),{});
+  const controller=new AbortController();
+  try{
+    await registry.update('skills','prepare-pr',true);
+    const task={id:crypto.randomUUID(),conversationId:crypto.randomUUID(),prompt:'delegated skill check',
+      state:'running',createdAt:new Date().toISOString(),parentId:crypto.randomUUID(),
+      delegation:{schemaVersion:1,toolNames:[],modelKey:null,context:'',maxTokens:null,maxCostUsd:null,profile:'reviewer'}} as Task;
+    let observed:string[]|null=null;
+    await assert.rejects(new PiHarness(root,'cohere/north-mini-code:free',undefined,registry).run({
+      version:1,task,tools:[],signal:controller.signal,onText:()=>assert.fail(),onUsage:()=>assert.fail(),
+      onSkills:names=>{observed=names;controller.abort(new Error('child-skill-check-complete'));}
+    }),/child-skill-check-complete/);
+    assert.deepEqual(observed,[]);
+  }finally{await registry.close();await rm(root,{recursive:true,force:true});}
+});
+
 test('enabled trusted Skill instructions are actually supplied without a file tool',async()=>{
   const root=await mkdtemp(join(tmpdir(),'relay-skill-content-'));
   try{
