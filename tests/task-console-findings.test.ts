@@ -324,3 +324,46 @@ test('full task result remains available rather than truncated in the detail pan
     assert.equal(get('taskDetail').querySelector('.task-result')?.textContent,item.result);
   },async(url,opts)=>mock([item],url,opts));
 });
+
+
+test('detail refresh failure disables detached actions and recovers on the next successful poll',async()=>{
+  await withClock(async tick=>{
+    const item=numbered(1,'running'),posts:string[]=[];
+    let unavailable=false;
+    await fixture(async get=>{
+      get('taskRows').children[0].onclick?.();await flush();
+      const cancel=get('taskDetail').querySelector('.task-actions')?.children.find(x=>x.textContent==='Cancel task');
+      assert.ok(cancel);
+      unavailable=true;await tick();
+      assert.equal(get('taskDetail').querySelector('.task-actions'),null);
+      cancel.onclick?.();await flush();
+      assert.equal(posts.length,0,'detached buttons must not dispatch actions after a failed detail read');
+      unavailable=false;await tick();
+      assert.ok(get('taskDetail').querySelector('.task-actions')?.children.some(x=>x.textContent==='Cancel task'));
+    },async(url,opts)=>{
+      if(opts?.method==='POST'){posts.push(url);return response({});}
+      if(unavailable&&url==='/task-console/tasks/'+item.id)throw Error('details offline');
+      return mock([item],url,opts);
+    });
+  });
+});
+
+test('late history responses are ignored after a filter reset',async()=>{
+  const items=Array.from({length:60},(_,i)=>numbered(i+1,'running'));
+  let complete:((value:Response)=>void)|undefined;
+  await fixture(async get=>{
+    get('taskMore').onclick?.();await flush();
+    assert.ok(complete,'older page requested');
+    selectStatus(get,'Completed');await flush();
+    assert.equal(titles(get).length,0);
+    assert.ok(get('taskRows').querySelector('.task-rows-empty'));
+    complete!(mock(items,'/task-console/tasks?limit=50&cursor=11'));
+    await flush();
+    assert.equal(titles(get).length,0,'late historical page must not repopulate a new filter');
+    assert.equal(get('taskMore').hidden,true);
+  },async(url,opts)=>{
+    if(url.includes('&cursor='))
+      return await new Promise<Response>(resolve=>{complete=resolve;});
+    return mock(items,url,opts);
+  });
+});
