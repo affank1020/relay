@@ -11,7 +11,7 @@ export interface ExecutionEvent {
   taskId: string | null; agentRunId: string | null; invocationId: string | null;
   type: string; state: string; tool: string | null; atlasOperationId: string | null;
   projectId: string | null; workspaceId: string | null; selectedNodeId: string | null;
-  executingNodeId: string | null; text?: string;
+  executingNodeId: string | null; text?: string; textOffset?: number;
 }
 export interface Approval { id: string; taskId: string; invocationId: string; tool: string; args: Record<string, unknown>; state: 'pending' | 'approved' | 'rejected'; }
 export const terminal = (state: State) => ['completed','failed','cancelled','interrupted'].includes(state);
@@ -21,6 +21,18 @@ export interface RetiredUsage { costUsd: number; tokens: number; unknown: boolea
 export class Store {
   readonly db: DatabaseSync;
   private readonly inMemory: boolean;
+  // Notifications are hints, not the source of truth. A subscriber always
+  // replays committed rows using their durable sequence cursor.
+  private eventListeners=new Map<string,Set<()=>void>>();
+  subscribeEvents(conversationId:string, listener:()=>void):()=>void {
+    let listeners=this.eventListeners.get(conversationId);
+    if(!listeners){listeners=new Set();this.eventListeners.set(conversationId,listeners);}
+    listeners.add(listener);
+    return ()=>{
+      listeners!.delete(listener);
+      if(!listeners!.size)this.eventListeners.delete(conversationId);
+    };
+  }
   constructor(path: string) {
     this.inMemory=path===':memory:';
     this.db = new DatabaseSync(path);
@@ -52,7 +64,11 @@ export class Store {
   event(conversationId: string, fields: Partial<Omit<ExecutionEvent,'schemaVersion'|'id'|'sequence'|'timestamp'|'conversationId'>>): ExecutionEvent {
     const e: ExecutionEvent={schemaVersion:1,id:randomUUID(),sequence:0,timestamp:new Date().toISOString(),conversationId,taskId:null,agentRunId:null,invocationId:null,type:'task',state:'queued',tool:null,atlasOperationId:null,projectId:null,workspaceId:null,selectedNodeId:null,executingNodeId:null,...fields};
     const row=this.db.prepare('INSERT INTO events(id,conversation_id,data) VALUES(?,?,?)').run(e.id,conversationId,JSON.stringify(e));
-    e.sequence=Number(row.lastInsertRowid); return e;
+    e.sequence=Number(row.lastInsertRowid);
+    // The surrounding synchronous transaction (if any) finishes before this
+    // microtask fires; rolled-back events cannot be replayed from SQLite.
+    queueMicrotask(()=>{for(const listener of this.eventListeners.get(conversationId)??[])listener();});
+    return e;
   }
   events(conversationId: string, after=0): ExecutionEvent[] {
     return this.db.prepare('SELECT sequence,data FROM events WHERE conversation_id=? AND sequence>? ORDER BY sequence LIMIT 500').all(conversationId,after).map(r=>({...JSON.parse(String(r.data)),sequence:Number(r.sequence)} as ExecutionEvent));
@@ -109,6 +125,8 @@ export class Store {
       // crash; start() retries deletion without resurrecting the chat.
       this.db.prepare('INSERT INTO pending_session_deletions(conversation_id) VALUES(?)').run(id);
     });
+    // Tell connected tabs their stream is no longer valid after deletion.
+    queueMicrotask(()=>{for(const listener of this.eventListeners.get(id)??[])listener();});
   }
-  close() { this.db.close(); }
+  close() { this.eventListeners.clear(); this.db.close(); }
 }
