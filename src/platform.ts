@@ -13,7 +13,11 @@ import { streamConversationEvents } from './live-events.js';
 export function createPlatform(engine:Engine, token:string, staticDir:string, model:string, modelRegistry?:RelayModels) {
   if(token.length<24)throw new Error('RELAY_ACCESS_TOKEN must be 24+ characters');
   if(!model.endsWith(':free'))throw new Error('Relay requires a free OpenRouter model');
-  const summary=(c:Conversation)=>({...c,busy:engine.tasks(c.id).some(t=>!terminal(t.state)),costUsd:engine.usage(c.id).costUsd,usage:engine.usage(c.id)});
+  const summary=(c:Conversation,owned?:Task[])=>{
+    const tasks=owned??engine.tasks(c.id);
+    const usage=engine.usage(c.id,tasks);
+    return {...c,busy:tasks.some(t=>!terminal(t.state)),costUsd:usage.costUsd,usage};
+  };
   function send(res:ServerResponse,code:number,value:unknown) { res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(value)); }
   async function body(req:IncomingMessage):Promise<Record<string,unknown>> {
     req.setEncoding('utf8');let text='';
@@ -41,7 +45,18 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         if(modelRegistry)await refreshOllamaModels(modelRegistry);
         return send(res,200,{harness:'Pi',provider:modelRegistry?.ollama?'OpenRouter + Ollama':'OpenRouter',model,models:modelRegistry?.models??[],defaultModelKey:modelRegistry?.defaultKey,ollamaOnline:modelRegistry?.ollama?.online,atlas:engine.gateway?'configured':'not configured',active:engine.tasks().filter(t=>['running','awaiting_approval'].includes(t.state)).length,maxActive:engine.limits.concurrency,usage:engine.usage(),limits:engine.limits});
       }
-      if(path==='/api/sessions'&&req.method==='GET')return send(res,200,{sessions:engine.store.all<Conversation>('conversations').filter(c=>!engine.isInternalConversation(c)).reverse().map(summary)});
+      if(path==='/api/sessions'&&req.method==='GET') {
+        const internal=engine.store.internalConversationIds();
+        const grouped=new Map<string,Task[]>();
+        for(const task of engine.tasks()){
+          const tasks=grouped.get(task.conversationId)??[];
+          tasks.push(task);grouped.set(task.conversationId,tasks);
+        }
+        const sessions=engine.store.all<Conversation>('conversations')
+          .filter(c=>!c.internalParentConversationId&&!internal.has(c.id))
+          .reverse().map(c=>summary(c,grouped.get(c.id)??[]));
+        return send(res,200,{sessions});
+      }
       if(path==='/api/sessions'&&req.method==='POST'){
         const data=await body(req);
         if(data.modelKey!==undefined&&typeof data.modelKey!=='string')throw new Error('Invalid model selection');

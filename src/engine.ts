@@ -76,45 +76,85 @@ export class Engine {
   }
   async deleteConversation(id:string):Promise<void> {
     if(!this.harness.deleteConversationSessions)throw new SessionCleanupError('Session cleanup unavailable');
-    if(!this.store.get<Conversation>('conversations',id))throw new ConversationNotFoundError('Conversation not found');
-    const all=this.tasks();
-    const owned=all.filter(t=>t.conversationId===id);
-    const removed=new Set(owned.map(t=>t.id));
-    if(owned.some(t=>['queued','running','awaiting_approval','interrupted'].includes(t.state) || this.active.has(t.id)))
-      throw new ConversationConflictError('Conversation has active or uncertain tasks');
-    if(all.some(t=>t.conversationId!==id && (removed.has(t.parentId??'')||removed.has(t.attemptOf??'')||t.dependencies.some(dep=>removed.has(dep)))))
+    const conversations=this.store.all<Conversation>('conversations');
+    if(!conversations.some(c=>c.id===id))throw new ConversationNotFoundError('Conversation not found');
+    const all=this.tasks(),byId=new Map(all.map(t=>[t.id,t]));
+    const byConversation=new Map<string,Task[]>();
+    for(const task of all) {
+      const owned=byConversation.get(task.conversationId)??[];
+      owned.push(task);byConversation.set(task.conversationId,owned);
+    }
+    // Only genuine internal descendants can be deleted with the user-facing
+    // root. A legacy child must carry an admitted delegation and all tasks in
+    // its session must point into the subtree. Unrelated user chats, retries
+    // and externally referenced work are never silently deleted.
+    const included=new Set([id]);
+    const order=[id];
+    let changed=true;
+    while(changed) {
+      changed=false;
+      for(const c of conversations) {
+        if(included.has(c.id))continue;
+        const tasks=byConversation.get(c.id)??[];
+        const explicitlyInternal=!!c.internalParentConversationId && included.has(c.internalParentConversationId);
+        const legacyInternal=!c.internalParentConversationId && tasks.length>0 &&
+          tasks.every(task=>!!task.parentId && !!task.delegation &&
+            included.has(byId.get(task.parentId)?.conversationId??''));
+        if(!explicitlyInternal && !legacyInternal)continue;
+        included.add(c.id);order.push(c.id);changed=true;
+      }
+    }
+    const removed=new Set(all.filter(t=>included.has(t.conversationId)).map(t=>t.id));
+    if(all.some(t=>included.has(t.conversationId) &&
+      (!terminal(t.state)||this.active.has(t.id))))
+      throw new ConversationConflictError('Conversation tree has active or uncertain tasks');
+    if(all.some(t=>!included.has(t.conversationId) &&
+      (removed.has(t.parentId??'')||removed.has(t.attemptOf??'')||
+        t.dependencies.some(dep=>removed.has(dep)))))
       throw new ConversationConflictError('Other conversations depend on this conversation');
-    // A completed child still supplies its parent's future synthesis. Removing
-    // it while the parent is running/waiting or its join is active loses data.
-    // Check both directions before the synchronous purge transaction.
-    const byId=new Map(all.map(task=>[task.id,task]));
-    if(owned.some(child=>{
-      const parent=child.parentId?byId.get(child.parentId):undefined;
-      if(!parent||parent.conversationId===id)return false;
-      const join=parent.joinTaskId?byId.get(parent.joinTaskId):undefined;
-      return !terminal(parent.state) || (join!==undefined&&!terminal(join.state));
-    }))
+    if(all.some(t=>included.has(t.conversationId) && t.parentId && !included.has(byId.get(t.parentId)?.conversationId??'') &&
+      (()=>{const parent=byId.get(t.parentId!);
+        const join=parent?.joinTaskId?byId.get(parent.joinTaskId):undefined;
+        return !parent || !terminal(parent.state) || !!(join&&!terminal(join.state));})()))
       throw new ConversationConflictError('Child results are still needed for parent synthesis');
     if(this.store.all<Approval>('approvals').some(a=>removed.has(a.taskId)&&a.state==='pending'))
       throw new ConversationConflictError('Conversation has pending approvals');
-    if(owned.some(t=>this.store.invocationStates(t.id).some(state=>state!=='completed')))
+    if(all.some(t=>removed.has(t.id) && this.store.invocationStates(t.id).some(state=>state!=='completed')))
       throw new ConversationConflictError('Conversation has uncertain tool invocations');
-    // Every task in a child conversation must belong to one originating
-    // session. Retire spend into that family's ledger before purging transcripts.
-    const roots=new Set(owned.map(task=>originatingConversation(task,byId)));
-    if(roots.size>1)throw new ConversationConflictError('Conversation has mixed task origins');
-    const family=roots.values().next().value??id;
-    // Validation, retirement and tombstone creation have no event-loop yield.
-    this.store.purgeConversation(id,owned,family);
+    const entries=order.reverse().map(conversationId=>{
+      const tasks=byConversation.get(conversationId)??[];
+      const roots=new Set(tasks.map(task=>originatingConversation(task,byId)));
+      if(roots.size>1)throw new ConversationConflictError('Conversation has mixed task origins');
+      // Empty, explicitly internal sessions still belong to the original
+      // family's numeric budget, even though there is no transcript usage.
+      let family=roots.values().next().value as string|undefined;
+      if(!family) {
+        family=conversationId;
+        const seen=new Set<string>();
+        while(true) {
+          const c=conversations.find(c=>c.id===family);
+          if(!c?.internalParentConversationId)break;
+          if(seen.has(family))throw new ConversationConflictError('Invalid conversation provenance');
+          seen.add(family);
+          family=c.internalParentConversationId;
+        }
+      }
+      return {id:conversationId,tasks,rootConversationId:family};
+    });
+    // Retirement, all transcript/receipt purges and every filesystem cleanup
+    // tombstone commit atomically. No asynchronous gap before the transaction.
+    this.store.purgeConversations(entries);
     try {
-      // A committed SQLite purge alone can leave old message bytes in the
-      // live WAL. Verify TRUNCATE before acknowledging a full purge.
+      // A SQLite purge alone can leave sensitive bytes in historical WAL
+      // frames. Checkpoint once before deleting any Pi session directory.
       this.store.checkpointDeletedHistory();
-      await this.harness.deleteConversationSessions(id);
-      this.store.sessionDeletionComplete(id);
+      for(const entry of entries) {
+        await this.harness.deleteConversationSessions(entry.id);
+        this.store.sessionDeletionComplete(entry.id);
+      }
     } catch {
-      // The chat was logically deleted, but checkpoint or Pi cleanup failed.
-      // The durable tombstone makes the remaining work retryable on startup.
+      // Every remaining tombstone is retryable on startup, even if Pi cleanup
+      // succeeded for an earlier descendant.
       throw new SessionCleanupError('Conversation deleted; durable cleanup pending');
     }
   }
@@ -153,12 +193,10 @@ export class Engine {
   }
   tasks(conversationId?:string) { return this.store.all<Task>('tasks').filter(t=>!conversationId||t.conversationId===conversationId); }
   isInternalConversation(c:Conversation):boolean {
-    // Legacy children lacked provenance. Recover their internal status from
-    // durable task parent IDs rather than exposing them after an upgrade.
-    return !!c.internalParentConversationId || this.tasks(c.id).some(t=>!!t.parentId);
+    return !!c.internalParentConversationId || this.store.isInternalConversationId(c.id);
   }
-  usage(conversationId?:string) {
-    const all=this.tasks(conversationId).flatMap(t=>t.usage);
+  usage(conversationId?:string,knownTasks?:Task[]) {
+    const all=(knownTasks??this.tasks(conversationId)).flatMap(t=>t.usage);
     const retired=conversationId?null:this.store.retiredUsage();
     return {costUsd:all.reduce((s,u)=>s+(u.costUsd??0),retired?.costUsd??0),tokens:all.reduce((s,u)=>s+(u.input??0)+(u.output??0)+(u.cacheRead??0)+(u.cacheWrite??0),retired?.tokens??0),
       unknown:(retired?.unknown??false)||all.some(u=>u.costUsd===null || u.input===null || u.output===null),

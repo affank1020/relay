@@ -69,6 +69,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS retired_usage(conversation_id TEXT PRIMARY KEY, cost_usd REAL NOT NULL, tokens INTEGER NOT NULL, unknown INTEGER NOT NULL, measured INTEGER NOT NULL, usage_count INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS retired_family_usage(conversation_id TEXT PRIMARY KEY, root_conversation_id TEXT NOT NULL, cost_usd REAL NOT NULL, tokens INTEGER NOT NULL, unknown INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS retired_family_root ON retired_family_usage(root_conversation_id);
+      CREATE INDEX IF NOT EXISTS task_internal_child_conversation ON tasks(conversation_id) WHERE json_extract(data, '$.parentId') IS NOT NULL;
       CREATE TABLE IF NOT EXISTS pending_session_deletions(conversation_id TEXT PRIMARY KEY);
       PRAGMA user_version=3; COMMIT;`);
   }
@@ -90,6 +91,17 @@ export class Store {
   }
   events(conversationId: string, after=0): ExecutionEvent[] {
     return this.db.prepare('SELECT sequence,data FROM events WHERE conversation_id=? AND sequence>? ORDER BY sequence LIMIT 500').all(conversationId,after).map(r=>({...JSON.parse(String(r.data)),sequence:Number(r.sequence)} as ExecutionEvent));
+  }
+  internalConversationIds():Set<string> {
+    // Index-only scan of child conversations; no task JSON is parsed.
+    return new Set(this.db.prepare(
+      "SELECT DISTINCT conversation_id FROM tasks WHERE json_extract(data, '$.parentId') IS NOT NULL"
+    ).all().map(row=>String(row.conversation_id)));
+  }
+  isInternalConversationId(conversationId:string):boolean {
+    return !!this.db.prepare(
+      "SELECT id FROM tasks WHERE conversation_id=? AND json_extract(data, '$.parentId') IS NOT NULL LIMIT 1"
+    ).get(conversationId);
   }
   retiredUsage(): RetiredUsage {
     const row=this.db.prepare('SELECT COALESCE(SUM(cost_usd),0) AS cost, COALESCE(SUM(tokens),0) AS tokens, COALESCE(MAX(unknown),0) AS unknown, COALESCE(MIN(measured),1) AS measured, COALESCE(SUM(usage_count),0) AS count FROM retired_usage').get() as {cost:number;tokens:number;unknown:number;measured:number;count:number};
@@ -122,39 +134,42 @@ export class Store {
       throw new Error('Deleted conversation WAL cleanup is pending');
     }
   }
-  // Caller verifies execution states and cross-conversation references first.
-  // This entire purge and budget retirement is one durable SQLite transaction;
-  // no message, result, tool args or transcript is copied into the usage ledger.
-  purgeConversation(id:string,tasks:Task[],rootConversationId:string=id):void {
+  // Caller validates all task states, cross-conversation references and
+  // invocation uncertainty first. A full descendant tree is retired in one
+  // transaction, so no partial deletion can strand a hidden child session.
+  purgeConversations(entries: Array<{id:string;tasks:Task[];rootConversationId:string}>):void {
+    if(!entries.length || new Set(entries.map(entry=>entry.id)).size!==entries.length)
+      throw new Error('Invalid conversation purge');
     this.transaction(()=>{
-      const usage=tasks.flatMap(t=>t.usage);
-      const cost=usage.reduce((sum,u)=>sum+(u.costUsd??0),0);
-      const tokens=usage.reduce((sum,u)=>sum+(u.input??0)+(u.output??0)+(u.cacheRead??0)+(u.cacheWrite??0),0);
-      const unknown=usage.some(u=>u.costUsd===null||u.input===null||u.output===null)?1:0;
-      const measured=usage.every(u=>u.costKind==='measured')?1:0;
-      this.db.prepare('INSERT INTO retired_usage(conversation_id,cost_usd,tokens,unknown,measured,usage_count) VALUES(?,?,?,?,?,?)').run(id,cost,tokens,unknown,measured,usage.length);
-      // Deleted child spend remains charged to its originating session. The
-      // global retired ledger above still counts it exactly once globally.
-      if(rootConversationId!==id)this.db.prepare('INSERT INTO retired_family_usage(conversation_id,root_conversation_id,cost_usd,tokens,unknown) VALUES(?,?,?,?,?)')
-        .run(id,rootConversationId,cost,tokens,unknown);
-      else this.db.prepare('DELETE FROM retired_family_usage WHERE root_conversation_id=?').run(id);
       const deleteApproval=this.db.prepare('DELETE FROM approvals WHERE id=?');
-      const ids=new Set(tasks.map(t=>t.id));
-      for(const approval of this.all<Approval>('approvals'))if(ids.has(approval.taskId))deleteApproval.run(approval.id);
-      // Invocation IDs are taskId + ":" + Pi call ID (including nested
-      // discovery/placement calls). Never leave sensitive tool args/results.
       const deleteInvocation=this.db.prepare('DELETE FROM invocations WHERE substr(id,1,?)=?');
-      for(const task of tasks)deleteInvocation.run(task.id.length+1,task.id+':');
-      this.db.prepare('DELETE FROM events WHERE conversation_id=?').run(id);
-      this.db.prepare('DELETE FROM tasks WHERE conversation_id=?').run(id);
-      const deleted=this.db.prepare('DELETE FROM conversations WHERE id=?').run(id);
-      if(deleted.changes!==1)throw new Error('Conversation not found');
-      // A tombstone survives even a filesystem cleanup failure or process
-      // crash; start() retries deletion without resurrecting the chat.
-      this.db.prepare('INSERT INTO pending_session_deletions(conversation_id) VALUES(?)').run(id);
+      for(const {id,tasks,rootConversationId} of entries) {
+        const usage=tasks.flatMap(t=>t.usage);
+        const cost=usage.reduce((sum,u)=>sum+(u.costUsd??0),0);
+        const tokens=usage.reduce((sum,u)=>sum+(u.input??0)+(u.output??0)+(u.cacheRead??0)+(u.cacheWrite??0),0);
+        const unknown=usage.some(u=>u.costUsd===null||u.input===null||u.output===null)?1:0;
+        const measured=usage.every(u=>u.costKind==='measured')?1:0;
+        this.db.prepare('INSERT INTO retired_usage(conversation_id,cost_usd,tokens,unknown,measured,usage_count) VALUES(?,?,?,?,?,?)')
+          .run(id,cost,tokens,unknown,measured,usage.length);
+        if(rootConversationId!==id)this.db.prepare('INSERT INTO retired_family_usage(conversation_id,root_conversation_id,cost_usd,tokens,unknown) VALUES(?,?,?,?,?)')
+          .run(id,rootConversationId,cost,tokens,unknown);
+        else this.db.prepare('DELETE FROM retired_family_usage WHERE root_conversation_id=?').run(id);
+        const ids=new Set(tasks.map(t=>t.id));
+        for(const approval of this.all<Approval>('approvals'))if(ids.has(approval.taskId))deleteApproval.run(approval.id);
+        for(const task of tasks)deleteInvocation.run(task.id.length+1,task.id+':');
+        this.db.prepare('DELETE FROM events WHERE conversation_id=?').run(id);
+        this.db.prepare('DELETE FROM tasks WHERE conversation_id=?').run(id);
+        if(this.db.prepare('DELETE FROM conversations WHERE id=?').run(id).changes!==1)
+          throw new Error('Conversation not found');
+        // A crash or filesystem failure cannot resurrect any deleted session.
+        this.db.prepare('INSERT INTO pending_session_deletions(conversation_id) VALUES(?)').run(id);
+      }
     });
-    // Tell connected tabs their stream is no longer valid after deletion.
-    queueMicrotask(()=>{for(const listener of this.eventListeners.get(id)??[])listener();});
+    for(const {id} of entries)
+      queueMicrotask(()=>{for(const listener of this.eventListeners.get(id)??[])listener();});
+  }
+  purgeConversation(id:string,tasks:Task[],rootConversationId:string=id):void {
+    this.purgeConversations([{id,tasks,rootConversationId}]);
   }
   close() { this.eventListeners.clear(); this.db.close(); }
 }

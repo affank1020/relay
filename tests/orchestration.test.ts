@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPlatform } from '../src/platform.js';
 import { Engine, type Limits } from '../src/engine.js';
-import { Store, type Task } from '../src/store.js';
-import type { Harness, HarnessRequest } from '../src/harness.js';
+import { Store, type Task, type Conversation } from '../src/store.js';
+import { PiHarness, type Harness, type HarnessRequest } from '../src/harness.js';
 
 const limits:Limits={concurrency:1,queue:64,sessionUsd:0,globalUsd:0,sessionTokens:0,reserveUsd:0,maxRunMs:5000};
 const fixture=(run:(r:HarnessRequest)=>Promise<string>):Harness=>({
@@ -437,5 +437,165 @@ test('retired child spend survives SQLite restart and does not retain deleted tr
   }finally{
     if(store.db.isOpen)store.close();
     await rm(folder,{recursive:true,force:true});
+  }
+});
+
+test('HTTP deletion of a finished root removes nested hidden child sessions and preserves global usage',async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'relay-tree-delete-'));
+  const store=new Store(join(directory,'state.sqlite'));
+  const pi=new PiHarness(directory,'cohere/north-mini-code:free');
+  const count=(costUsd:number)=>({input:1,output:0,cacheRead:0,cacheWrite:0,costUsd,costKind:'estimated' as const});
+  const harness=fixture(async request=>{
+    request.onUsage(count(.1));
+    if(request.task.prompt==='root private'){
+      await delegate(request,'child private');
+      return 'root result';
+    }
+    if(request.task.prompt==='child private'){
+      await delegate(request,'grandchild private');
+      return 'child result';
+    }
+    return 'result '+request.task.prompt;
+  });
+  harness.deleteConversationSessions=id=>pi.deleteConversationSessions(id);
+  const engine=new Engine(store,harness,limits);
+  const token='relay-nested-tree-delete-token-123';
+  const server=createPlatform(engine,token,'.','cohere/north-mini-code:free');
+  server.listen(0,'127.0.0.1');
+  await once(server,'listening');
+  const address=server.address();assert.ok(address&&typeof address==='object');
+  const base='http://127.0.0.1:'+address.port;
+  const api=(path:string,method='GET')=>fetch(base+'/api'+path,{method,
+    headers:{Authorization:'Bearer '+token}});
+  try {
+    const root=engine.conversation(),parent=engine.enqueue(root.id,'root private','tree-root-001');
+    await until(()=>store.get<Task>('tasks',parent.id)?.state==='completed');
+    await engine.stop();
+    const conversations=store.all<Conversation>('conversations');
+    assert.equal(conversations.length,3);
+    const children=conversations.filter(c=>c.id!==root.id);
+    assert.ok(children.every(c=>!!c.internalParentConversationId));
+    for(const id of conversations.map(c=>c.id)){
+      const dir=join(directory,'sessions',id);
+      await mkdir(dir,{recursive:true});
+      await writeFile(join(dir,'private.jsonl'),'private historical transcript');
+    }
+    const usageBefore=engine.usage();
+    assert.equal(Math.round(usageBefore.costUsd*100),50);
+    const visible=await api('/sessions');
+    assert.deepEqual((await visible.json() as {sessions:Array<{id:string}>}).sessions.map(x=>x.id),[root.id]);
+    const result=await api('/sessions/'+root.id,'DELETE');
+    assert.equal(result.status,204);
+    assert.equal(store.all<Conversation>('conversations').length,0);
+    assert.equal(engine.tasks().length,0);
+    assert.deepEqual(store.pendingSessionDeletions(),[]);
+    assert.deepEqual(engine.usage(),usageBefore);
+    assert.equal(store.retiredUsage().count,5);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM retired_family_usage').get()?.n,0);
+    for(const id of conversations.map(c=>c.id))await assert.rejects(access(join(directory,'sessions',id)),/ENOENT/);
+    assert.equal((await api('/sessions/'+root.id)).status,404);
+  } finally {
+    await new Promise<void>(resolve=>server.close(()=>resolve()));
+    await engine.stop();store.close();
+    await rm(directory,{recursive:true,force:true});
+  }
+});
+
+test('root deletion refuses unresolved descendant and leaves the entire tree untouched',async()=>{
+  const store=new Store(':memory:');
+  let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+  const harness=fixture(async r=>{
+    if(r.task.prompt==='root'){await delegate(r,'slow child');return 'delegated';}
+    if(r.task.prompt==='slow child'){await gate;return 'complete';}
+    return 'join';
+  });
+  harness.deleteConversationSessions=async()=>{};
+  const engine=new Engine(store,harness,limits);
+  try {
+    const c=engine.conversation(),parent=engine.enqueue(c.id,'root','active-tree-001');
+    await until(()=>engine.tasks().some(t=>t.parentId===parent.id&&t.state==='running'));
+    await assert.rejects(engine.deleteConversation(c.id),/active or uncertain/);
+    assert.equal(store.all<Conversation>('conversations').length,2);
+    assert.equal(store.pendingSessionDeletions().length,0);
+    release();await until(()=>store.get<Task>('tasks',parent.id)?.state==='completed');
+    await engine.stop();await engine.deleteConversation(c.id);
+    assert.equal(store.all<Conversation>('conversations').length,0);
+  }finally{release();await engine.stop();store.close();}
+});
+
+test('parent subtree purge leaves durable tombstones for all hidden sessions if Pi cleanup fails',async()=>{
+  const store=new Store(':memory:');
+  const deletions:string[]=[];
+  const harness=fixture(async()=> 'unused');
+  harness.deleteConversationSessions=async id=>{deletions.push(id);throw new Error('simulated Pi cleanup failure');};
+  const engine=new Engine(store,harness,limits);
+  const now=new Date().toISOString();
+  try{
+    const root=engine.conversation(),childChat=engine.conversation(undefined,root.id);
+    const parent:Task={id:crypto.randomUUID(),conversationId:root.id,requestId:'parent-cleanup',
+      prompt:'root',state:'completed',createdAt:now,parentId:null,dependencies:[],attemptOf:null,
+      result:'done',error:null,usage:[]};
+    const child:Task={...parent,id:crypto.randomUUID(),conversationId:childChat.id,requestId:'child-cleanup',
+      parentId:parent.id,prompt:'child',usage:[{input:1,output:0,cacheRead:0,cacheWrite:0,costUsd:.1,costKind:'estimated'}]};
+    store.save('tasks',parent);store.save('tasks',child);
+    await assert.rejects(engine.deleteConversation(root.id),/durable cleanup pending/);
+    assert.equal(deletions.length,1);
+    assert.equal(store.all<Conversation>('conversations').length,0);
+    assert.equal(store.pendingSessionDeletions().length,2);
+    assert.equal(store.retiredUsage().costUsd,.1);
+    const repair=fixture(async()=> 'unused');
+    repair.deleteConversationSessions=async id=>{deletions.push(id);};
+    const resumed=new Engine(store,repair,limits);
+    resumed.start();
+    await until(()=>store.pendingSessionDeletions().length===0);
+    assert.equal(new Set(deletions).size,2);
+    await resumed.stop();
+  }finally{await engine.stop();store.close();}
+});
+
+test('large sidebar history needs only one task-table scan and hides legacy internal sessions',async()=>{
+  const store=new Store(':memory:');
+  const now=new Date().toISOString();
+  const roots:string[]=[];
+  for(let i=0;i<450;i++){
+    const conversationId=crypto.randomUUID(),taskId=crypto.randomUUID();
+    roots.push(conversationId);
+    store.save('conversations',{id:conversationId,title:'Chat '+i,createdAt:now});
+    const root:Task={id:taskId,conversationId,requestId:'history-root-'+i,
+      prompt:'task '+i,state:'completed',createdAt:now,parentId:null,dependencies:[],
+      attemptOf:null,result:'done',error:null,usage:[]};
+    store.save('tasks',root);
+    if(i%3===0){
+      const childId=crypto.randomUUID();
+      store.save('conversations',{id:childId,title:'internal legacy',createdAt:now});
+      store.save('tasks',{...root,id:crypto.randomUUID(),conversationId:childId,requestId:'child-'+i,parentId:taskId});
+    }
+  }
+  const engine=new Engine(store,fixture(async()=> 'unused'),limits);
+  const token='relay-large-sidebar-list-token-123';
+  const server=createPlatform(engine,token,'.','cohere/north-mini-code:free');
+  server.listen(0,'127.0.0.1');
+  await once(server,'listening');
+  const address=server.address();assert.ok(address&&typeof address==='object');
+  const originalAll=store.all.bind(store);
+  let scans=0;
+  store.all=((table:Parameters<Store['all']>[0])=>{
+    if(table==='tasks')scans++;
+    return originalAll(table);
+  }) as Store['all'];
+  try{
+    const response=await fetch('http://127.0.0.1:'+address.port+'/api/sessions',
+      {headers:{Authorization:'Bearer '+token}});
+    assert.equal(response.status,200);
+    const sessions=(await response.json() as {sessions:Array<{id:string;busy:boolean}>}).sessions;
+    assert.equal(sessions.length,450);
+    assert.ok(sessions.every(session=>roots.includes(session.id)&&session.busy===false));
+    assert.equal(scans,1,'GET /sessions must decode the task table at most once, not once per chat');
+    const index=store.db.prepare("PRAGMA index_list('tasks')").all() as Array<{name:string}>;
+    assert.ok(index.some(i=>i.name==='task_internal_child_conversation'));
+  }finally{
+    store.all=originalAll;
+    await new Promise<void>(resolve=>server.close(()=>resolve()));
+    await engine.stop();store.close();
   }
 });
