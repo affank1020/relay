@@ -57,6 +57,9 @@ export class Gateway {
     }));
   }
   async invoke(task:Task,callId:string,name:string,args:Record<string,unknown>,signal:AbortSignal):Promise<unknown> {
+    // Enforcement is at invocation, not just at Pi tool discovery.
+    if(task.parentId && (!READ_TOOLS.has(name) || !task.delegation?.toolNames.includes('atlas_'+name)))
+      throw new Error('Child agent capability denied');
     const key=task.id+':'+callId;
     const digest=createHash('sha256').update(JSON.stringify({name,args})).digest('hex');
     const previous=this.store.get<{id:string;digest:string;state:string;result?:unknown}>('invocations',key);
@@ -66,7 +69,8 @@ export class Gateway {
       throw new Error('Invocation already dispatched; reconciliation required');
     }
     const id=randomUUID();
-    const fields:Partial<ExecutionEvent>={taskId:task.id,agentRunId:task.id,invocationId:id,tool:name,type:'tool',
+    const fields:Partial<ExecutionEvent>={taskId:task.id,agentId:task.agentId??null,agentRunId:task.agentRunId??null,
+      parentTaskId:task.parentId??null,invocationId:id,tool:name,type:'tool',
       projectId:uuid(args.projectId),workspaceId:uuid(args.checkoutId ?? args.workspaceId)};
     const emit=(state:string,extra:Partial<ExecutionEvent>={})=>this.store.event(task.conversationId,{...fields,...extra,state});
     if(!READ_TOOLS.has(name) && name!=='workspace_run_dev_task') { emit('denied'); throw new Error('Tool is not permitted'); }

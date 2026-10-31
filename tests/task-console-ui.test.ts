@@ -93,7 +93,7 @@ test('task workspace opens independently of chat, safely gates actions, and repl
     },async()=>{});
     await consoleInstance.show();
     assert.equal(get('taskRows').children.length,2);
-    assert.equal(get('taskCounts').children.length,8);
+    assert.equal(get('taskCounts').children.length,9);
     get('taskRows').children.find(row=>row.children[0]?.textContent?.includes('Review integration failure'))?.onclick?.();
     await drain();
     // The timeline is rendered as a descendant of the selected detail.

@@ -42,7 +42,7 @@ test('scheduler bounds concurrency, serializes conversations and supplies depend
   try {
     const c=engine.conversation(),other=engine.conversation();
     const a=engine.enqueue(c.id,'first','request-001');engine.enqueue(c.id,'second','request-002');
-    engine.enqueue(other.id,'dependent','request-003',[a.id]);
+    engine.enqueue(c.id,'dependent','request-003',[a.id]);
     await until(()=>engine.tasks().every(t=>t.state==='completed'));
     assert.ok(maximum<=2);assert.equal(order[0],'first');assert.match(order.at(-1)!,/result first/);
   }finally{await engine.stop();store.close();}
@@ -53,7 +53,7 @@ test('cancellation, dependency failure, queue bounds and inference budgets fail 
   const engine=new Engine(store,fixtureHarness(async r=>{await delay(5000,undefined,{signal:r.signal});return ''; }),{...limits,queue:2});
   try{
     const c=engine.conversation(),d=engine.conversation();const a=engine.enqueue(c.id,'wait','request-001');
-    engine.enqueue(d.id,'child','request-002',[a.id]);assert.throws(()=>engine.enqueue(c.id,'full','request-003'),/queue is full/);
+    engine.enqueue(c.id,'child','request-002',[a.id]);assert.throws(()=>engine.enqueue(c.id,'full','request-003'),/queue is full/);
     await until(()=>engine.tasks()[0].state==='running');await engine.cancel(a.id);
     await until(()=>engine.tasks().every(t=>['cancelled','failed'].includes(t.state)));
   }finally{await engine.stop();store.close();}

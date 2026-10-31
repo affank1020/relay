@@ -317,6 +317,12 @@ main { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height:
 /* Tool activity belongs to the reply, not to a stack of separate cards. */
 .inline-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 15px; margin: 0 0 10px; }
 .inline-tools[hidden] { display: none; }
+.inline-agents { margin: 0 0 10px; color: var(--text-secondary); font-size: 12px; }
+.inline-agents[hidden] { display: none; }
+.inline-agents summary { width: fit-content; cursor: pointer; }
+.inline-agent-children { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 7px 0 0 12px; }
+.inline-agent { color: var(--text-secondary); }
+
 .tool-pill {
   display: inline-flex;
   align-items: center;

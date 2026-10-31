@@ -1,7 +1,7 @@
 import type { Engine } from './engine.js';
 import type { Approval, Conversation, State, Task } from './store.js';
 
-const states = new Set<State>(['queued','running','awaiting_approval','completed','failed','cancelled','interrupted']);
+const states = new Set<State>(['queued','running','awaiting_approval','waiting_children','completed','failed','cancelled','interrupted']);
 const conversationId = /^[a-f0-9-]{1,80}$/;
 
 function params(url: URL) {

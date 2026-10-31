@@ -4,7 +4,8 @@ import { Type } from '@sinclair/typebox';
 import { Store, terminal, type Task, type Conversation, type Approval, type Usage } from './store.js';
 import { LocalProviderUnavailableError, ProviderRateLimitError, type Harness, type HarnessPhase } from './harness.js';
 import type { RelayModels } from './models.js';
-import { Gateway, type AtlasTransport } from './gateway.js';
+import { Gateway, READ_TOOLS, type AtlasTransport } from './gateway.js';
+import { ancestryRoot, delegationPolicy, handoffPrompt, used, validateDependencies, type DelegationSnapshot } from './orchestration.js';
 import { AtlasContextService, type AtlasContext } from './atlas-context.js';
 
 export interface Limits { concurrency:number; queue:number; sessionUsd:number; globalUsd:number; sessionTokens:number; reserveUsd:number; maxRunMs:number; }
@@ -26,7 +27,16 @@ export class Engine {
     store.transaction(()=>{
       for(const task of store.all<Task>('tasks'))if(['running','awaiting_approval'].includes(task.state)) {
         task.state='interrupted';task.error='Server restarted during execution. Reconcile tools before retrying.';store.save('tasks',task);
-        store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'task',state:'interrupted'});
+        store.event(task.conversationId,{taskId:task.id,agentRunId:task.agentRunId??null,agentId:task.agentId??null,type:'task',state:'interrupted'});
+      }
+      // A join whose execution was interrupted is not silently replayed.
+      for(const task of store.all<Task>('tasks'))if(task.state==='waiting_children'&&task.joinTaskId) {
+        const join=store.get<Task>('tasks',task.joinTaskId);
+        if(!join || join.state==='interrupted' || join.state==='failed' || join.state==='cancelled') {
+          task.state='interrupted';task.error='Child synthesis interrupted; reconcile before retrying.';
+          store.save('tasks',task);
+          store.event(task.conversationId,{taskId:task.id,agentRunId:task.agentRunId??null,type:'task',state:'interrupted'});
+        }
       }
       for(const approval of store.all<Approval>('approvals'))if(approval.state==='pending') { approval.state='rejected';store.save('approvals',approval); }
     });
@@ -125,35 +135,94 @@ export class Engine {
       unknown:(retired?.unknown??false)||all.some(u=>u.costUsd===null || u.input===null || u.output===null),
       costKind:(all.length+(retired?.count??0)) && all.every(u=>u.costKind==='measured') && (retired?.measured??true)?'measured':'estimated'};
   }
-  private budget(conversationId:string) {
+  private budget(conversationId:string,parentId:string|null=null,delegation?:DelegationSnapshot) {
     const local=this.usage(conversationId),global=this.usage();
     const reserved=this.active.size*this.limits.reserveUsd;
-    if((this.limits.sessionUsd>0 && (local.unknown || local.costUsd+this.limits.reserveUsd>this.limits.sessionUsd)) ||
+    // Descendant conversations share their initiating conversation's session
+    // budget. Creating new child sessions must not reset the parent's limit.
+    let family=local;
+    if(parentId) {
+      const all=this.tasks();
+      const byId=new Map(all.map(task=>[task.id,task]));
+      const parent=byId.get(parentId);
+      if(!parent)throw new Error('Parent task not found');
+      const root=ancestryRoot(parent,byId);
+      const descendants=all.filter(task=>ancestryRoot(task,byId)===root);
+      const usage=used(descendants.flatMap(task=>task.usage));
+      family={costUsd:usage.usd,tokens:usage.tokens,unknown:usage.unknown,costKind:'estimated'};
+    }
+    if((this.limits.sessionUsd>0 && (family.unknown || family.costUsd+this.limits.reserveUsd>this.limits.sessionUsd)) ||
        (this.limits.globalUsd>0 && (global.unknown || global.costUsd+reserved+this.limits.reserveUsd>this.limits.globalUsd)) ||
-       (this.limits.sessionTokens>0 && (local.unknown || local.tokens>=this.limits.sessionTokens))) throw new Error('Inference budget exhausted or usage unavailable');
+       (this.limits.sessionTokens>0 && (family.unknown || family.tokens>=this.limits.sessionTokens)) ||
+       (delegation?.maxCostUsd!=null && this.limits.reserveUsd>delegation.maxCostUsd))
+      throw new Error('Inference budget exhausted or usage unavailable');
   }
-  enqueue(conversationId:string,prompt:string,requestId:string,dependencies:string[]=[],parentId:string|null=null,attemptOf:string|null=null) {
+  enqueue(conversationId:string,prompt:string,requestId:string,dependencies:string[]=[],parentId:string|null=null,
+    attemptOf:string|null=null,options:{delegation?:DelegationSnapshot;kind?:'agent'|'join';continuationOf?:string;agentId?:string;modelKey?:string}={}) {
     if(typeof prompt!=='string'||!prompt.trim()||prompt.length>6000)throw new Error('Message length must be 1–6000');
     if(typeof requestId!=='string'||!requestId.match(/^[a-zA-Z0-9_-]{8,100}$/))throw new Error('A stable requestId is required');
     const c=this.store.get<Conversation>('conversations',conversationId);if(!c)throw new Error('Conversation not found');
     const existing=this.tasks(conversationId).find(t=>t.requestId===requestId);
-    if(existing) { if(existing.prompt!==prompt || JSON.stringify(existing.dependencies)!==JSON.stringify(dependencies))throw new Error('Request identity conflict');return existing; }
+    if(existing) {
+      if(existing.prompt!==prompt || JSON.stringify(existing.dependencies)!==JSON.stringify(dependencies) ||
+        existing.parentId!==parentId)throw new Error('Request identity conflict');
+      return existing;
+    }
     const tasks=this.tasks();
     if(tasks.length>=10000 || tasks.filter(t=>!terminal(t.state)).length>=this.limits.queue)throw new Error('Task queue is full');
-    if(!Array.isArray(dependencies)||dependencies.length>8||dependencies.some(id=>!tasks.some(t=>t.id===id)))throw new Error('Invalid dependencies');
-    if(parentId && !tasks.some(t=>t.id===parentId))throw new Error('Parent task not found');
-    this.budget(conversationId);
-    const task:Task={id:randomUUID(),conversationId,requestId,prompt,state:'queued',createdAt:new Date().toISOString(),parentId,dependencies,attemptOf,result:'',error:null,usage:[],atlasContext:c.atlasContext??null};
+    validateDependencies(tasks,conversationId,dependencies,parentId);
+    const parent=parentId?tasks.find(t=>t.id===parentId):undefined;
+    if(parentId && !parent)throw new Error('Parent task not found');
+    if(parent && !attemptOf && (!['running','awaiting_approval'].includes(parent.state) || !options.delegation))
+      throw new Error('Parent must be executing an admitted delegation');
+    if(options.modelKey && this.modelRegistry && !this.modelRegistry.models.some(model=>model.key===options.modelKey))
+      throw new Error('Invalid model selection');
+    this.budget(conversationId,parentId,options.delegation);
+    const task:Task={id:randomUUID(),conversationId,requestId,prompt,state:'queued',createdAt:new Date().toISOString(),
+      parentId,dependencies:[...dependencies],attemptOf,result:'',error:null,usage:[],atlasContext:c.atlasContext??null,
+      agentId:options.agentId??randomUUID(),agentRunId:randomUUID(),
+      ...(options.modelKey??c.modelKey?{modelKey:options.modelKey??c.modelKey}:{}),
+      ...(options.delegation?{delegation:options.delegation}:{}),
+      ...(options.kind?{kind:options.kind}:{}),
+      ...(options.continuationOf?{continuationOf:options.continuationOf}:{})};
     this.store.transaction(()=>{
       this.store.save('tasks',task);
       if(!c.manualTitle && c.title==='New conversation') { c.title=prompt.slice(0,55);this.store.save('conversations',c); }
-      this.store.event(conversationId,{taskId:task.id,agentRunId:task.id,type:'task',state:'queued'});
+      this.store.event(conversationId,{taskId:task.id,agentId:task.agentId,agentRunId:task.agentRunId,parentTaskId:parentId,type:'task',state:'queued'});
+      if(parent) this.store.event(parent.conversationId,{taskId:parent.id,agentRunId:parent.agentRunId??null,
+        agentId:parent.agentId??null,childTaskId:task.id,type:'delegation',state:'queued'});
     });
     this.kick();return task;
   }
   private kick() { if(this.scheduled||this.stopped)return;this.scheduled=true;queueMicrotask(()=>{this.scheduled=false;this.pump();}); }
   private pump() {
     if(this.stopped)return;
+    // A waiting parent does not occupy a worker. Once every direct child is
+    // terminal, persist exactly one synthesis continuation in its conversation.
+    for(const parent of this.tasks().filter(task=>task.state==='waiting_children'&&!task.joinTaskId)) {
+      const children=this.tasks().filter(task=>task.parentId===parent.id);
+      if(!children.length || children.some(child=>!terminal(child.state)))continue;
+      if(this.tasks().filter(t=>!terminal(t.state)).length>=this.limits.queue)continue;
+      try { this.budget(parent.conversationId,parent.id); }
+      catch {
+        this.finish(parent,'failed','Inference budget exhausted before child synthesis');
+        continue;
+      }
+      const join:Task={id:randomUUID(),conversationId:parent.conversationId,requestId:'join-'+parent.id,
+        prompt:'Synthesize delegated results',state:'queued',createdAt:new Date().toISOString(),
+        parentId:null,dependencies:[],attemptOf:null,result:'',error:null,usage:[],
+        atlasContext:parent.atlasContext??null,agentId:parent.agentId??randomUUID(),
+        agentRunId:randomUUID(),modelKey:parent.modelKey,kind:'join',continuationOf:parent.id};
+      this.store.transaction(()=>{
+        // The parent is the authoritative join lock after a crash/restart.
+        const current=this.store.get<Task>('tasks',parent.id);
+        if(!current||current.state!=='waiting_children'||current.joinTaskId)throw new Error('Join already claimed');
+        current.joinTaskId=join.id;
+        this.store.save('tasks',current);this.store.save('tasks',join);
+        this.store.event(parent.conversationId,{taskId:join.id,agentId:join.agentId,agentRunId:join.agentRunId,
+          parentTaskId:parent.id,type:'join',state:'queued'});
+      });
+    }
     const tasks=this.tasks();
     for(const task of tasks.filter(t=>t.state==='queued')) {
       const deps=task.dependencies.map(id=>this.store.get<Task>('tasks',id)!);
@@ -161,91 +230,212 @@ export class Engine {
       if(deps.some(d=>d.state!=='completed'))continue;
       if(this.active.size>=this.limits.concurrency)break;
       if(tasks.some(t=>t.conversationId===task.conversationId&&this.active.has(t.id)))continue;
-      try { this.budget(task.conversationId); } catch(e) { this.finish(task,'failed','Inference budget exhausted or usage unavailable');continue; }
+      try { this.budget(task.conversationId,task.parentId??task.continuationOf??null,task.delegation); }
+      catch { this.finish(task,'failed','Inference budget exhausted or usage unavailable');continue; }
       const controller=new AbortController();this.active.set(task.id,controller);
-      task.state='running';this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'task',state:'running'});
+      task.state='running';this.store.save('tasks',task);
+      this.store.event(task.conversationId,{taskId:task.id,agentId:task.agentId??null,
+        agentRunId:task.agentRunId??null,parentTaskId:task.parentId??task.continuationOf??null,type:'task',state:'running'});
+      if(task.parentId) {
+        const parent=this.store.get<Task>('tasks',task.parentId);
+        if(parent)this.store.event(parent.conversationId,{taskId:parent.id,agentRunId:parent.agentRunId??null,
+          childTaskId:task.id,type:'delegation',state:'running'});
+      }
       const job=this.execute(task,controller,deps).finally(()=>{this.active.delete(task.id);this.jobs.delete(job);this.kick();});
       this.jobs.add(job);
     }
   }
   private finish(task:Task,state:Task['state'],error:string|null=null) {
     task.state=state;task.error=error;
-    this.store.transaction(()=>{this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'task',state});});
+    this.store.transaction(()=>{
+      this.store.save('tasks',task);
+      this.store.event(task.conversationId,{taskId:task.id,agentId:task.agentId??null,
+        agentRunId:task.agentRunId??null,parentTaskId:task.parentId??task.continuationOf??null,type:'task',state});
+      if(task.parentId) {
+        const parent=this.store.get<Task>('tasks',task.parentId);
+        if(parent)this.store.event(parent.conversationId,{taskId:parent.id,agentRunId:parent.agentRunId??null,
+          childTaskId:task.id,type:'delegation',state});
+      }
+      if(task.continuationOf) {
+        const parent=this.store.get<Task>('tasks',task.continuationOf);
+        if(parent && parent.state==='waiting_children') {
+          parent.state=state==='completed'?'completed':state==='cancelled'?'cancelled':'interrupted';
+          parent.error=state==='completed'?null:'Child synthesis did not complete; reconcile before retrying.';
+          // The parent result contains the synthesis, not an extra synthetic user turn.
+          if(state==='completed'&&task.result&&!parent.result.includes(task.result))
+            parent.result+=(parent.result?'\n\n':'')+task.result;
+          this.store.save('tasks',parent);
+          this.store.event(parent.conversationId,{taskId:parent.id,agentId:parent.agentId??null,
+            agentRunId:parent.agentRunId??null,type:'task',state:parent.state});
+          if(parent.parentId) {
+            const ancestor=this.store.get<Task>('tasks',parent.parentId);
+            if(ancestor)this.store.event(ancestor.conversationId,{taskId:ancestor.id,
+              agentRunId:ancestor.agentRunId??null,childTaskId:parent.id,type:'delegation',state:parent.state});
+          }
+        }
+      }
+    });
+    if(['failed','cancelled','interrupted'].includes(state) && !task.continuationOf)
+      for(const child of this.tasks().filter(t=>t.parentId===task.id&&!terminal(t.state)))
+        void this.cancel(child.id);
+    this.kick();
   }
   private async execute(task:Task,controller:AbortController,deps:Task[]) {
     let phase:HarnessPhase|'atlas_tool_discovery'|'pi_initialization'='atlas_tool_discovery';
     const timeout=setTimeout(()=>controller.abort(new Error('Execution time limit reached')),this.limits.maxRunMs);
     try {
-      // Atlas discovery is optional for ordinary chat. Never equate an offline MCP with tool permission.
-      let atlasAvailable=true;
+      const joining=task.kind==='join'&&!!task.continuationOf;
+      // Joins are inference-only; child text is untrusted and cannot introduce
+      // new tool effects while we synthesise the outcome.
+      let atlasAvailable=false;
       let tools:Awaited<ReturnType<Gateway['tools']>>=[];
-      if(this.gateway) {
-        try { tools=await this.gateway.tools(task,controller.signal); }
+      if(!joining&&this.gateway) {
+        try { tools=await this.gateway.tools(task,controller.signal);atlasAvailable=true; }
         catch { controller.signal.throwIfAborted();atlasAvailable=false;tools=[]; }
-      } else atlasAvailable=false;
-      tools.push({
-        name:'relay_delegate',label:'Delegate task',description:'Queue independent work in a separate conversation. Returns a task ID; execution is bounded and may wait until this run finishes. Dependency results are passed to the child. At most four children per task.',
-        parameters:Type.Object({prompt:Type.String({minLength:1,maxLength:6000}),dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:8}))}),
+      }
+      const admitted=tools.filter(tool=>READ_TOOLS.has(tool.name.replace(/^atlas_/,''))).map(tool=>tool.name);
+      if(task.parentId) {
+        const allowed=new Set(task.delegation?.toolNames??[]);
+        tools=tools.filter(tool=>allowed.has(tool.name)&&admitted.includes(tool.name));
+      }
+      if(!joining)tools.push({
+        name:'relay_delegate',label:'Delegate task',
+        description:'Spawn a bounded independent child agent and return its durable task/run IDs. The parent will wait without using a worker slot and automatically synthesise all child outcomes, including failures. Each child has no external tools unless explicitly admitted from read-only parent capabilities.',
+        parameters:Type.Object({
+          prompt:Type.String({minLength:1,maxLength:6000}),
+          dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:8})),
+          tools:Type.Optional(Type.Array(Type.String(),{maxItems:16})),
+          context:Type.Optional(Type.String({maxLength:2000})),
+          modelKey:Type.Optional(Type.String()),
+          maxTokens:Type.Optional(Type.Integer({minimum:1,maximum:1000000})),
+          maxCostUsd:Type.Optional(Type.Number({exclusiveMinimum:0,maximum:100}))
+        }),
         execute:async (_id,input) => {
-          const args=input as {prompt:string;dependencies?:string[]};
+          const args=input as {prompt:string;dependencies?:string[];tools?:string[];context?:string;modelKey?:string;maxTokens?:number;maxCostUsd?:number};
           controller.signal.throwIfAborted();
-          if(this.tasks().filter(t=>t.parentId===task.id).length>=4)throw new Error('Child task limit reached');
-          // Delegation cannot form unbounded self-replication.
+          if(typeof args.prompt!=='string'||!args.prompt.trim()||args.prompt.length>6000)
+            throw new Error('Invalid child task prompt');
+          if(this.tasks().filter(child=>child.parentId===task.id).length>=4)
+            throw new Error('Child task limit reached');
           let depth=0,ancestor:Task|undefined=task;
-          while(ancestor?.parentId) { depth++;ancestor=this.store.get<Task>('tasks',ancestor.parentId); }
-          if(depth>=2)throw new Error('Delegation depth limit reached');
-          const parentConversation=this.store.get<Conversation>('conversations',task.conversationId);
-          const conversation=this.conversation(parentConversation?.modelKey);
-          // Delegation retains the parent's enqueue-time context, never a later chat selection.
+          while(ancestor?.parentId) {
+            depth++;if(depth>=2)throw new Error('Delegation depth limit reached');
+            ancestor=this.store.get<Task>('tasks',ancestor.parentId);
+          }
+          const existing=this.tasks();
+          validateDependencies(existing,task.conversationId,args.dependencies??[],task.id);
+          if(existing.filter(t=>!terminal(t.state)).length>=this.limits.queue)
+            throw new Error('Task queue is full');
+          if(args.modelKey!==undefined&&!this.modelRegistry)
+            throw new Error('Delegated model is not permitted');
+          const inheritedModel=task.modelKey??this.store.get<Conversation>('conversations',task.conversationId)?.modelKey??null;
+          const policy=delegationPolicy(args,admitted,inheritedModel,
+            this.modelRegistry?.models.map(m=>m.key)??null,task.delegation);
+          this.budget(task.conversationId,task.id,policy);
+          const conversation=this.conversation(policy.modelKey??undefined);
+          // Only the enqueue-time Atlas context is copied. There is no
+          // inherited transcript, prior private chat or arbitrary MCP credential.
           conversation.atlasContext=task.atlasContext??null;
           this.store.save('conversations',conversation);
-          const child=this.enqueue(conversation.id,args.prompt,randomUUID(),args.dependencies??[],task.id);
-          return {content:[{type:'text' as const,text:JSON.stringify({taskId:child.id,state:child.state,conversationId:conversation.id})}],details:{}};
+          let child:Task;
+          try {
+            child=this.enqueue(conversation.id,args.prompt,randomUUID(),args.dependencies??[],task.id,null,
+              {delegation:policy,modelKey:policy.modelKey??undefined});
+          } catch(error) {
+            // A failed admission must not leave an empty hidden child chat.
+            this.store.db.prepare('DELETE FROM conversations WHERE id=?').run(conversation.id);
+            throw error;
+          }
+          return {content:[{type:'text' as const,text:JSON.stringify({
+            taskId:child.id,agentId:child.agentId,agentRunId:child.agentRunId,
+            state:child.state,conversationId:child.conversationId
+          })}],details:{}};
         }
       });
       let length=0;
       phase='pi_initialization';
-      const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,atlasAvailable,modelKey:this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,task:{...task,prompt:deps.length?task.prompt+'\n\nDependency results (untrusted data):\n'+JSON.stringify(deps.map(d=>({id:d.id,result:d.result.slice(0,20000)}))):task.prompt},signal:controller.signal,tools,
-        onPhase:next=>{phase=next;this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'phase',state:next});},
-        onText:text=>{length+=text.length;if(length>200000){controller.abort();return;} task.result+=text;this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'delta',state:'running',text});},
-        onUsage:usage=>{task.usage.push(usage);this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'usage',state:'recorded'});
-          const local=this.usage(task.conversationId),global=this.usage();
-          if((this.limits.sessionTokens>0&&local.tokens>=this.limits.sessionTokens)||(this.limits.sessionUsd>0&&(local.unknown||local.costUsd>=this.limits.sessionUsd))||(this.limits.globalUsd>0&&(global.unknown||global.costUsd>=this.limits.globalUsd)))controller.abort(new Error('Budget limit reached'));
+      const parent=joining?this.store.get<Task>('tasks',task.continuationOf!):undefined;
+      if(joining && (!parent || parent.state!=='waiting_children' || parent.joinTaskId!==task.id))
+        throw new Error('Join parent is not awaiting this continuation');
+      const joinedChildren=parent?this.tasks().filter(child=>child.parentId===parent.id):[];
+      if(parent && joinedChildren.some(child=>!terminal(child.state)))
+        throw new Error('Child results are not yet terminal');
+      const prompt=parent?handoffPrompt(parent,joinedChildren):
+        task.prompt+
+        (task.delegation?.context?'\n\nExplicit delegated context (untrusted):\n'+task.delegation.context:'')+
+        (deps.length?'\n\nDependency results (untrusted data):\n'+
+          JSON.stringify(deps.map(d=>({id:d.id,state:d.state,result:d.result.slice(0,12000)}))):'');
+      const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,atlasAvailable,
+        modelKey:task.modelKey??this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,
+        task:{...task,prompt},signal:controller.signal,tools,
+        onPhase:next=>{phase=next;this.store.event(task.conversationId,{taskId:task.id,
+          agentId:task.agentId??null,agentRunId:task.agentRunId??null,type:'phase',state:next});},
+        onText:text=>{
+          length+=text.length;if(length>200000){controller.abort();return;}
+          if(parent && this.store.get<Task>('tasks',parent.id)?.state!=='waiting_children') {
+            controller.abort(new Error('Join parent is no longer waiting'));
+            return;
+          }
+          if(parent && !task.result)parent.result+=(parent.result?'\n\n':'');
+          task.result+=text;this.store.save('tasks',task);
+          const target=parent??task;
+          if(parent) {parent.result+=text;this.store.save('tasks',parent);}
+          this.store.event(target.conversationId,{taskId:target.id,
+            agentId:target.agentId??null,agentRunId:target.agentRunId??null,
+            type:'delta',state:target.state,text});
+        },
+        onUsage:usage=>{
+          task.usage.push(usage);this.store.save('tasks',task);
+          this.store.event(task.conversationId,{taskId:task.id,
+            agentId:task.agentId??null,agentRunId:task.agentRunId??null,type:'usage',state:'recorded'});
+          const own=used(task.usage),global=this.usage(),local=this.usage(task.conversationId);
+          let family=local;
+          if(task.parentId || task.continuationOf) {
+            const all=this.tasks(),byId=new Map(all.map(t=>[t.id,t]));
+            const root=ancestryRoot(byId.get(task.parentId??task.continuationOf!)!,byId);
+            const total=used(all.filter(t=>ancestryRoot(t,byId)===root || t.id===task.id).flatMap(t=>t.usage));
+            family={costUsd:total.usd,tokens:total.tokens,unknown:total.unknown,costKind:'estimated'};
+          }
+          if((task.delegation?.maxTokens!=null&&(own.unknown||own.tokens>=task.delegation.maxTokens))||
+            (task.delegation?.maxCostUsd!=null&&(own.unknown||own.usd>=task.delegation.maxCostUsd))||
+            (this.limits.sessionTokens>0&&(family.unknown||family.tokens>=this.limits.sessionTokens))||
+            (this.limits.sessionUsd>0&&(family.unknown||family.costUsd>=this.limits.sessionUsd))||
+            (this.limits.globalUsd>0&&(global.unknown||global.costUsd>=this.limits.globalUsd)))
+            controller.abort(new Error('Budget limit reached'));
         }});
       task.result=result.slice(0,200000);
-      this.finish(task,controller.signal.aborted?'cancelled':'completed');
+      const children=this.tasks().filter(child=>child.parentId===task.id);
+      this.finish(task,controller.signal.aborted?'cancelled':children.length?'waiting_children':'completed');
     } catch(e) {
       if(controller.signal.aborted) this.finish(task,'cancelled','Execution cancelled or limit reached');
       else if(e instanceof LocalProviderUnavailableError) {
         this.finish(task,'failed',e.reason==='missing_model'?'Local Ollama model not installed. Check ollama list and the Relay model configuration. No inference started.':'Local Ollama unavailable. Start Ollama and reconnect Tailscale, then retry the request. No inference started.');
         console.warn('Relay local provider unavailable',{taskId:task.id,phase,reason:e.reason});
-      }
-      else if(e instanceof ProviderRateLimitError) {
-        // Pi may already have retried the rate-limited provider internally.
-        // Never repeat a run automatically: tools may have dispatched earlier.
-        this.finish(task,'failed','OpenRouter rate limit reached (HTTP 429). Free-model quotas may be shared across models. Check OpenRouter usage and retry after the limit resets; reconcile any dispatched Atlas operation before retrying.');
+      } else if(e instanceof ProviderRateLimitError) {
+        this.finish(task,'failed','OpenRouter rate limit reached (HTTP 429). Free-model quotas may be shared across models. Check OpenRouter usage and retry after the limit resets; reconcile any dispatched operation before retrying.');
         console.warn('Relay provider rate limited',{taskId:task.id,phase});
-      }
-      else {
-        // Report only bounded, code-owned phase/type information; never log or
-        // persist arbitrary SDK error strings, which may contain credentials.
+      } else {
         const type=e instanceof Error && ['TypeError','RangeError','SyntaxError','AbortError'].includes(e.name)?e.name:'Error';
         this.finish(task,'failed',`Execution failed during ${phase} (${type}). Check Relay configuration; reconcile any dispatched operation.`);
         console.error('Relay execution failure',{taskId:task.id,phase,errorType:type});
       }
-    }
-    finally { clearTimeout(timeout); }
+    } finally { clearTimeout(timeout); }
   }
   async cancel(id:string) {
     const task=this.store.get<Task>('tasks',id);if(!task)throw new Error('Task not found');
     if(terminal(task.state))return task;
     const active=this.active.get(id);
     if(active)active.abort();else this.finish(task,'cancelled');
+    if(task.joinTaskId) {
+      const join=this.store.get<Task>('tasks',task.joinTaskId);
+      if(join&&!terminal(join.state))await this.cancel(join.id);
+    }
     for(const a of this.store.all<Approval>('approvals'))if(a.taskId===id&&a.state==='pending'){a.state='rejected';this.store.save('approvals',a);}
     return this.store.get<Task>('tasks',id)!;
   }
   retry(id:string,confirmed:boolean) {
-    const old=this.store.get<Task>('tasks',id);if(!old||!terminal(old.state)||old.state==='completed')throw new Error('Task cannot be retried');
+    const old=this.store.get<Task>('tasks',id);if(old?.kind==='join')throw new Error('Retry the parent task after reconciliation');
+    if(!old||!terminal(old.state)||old.state==='completed')throw new Error('Task cannot be retried');
     if(!confirmed)throw new Error('Explicit reconciliation confirmation is required before retrying');
     // A new conversation avoids replaying partially completed Pi context or tool effects.
     const source=this.store.get<Conversation>('conversations',old.conversationId);
@@ -253,12 +443,13 @@ export class Engine {
     // A confirmed retry reuses the failed run's pinned snapshot, not mutable source context.
     conversation.atlasContext=old.atlasContext??null;
     this.store.save('conversations',conversation);
-    return this.enqueue(conversation.id,old.prompt,randomUUID(),old.dependencies,old.parentId,old.id);
+    return this.enqueue(conversation.id,old.prompt,randomUUID(),old.dependencies,old.parentId,old.id,
+      {agentId:old.agentId,modelKey:old.modelKey,delegation:old.delegation});
   }
   private async approve(task:Task,invocationId:string,tool:string,args:Record<string,unknown>,signal:AbortSignal) {
     const approval:Approval={id:randomUUID(),taskId:task.id,invocationId,tool,args,state:'pending'};
     this.store.save('approvals',approval);task.state='awaiting_approval';this.store.save('tasks',task);
-    this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,invocationId,type:'approval',tool,state:'pending'});
+    this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.agentRunId??null,agentId:task.agentId??null,invocationId,type:'approval',tool,state:'pending'});
     while(true) {
       signal.throwIfAborted();
       const current=this.store.get<Approval>('approvals',approval.id)!;

@@ -2,13 +2,19 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import type { AtlasContext } from './atlas-context.js';
 
-export type State = 'queued' | 'running' | 'awaiting_approval' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+export type State = 'queued' | 'running' | 'awaiting_approval' | 'waiting_children' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export interface Conversation { id: string; title: string; createdAt: string; modelKey?: string; manualTitle?: boolean; atlasContext?: AtlasContext|null; }
 export interface Usage { input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; costUsd: number | null; costKind: 'estimated' | 'measured' | 'unknown'; }
-export interface Task { id: string; conversationId: string; requestId: string; prompt: string; state: State; createdAt: string; parentId: string | null; dependencies: string[]; attemptOf: string | null; result: string; error: string | null; usage: Usage[]; atlasContext?: AtlasContext|null; }
+export interface Task { id: string; conversationId: string; requestId: string; prompt: string; state: State; createdAt: string; parentId: string | null; dependencies: string[]; attemptOf: string | null; result: string; error: string | null; usage: Usage[]; atlasContext?: AtlasContext|null;
+  /** Absent on legacy tasks, never fabricated during migration. */
+  agentId?: string; agentRunId?: string; modelKey?: string;
+  delegation?: import('./orchestration.js').DelegationSnapshot;
+  kind?: 'agent' | 'join'; continuationOf?: string; joinTaskId?: string;
+}
 export interface ExecutionEvent {
-  schemaVersion: 1; id: string; sequence: number; timestamp: string; conversationId: string;
+  schemaVersion: 1 | 2; id: string; sequence: number; timestamp: string; conversationId: string;
   taskId: string | null; agentRunId: string | null; invocationId: string | null;
+  agentId?: string | null; parentTaskId?: string | null; childTaskId?: string | null;
   type: string; state: string; tool: string | null; atlasOperationId: string | null;
   projectId: string | null; workspaceId: string | null; selectedNodeId: string | null;
   executingNodeId: string | null; text?: string;
@@ -50,7 +56,7 @@ export class Store {
     else this.db.prepare('INSERT INTO '+table+'(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(value.id,JSON.stringify(value));
   }
   event(conversationId: string, fields: Partial<Omit<ExecutionEvent,'schemaVersion'|'id'|'sequence'|'timestamp'|'conversationId'>>): ExecutionEvent {
-    const e: ExecutionEvent={schemaVersion:1,id:randomUUID(),sequence:0,timestamp:new Date().toISOString(),conversationId,taskId:null,agentRunId:null,invocationId:null,type:'task',state:'queued',tool:null,atlasOperationId:null,projectId:null,workspaceId:null,selectedNodeId:null,executingNodeId:null,...fields};
+    const e: ExecutionEvent={schemaVersion:2,id:randomUUID(),sequence:0,timestamp:new Date().toISOString(),conversationId,taskId:null,agentRunId:null,invocationId:null,type:'task',state:'queued',tool:null,atlasOperationId:null,projectId:null,workspaceId:null,selectedNodeId:null,executingNodeId:null,...fields};
     const row=this.db.prepare('INSERT INTO events(id,conversation_id,data) VALUES(?,?,?)').run(e.id,conversationId,JSON.stringify(e));
     e.sequence=Number(row.lastInsertRowid); return e;
   }

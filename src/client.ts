@@ -18,14 +18,21 @@ let receiptVersion=0;
 // Keep a stable DOM node for each turn. Stream updates must not remount the
 // conversation, which would lose selection, focus and expanded tool details.
 interface MessageRow {
-  assistant:HTMLElement; tools:HTMLElement; content:HTMLElement|null;
+  assistant:HTMLElement; tools:HTMLElement; delegations:HTMLElement; content:HTMLElement|null;
   status:HTMLElement; error:HTMLElement; retry:HTMLButtonElement;
-  result:string; terminal:boolean; receiptKey:string;
+  result:string; terminal:boolean; receiptKey:string; delegationKey:string;
 }
 const messageRows=new Map<string,MessageRow>();
 const taskPhases=new Map<string,string>();
+const delegatedStates=new Map<string,Map<string,string>>();
+function indexDelegation(event:ExecutionEvent) {
+  if(event.type!=='delegation'||!event.taskId||!event.childTaskId)return;
+  let children=delegatedStates.get(event.taskId);
+  if(!children){children=new Map();delegatedStates.set(event.taskId,children);}
+  children.set(event.childTaskId,event.state);
+}
 function resetConversationView(){
-  messageRows.clear();taskPhases.clear();lastView='';
+  messageRows.clear();taskPhases.clear();delegatedStates.clear();lastView='';
 }
 function indexToolReceipt(event:ExecutionEvent){
   if(event.type!=='tool'||!event.invocationId||!event.taskId)return;
@@ -239,6 +246,8 @@ function render(data:Snapshot){
         const assistant=el('div','message assistant','');
         const tools=el('div','inline-tools','');
         tools.hidden=true;
+        const delegations=el('details','inline-agents','');delegations.hidden=true;
+        delegations.append(el('summary','',''),el('div','inline-agent-children',''));
         const status=el('p','status-line','');
         const error=el('p','error','');error.hidden=true;
         const retry=el('button','action','Retry in new conversation') as HTMLButtonElement;
@@ -247,9 +256,9 @@ function render(data:Snapshot){
           if(!window.confirm('Confirm you have checked Atlas for any completed or uncertain tool effects. A retry may repeat work.'))return;
           try {const r=await (await api('/tasks/'+task.id+'/retry',{method:'POST',body:'{"reconciled":true}'})).json() as {task:Task};await select(r.task.conversationId);}catch(e){notify(e);}
         };
-        assistant.append(tools,status,error,retry);
+        assistant.append(tools,delegations,status,error,retry);
         messages.append(assistant);
-        row={assistant,tools,content:null,status,error,retry,result:'',terminal:false,receiptKey:''};
+        row={assistant,tools,delegations,content:null,status,error,retry,result:'',terminal:false,receiptKey:'',delegationKey:''};
         messageRows.set(task.id,row);
       }
       const events=currentToolEvents(task.id);
@@ -264,6 +273,18 @@ function render(data:Snapshot){
         row.tools.hidden=events.length===0;
         row.receiptKey=receiptKey;
       }
+      const children=delegatedStates.get(task.id)??new Map<string,string>();
+      const delegationKey=[...children].map(([id,state])=>id+':'+state).join('|');
+      if(row.delegationKey!==delegationKey){
+        row.delegationKey=delegationKey;
+        const statuses=[...children.values()];
+        const running=statuses.filter(state=>['running','queued','awaiting_approval','waiting_children'].includes(state)).length;
+        row.delegations.querySelector('summary')!.textContent=
+          children.size+' subagent'+(children.size===1?'':'s')+(running?' · '+running+' active':' · finished');
+        const body=row.delegations.querySelector('.inline-agent-children')!;
+        body.replaceChildren(...[...children].map(([id,state])=>el('span','inline-agent',id.slice(0,8)+' · '+state.replace(/_/g,' '))));
+      }
+      row.delegations.hidden=children.size===0;
       const terminal=['completed','failed','interrupted','cancelled'].includes(task.state);
       // During generation, reuse a single text node instead of reparsing and
       // remounting all Markdown on every poll. Format once at completion.
@@ -283,6 +304,7 @@ function render(data:Snapshot){
       const activeTool=[...events].reverse().find(event=>['started','validating','running','awaiting_approval'].includes(event.state));
       const phase=taskPhases.get(task.id);
       const label=task.state==='queued'?'Queued for an agent':
+        task.state==='waiting_children'?'Waiting for subagents…':
         task.state==='awaiting_approval'?'Waiting for approval':
         activeTool?'Using '+toolLabel(activeTool.tool)+'…':
         task.result?'Responding…':
@@ -356,6 +378,7 @@ async function poll(){
     for(const event of replay.events){
       if(event.sequence<=cursor||event.type==='delta')continue;
       indexToolReceipt(event);
+      indexDelegation(event);
       if(event.type==='phase'&&event.taskId)taskPhases.set(event.taskId,event.state);
       activity.push(event);
     }

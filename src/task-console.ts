@@ -5,8 +5,8 @@ type Counts = Partial<Record<State,number>>;
 type Page = {tasks:Task[];nextCursor:string|null;hasMore:boolean;counts:Counts};
 type Conversation = {id:string;title:string;modelKey?:string|null};
 type Detail = {task:Task;conversation:Conversation|null;children:Task[];approvals:Array<Pick<Approval,'id'|'tool'|'state'> & {args:unknown}>};
-const states:State[]=['running','queued','awaiting_approval','failed','interrupted','completed','cancelled'];
-const actionable=new Set<State>(['running','queued','awaiting_approval']);
+const states:State[]=['running','queued','awaiting_approval','waiting_children','failed','interrupted','completed','cancelled'];
+const actionable=new Set<State>(['running','queued','awaiting_approval','waiting_children']);
 const retryable=new Set<State>(['failed','cancelled','interrupted']);
 
 function byId<T extends HTMLElement=HTMLElement>(id:string):T {
@@ -268,7 +268,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   function detailStructureVersion(data:Detail) {
     const task=data.task;
     return JSON.stringify([task.id,task.prompt,task.state,task.error,task.createdAt,
-      task.parentId,task.dependencies,task.attemptOf,
+      task.parentId,task.dependencies,task.attemptOf,task.agentId,task.agentRunId,task.joinTaskId,task.continuationOf,
       data.conversation?.id,data.conversation?.modelKey,
       data.approvals,data.children.map(child=>[child.id,child.prompt,child.state])]);
   }
@@ -316,6 +316,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     meta.append(node('span','',timestamp(task.createdAt)));
     if(data.conversation?.modelKey)meta.append(node('span','','Model selection: '+data.conversation.modelKey));
     meta.append(node('span','','Task '+task.id.slice(0,8)));
+    if(task.agentRunId)meta.append(node('span','','Run '+task.agentRunId.slice(0,8)));
     detail.append(meta);
     const actions=node('div','task-actions','');
     if(data.conversation)actions.append(button('Open conversation',()=>{void openConversation(task.conversationId).catch(error=>message(errorText(error)));}));
@@ -346,6 +347,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     relation('Dependencies',task.dependencies);
     relation('Child tasks',data.children.map(child=>child.id));
     relation('Previous attempt',task.attemptOf?[task.attemptOf]:[]);
+    relation('Synthesis',task.joinTaskId?[task.joinTaskId]:[]);
+    relation('Continuation of',task.continuationOf?[task.continuationOf]:[]);
     if(data.approvals.length) {
       detail.append(node('h3','task-section-heading','Approvals'));
       for(const approval of data.approvals) {

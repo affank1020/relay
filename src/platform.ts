@@ -95,7 +95,7 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
           }
         }
         if(!conversation[2]&&req.method==='GET') {
-          const tasks=engine.tasks(c.id);
+          const tasks=engine.tasks(c.id).filter(task=>task.kind!=='join');
           const turns=tasks.flatMap(t=>[{role:'user',text:t.prompt},...(t.result?[{role:'assistant',text:t.result}]:[])]);
           return send(res,200,{session:summary(c),turns,tasks,approvals:engine.store.all<Approval>('approvals').filter(a=>tasks.some(t=>t.id===a.taskId))});
         }
