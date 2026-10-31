@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Type } from '@sinclair/typebox';
 import { Store, terminal, type Task, type Conversation, type Approval, type Usage } from './store.js';
-import type { Harness, HarnessPhase } from './harness.js';
+import { ProviderRateLimitError, type Harness, type HarnessPhase } from './harness.js';
 import { Gateway, type AtlasTransport } from './gateway.js';
 
 export interface Limits { concurrency:number; queue:number; sessionUsd:number; globalUsd:number; sessionTokens:number; reserveUsd:number; maxRunMs:number; }
@@ -117,6 +117,12 @@ export class Engine {
       this.finish(task,controller.signal.aborted?'cancelled':'completed');
     } catch(e) {
       if(controller.signal.aborted) this.finish(task,'cancelled','Execution cancelled or limit reached');
+      else if(e instanceof ProviderRateLimitError) {
+        // Pi may already have retried the rate-limited provider internally.
+        // Never repeat a run automatically: tools may have dispatched earlier.
+        this.finish(task,'failed','OpenRouter rate limit reached (HTTP 429). Free-model quotas may be shared across models. Check OpenRouter usage and retry after the limit resets; reconcile any dispatched Atlas operation before retrying.');
+        console.warn('Relay provider rate limited',{taskId:task.id,phase});
+      }
       else {
         // Report only bounded, code-owned phase/type information; never log or
         // persist arbitrary SDK error strings, which may contain credentials.

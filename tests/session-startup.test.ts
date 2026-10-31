@@ -20,7 +20,7 @@ test('compiled Relay serves HTML and creates durable conversations', { timeout: 
       RELAY_MAX_ACTIVE: '1',
       RELAY_ACCESS_TOKEN: token,
       OPENROUTER_API_KEY: 'ci-test-key-not-valid-for-inference',
-      RELAY_MODEL: 'poolside/laguna-s-2.1:free',
+      RELAY_MODEL: 'cohere/north-mini-code:free',
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });

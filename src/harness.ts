@@ -7,6 +7,8 @@ export type HarnessPhase = 'preparing_directories' | 'loading_model' | 'loading_
 export interface HarnessRequest { version:1; task:Task; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; }
 export interface Harness { readonly version:1; readonly capabilities: { persistence:boolean; cancellation:boolean; tools:boolean }; run(request:HarnessRequest):Promise<string>; }
 const count=(n:unknown)=>typeof n==='number' && Number.isFinite(n) && n>=0?n:null;
+export const isPiRateLimited=(detail:unknown):boolean=>typeof detail==='string' && /\b429\b|\brate[\s_-]?limit(?:ed|ing)?\b/i.test(detail);
+export class ProviderRateLimitError extends Error { constructor(){super('OpenRouter rate limit');this.name='ProviderRateLimitError';} }
 export class PiHarness implements Harness {
   readonly version=1 as const;
   readonly capabilities={persistence:true,cancellation:true,tools:true};
@@ -52,7 +54,10 @@ export class PiHarness implements Harness {
       signal.throwIfAborted();
       onPhase?.('finalizing_response');
       const last=session.messages.at(-1);
-      if(last?.role==='assistant' && (last.stopReason==='error' || last.stopReason==='aborted'))throw new Error('Provider did not complete the response');
+      if(last?.role==='assistant' && (last.stopReason==='error' || last.stopReason==='aborted')) {
+        if(last.stopReason==='error' && isPiRateLimited(last.errorMessage))throw new ProviderRateLimitError();
+        throw new Error('Provider did not complete the response');
+      }
       return session.getLastAssistantText() || '';
     } finally { unsubscribe();signal.removeEventListener('abort',abort);session.dispose(); }
   }

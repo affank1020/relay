@@ -7,7 +7,7 @@ import { Engine } from './engine.js';
 import { McpTransport } from './gateway.js';
 import { createPlatform } from './platform.js';
 
-const model=process.env.RELAY_MODEL || 'poolside/laguna-s-2.1:free';
+const model=process.env.RELAY_MODEL || 'cohere/north-mini-code:free';
 const token=process.env.RELAY_ACCESS_TOKEN || '';
 if(token.length<24)throw new Error('RELAY_ACCESS_TOKEN must be 24+ characters');
 if(!process.env.OPENROUTER_API_KEY)throw new Error('OPENROUTER_API_KEY is required');

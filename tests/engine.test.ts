@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Engine, type Limits } from '../src/engine.js';
 import { Store, type Task } from '../src/store.js';
 import type { Harness, HarnessRequest } from '../src/harness.js';
-import { PiHarness } from '../src/harness.js';
+import { PiHarness, ProviderRateLimitError, isPiRateLimited } from '../src/harness.js';
 import { Type } from '@sinclair/typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 
@@ -78,7 +78,7 @@ test('real Pi SDK initializes restricted persistent session before cancellation 
   const engine=new Engine(store,fixtureHarness(async()=>''),limits);const c=engine.conversation();
   const task:Task={id:crypto.randomUUID(),conversationId:c.id,requestId:'pi-startup',prompt:'must not infer',state:'running',createdAt:new Date().toISOString(),parentId:null,dependencies:[],attemptOf:null,result:'',error:null,usage:[]};
   const controller=new AbortController();controller.abort(new Error('cancel-before-prompt'));
-  try{await assert.rejects(new PiHarness(root,'poolside/laguna-s-2.1:free').run({version:1,task,signal:controller.signal,tools:[],onText:()=>assert.fail(),onUsage:()=>assert.fail()}),/cancel-before-prompt/);}
+  try{await assert.rejects(new PiHarness(root,'cohere/north-mini-code:free').run({version:1,task,signal:controller.signal,tools:[],onText:()=>assert.fail(),onUsage:()=>assert.fail()}),/cancel-before-prompt/);}
   finally{await engine.stop();store.close();await rm(root,{recursive:true,force:true});}
 });
 
@@ -122,6 +122,32 @@ test('real Pi session accepts all 23 Atlas tools and relay_delegate before cance
   });
   const task:Task={id:crypto.randomUUID(),conversationId:crypto.randomUUID(),requestId:'tool-startup',prompt:'must not infer',state:'running',createdAt:new Date().toISOString(),parentId:null,dependencies:[],attemptOf:null,result:'',error:null,usage:[]};
   try {
-    await assert.rejects(new PiHarness(root,'poolside/laguna-s-2.1:free').run({version:1,task,signal:controller.signal,tools,onText:()=>assert.fail('text not expected'),onUsage:()=>assert.fail('usage not expected')}),/cancel-before-prompt/);
+    await assert.rejects(new PiHarness(root,'cohere/north-mini-code:free').run({version:1,task,signal:controller.signal,tools,onText:()=>assert.fail('text not expected'),onUsage:()=>assert.fail('usage not expected')}),/cancel-before-prompt/);
   } finally {await rm(root,{recursive:true,force:true});}
+});
+
+test('Pi rate-limit classifier detects provider rate limit messages',()=>{
+  assert.equal(isPiRateLimited('HTTP 429 Too Many Requests'),true);
+  assert.equal(isPiRateLimited('OpenRouter rate limit exceeded'),true);
+  assert.equal(isPiRateLimited('Model not found'),false);
+  assert.equal(isPiRateLimited(undefined),false);
+});
+
+test('provider rate limit shows actionable safe error without retrying',async()=>{
+  const store=new Store(':memory:');let runs=0;
+  const engine=new Engine(store,fixtureHarness(async request=>{
+    runs++;
+    request.onPhase?.('finalizing_response');
+    throw new ProviderRateLimitError();
+  }),limits);
+  try {
+    const conversation=engine.conversation();
+    engine.enqueue(conversation.id,'list Atlas projects','request-rate-001');
+    await until(()=>engine.tasks()[0]?.state==='failed');
+    const task=engine.tasks()[0];
+    assert.equal(runs,1);
+    assert.match(task.error||'',/OpenRouter rate limit reached \(HTTP 429\)/);
+    assert.match(task.error||'',/reconcile any dispatched Atlas operation/i);
+    assert.doesNotMatch(task.error||'',/credentials|secret|Bearer /i);
+  } finally {await engine.stop();store.close();}
 });

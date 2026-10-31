@@ -5,7 +5,7 @@ services:
     environment:
       RELAY_ACCESS_TOKEN: ${RELAY_ACCESS_TOKEN:?Set RELAY_ACCESS_TOKEN in .env}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
-      RELAY_MODEL: ${RELAY_MODEL:-poolside/laguna-s-2.1:free}
+      RELAY_MODEL: ${RELAY_MODEL:-cohere/north-mini-code:free}
       RELAY_MAX_ACTIVE: ${RELAY_MAX_ACTIVE:-1}
       RELAY_DATA_DIR: /data
       ATLAS_MCP_URL: ${ATLAS_MCP_URL:-}
