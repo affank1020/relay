@@ -77,8 +77,14 @@ export class Engine {
       throw new ConversationConflictError('Other conversations depend on this conversation');
     if(this.store.all<Approval>('approvals').some(a=>removed.has(a.taskId)&&a.state==='pending'))
       throw new ConversationConflictError('Conversation has pending approvals');
-    if(owned.some(t=>this.store.invocationStates(t.id).some(state=>state!=='completed')))
+    const outstanding=owned.flatMap(t=>this.store.invocationRecords(t.id))
+      .filter(r=>r.state!=='completed' &&
+        !(r.kind==='mcp_read'&&['failed_read','reconciled_read'].includes(r.state)));
+    if(outstanding.length){
+      if(outstanding.every(r=>r.kind==='mcp_read'&&['uncertain','dispatched','validating'].includes(r.state)))
+        throw new ConversationConflictError('Conversation has uncertain read-only MCP invocations');
       throw new ConversationConflictError('Conversation has uncertain tool invocations');
+    }
     // Checks, ledger retirement, record purge and tombstone creation are all
     // synchronous with no event-loop yield. No task can be scheduled between
     // validation and the transaction.
@@ -94,6 +100,36 @@ export class Engine {
       // The durable tombstone makes the remaining work retryable on startup.
       throw new SessionCleanupError('Conversation deleted; durable cleanup pending');
     }
+  }
+  // Explicit owner acknowledgement for read-only MCP calls whose outcome is
+  // indeterminate. This never retires Atlas or mutating tool operations.
+  reconcileMcpReadInvocations(conversationId:string,confirmed:boolean):number {
+    if(confirmed!==true)throw new Error('Explicit read reconciliation confirmation required');
+    if(!this.store.get<Conversation>('conversations',conversationId))
+      throw new ConversationNotFoundError('Conversation not found');
+    const owned=this.tasks(conversationId);
+    if(owned.some(t=>!terminal(t.state)||t.state==='interrupted'||this.active.has(t.id)))
+      throw new ConversationConflictError('Conversation has active or uncertain tasks');
+    if(this.store.all<Approval>('approvals').some(a=>a.state==='pending'&&owned.some(t=>t.id===a.taskId)))
+      throw new ConversationConflictError('Conversation has pending approvals');
+    const records=owned.flatMap(task=>this.store.invocationRecords(task.id).map(record=>({task,record})));
+    const blocking=records.filter(({record})=>record.state!=='completed' &&
+      !(record.kind==='mcp_read'&&['failed_read','reconciled_read'].includes(record.state)));
+    if(blocking.some(({record})=>record.kind!=='mcp_read' ||
+        !['uncertain','dispatched','validating'].includes(record.state)))
+      throw new ConversationConflictError('Conversation has uncertain tool invocations');
+    // Synchronous transaction prevents partially reconciled receipts. Keep
+    // an audit event; never change the historical tool execution outcome.
+    this.store.transaction(()=>{
+      for(const {task,record} of blocking){
+        this.store.save('invocations',{...record,state:'reconciled_read',
+          reconciledAt:new Date().toISOString()});
+        this.store.event(conversationId,{taskId:task.id,agentRunId:task.id,
+          invocationId:record.invocationId??null,tool:record.toolName??null,
+          type:'reconciliation',state:'read_reconciled'});
+      }
+    });
+    return blocking.length;
   }
   conversation(modelKey?:string) {
     if(this.store.all('conversations').length>=1000)throw new Error('Conversation limit reached');

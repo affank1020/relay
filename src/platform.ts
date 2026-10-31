@@ -84,7 +84,7 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         return detail?send(res,200,detail):send(res,404,{error:'Task not found'});
       }
       if(path==='/api/tasks'&&req.method==='GET')return send(res,200,{tasks:engine.tasks().slice(-200).reverse()});
-      const conversation=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/messages|\/events|\/stream|\/abort|\/context)?$/);
+      const conversation=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/messages|\/events|\/stream|\/abort|\/context|\/reconcile-mcp-reads)?$/);
       if(conversation) {
         const c=engine.store.get<Conversation>('conversations',conversation[1]);if(!c)return send(res,404,{error:'Conversation not found'});
         if(!conversation[2]&&req.method==='PATCH') {
@@ -108,6 +108,16 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
             if(error instanceof ConversationNotFoundError)return send(res,404,{error:'Conversation not found'});
             if(error instanceof ConversationConflictError)return send(res,409,{error:error.message});
             if(error instanceof SessionCleanupError)return send(res,503,{error:error.message});
+            throw error;
+          }
+        }
+        if(conversation[2]==='/reconcile-mcp-reads'&&req.method==='POST'){
+          const data=await body(req);
+          if(Object.keys(data).length!==1||data.confirmed!==true)
+            return send(res,400,{error:'Explicit read reconciliation confirmation required'});
+          try{return send(res,200,{reconciled:engine.reconcileMcpReadInvocations(c.id,true)});}
+          catch(error){
+            if(error instanceof ConversationConflictError)return send(res,409,{error:error.message});
             throw error;
           }
         }
