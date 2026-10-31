@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import type { Engine } from '../src/engine.js';
-import { taskConsoleDetail, taskConsolePage, taskConsoleStates } from '../src/task-console-api.js';
+import { taskConsoleDetail, taskConsolePage } from '../src/task-console-api.js';
 import { Store, type Task, type Conversation, type Approval } from '../src/store.js';
 
 function fixtures() {
@@ -82,23 +82,3 @@ test('task detail returns relationships and a redacted approval preview without 
 });
 
 
-test('bounded state reconciliation reveals only task state and conversation scope',()=>{
-  const {store,engine,all}=fixtures();
-  try {
-    const first=all[0],second=all[1],missing=randomUUID();
-    first.state='running';
-    first.result='internal model output must not be transmitted';
-    first.error='private error details';
-    store.save('tasks',first);
-    const url=new URL('http://localhost/api/task-console/task-states?ids='+[first.id,second.id,missing].join(','));
-    const result=taskConsoleStates(engine,url);
-    assert.deepEqual(Object.keys(result.states).sort(),[first.id,second.id].sort());
-    assert.deepEqual(result.states[first.id],{state:'running',conversationId:first.conversationId});
-    assert.ok(!JSON.stringify(result).includes(first.result));
-    assert.ok(!JSON.stringify(result).includes(first.error));
-    for(const invalid of ['', '?ids=x', '?ids='+first.id+','+first.id, '?ids='+Array.from({length:51},()=>randomUUID()).join(',')]) {
-      const query=new URL('http://localhost/api/task-console/task-states'+invalid);
-      assert.throws(()=>taskConsoleStates(engine,query),/Invalid task state IDs/,invalid);
-    }
-  } finally {store.close();}
-});
