@@ -41,7 +41,8 @@ function setBusy(value:boolean){
   $<HTMLButtonElement>('send').disabled=value||submitting;
   $<HTMLTextAreaElement>('prompt').disabled=value;
   $('stop').hidden=!value;
-  $('state').textContent=value?'Working…':'Ready';
+  $('state').hidden=!value;
+  $('state').textContent='Working…';
   $('state').className='run-state'+(value?' is-running':'');
 }
 function toolLabel(tool:string|null){
@@ -58,9 +59,8 @@ function renderSessions(){
   for(const session of matched){
     const button=el('button','session'+(session.id===current?' selected':''),'') as HTMLButtonElement;
     button.type='button';button.title=session.title;
-    const icon=el('span','session-icon','◱');icon.setAttribute('aria-hidden','true');
     const title=el('span','session-title',session.title);
-    button.append(icon,title);
+    button.append(title);
     if(session.busy)button.append(el('span','session-running',''));
     button.onclick=()=>{void select(session.id).catch(notify);closeSidebar();};
     parent.append(button);
@@ -74,17 +74,17 @@ function fillPrompt(value:string){
 }
 function emptyConversation(){
   const wrapper=el('div','empty','');
-  wrapper.append(el('span','spark','✳'),el('h2','','What are we working on?'),el('p','','Ask anything, or explore your Atlas projects and agents.'));
+  wrapper.append(el('h2','','What are we working on?'));
   const chips=el('div','prompt-chips','');
-  for(const [label,description,message] of [
-    ['Atlas health','Check infrastructure and service status','Use Atlas MCP to get the current Atlas status.'],
-    ['My projects','Explore projects in Atlas','Use Atlas MCP to list my projects.'],
-    ['Workspaces','Find available development workspaces','Use Atlas MCP to list my workspaces and their associated Nodes.'],
-    ['Atlas Nodes','Inspect connected devices and capabilities','Use Atlas MCP to list my Nodes and their available capabilities.']
+  for(const [label,message] of [
+    ['Atlas status','Use Atlas MCP to get the current Atlas status.'],
+    ['Projects','Use Atlas MCP to list my projects.'],
+    ['Workspaces','Use Atlas MCP to list my workspaces and their associated Nodes.'],
+    ['Nodes','Use Atlas MCP to list my Nodes and their available capabilities.']
   ]){
     const button=el('button','prompt-chip','') as HTMLButtonElement;
     button.type='button';
-    button.append(el('b','',label),el('small','',description));
+    button.append(el('span','',label),el('span','','↗'));
     button.onclick=()=>fillPrompt(message);
     chips.append(button);
   }
@@ -100,10 +100,11 @@ async function refresh(){
     for(const option of configuredModels){const item=document.createElement('option');item.value=option.key;item.textContent=option.label;picker.append(item);}
     picker.value=configuredModels.some(x=>x.key===previous)?previous:(state.defaultModelKey??configuredModels[0].key);
   }
-  $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===$<HTMLSelectElement>('modelPicker').value)?.label??state.model);
-  $('connection').textContent='Pi connected';
-  $('subtitle').textContent=state.atlas==='configured'?'Connected to Atlas · '+configuredModels.length+' models available':'Atlas not configured';
-  $('atlasSummary').title=state.atlas==='configured'?'Atlas MCP configured':'Atlas MCP is not configured';
+  $('connection').textContent=state.provider==='Preview'?'Local preview':'Pi connected';
+  const atlas=$('atlasSummary');
+  atlas.title=state.atlas==='configured'?'Atlas MCP configured, not independently health checked':'Atlas is not connected';
+  $('atlasLabel').textContent=state.atlas==='configured'?'Atlas MCP':state.atlas==='mock'?'Atlas (sample)':'Atlas not configured';
+  $('atlasOrb').className='status-orb'+(state.atlas==='configured'?'':' is-muted');
   knownSessions=list.sessions;
   renderSessions();
   return list.sessions;
@@ -125,13 +126,12 @@ function render(data:Snapshot){
     for(const task of data.tasks){
       const user=el('div','message user',task.prompt);messages.append(user);
       const assistant=el('div','message assistant','');
-      assistant.append(el('span','heading',task.state==='running'?'✳ Relay is working':task.state==='completed'?'✳ Relay':'✳ Relay · '+task.state));
       const events=currentToolEvents(task.id);
       if(events.length){
         const tools=el('div','inline-tools','');
         for(const event of events){
           const pill=el('div','tool-pill '+event.state,'');
-          pill.append(el('span','','◈'),el('strong','',toolLabel(event.tool)),el('span','tool-state',event.state));
+          pill.append(el('strong','',toolLabel(event.tool)),el('span','tool-state',event.state));
           tools.append(pill);
         }
         assistant.append(tools);
@@ -154,7 +154,6 @@ function render(data:Snapshot){
   $('title').textContent=data.session.title;
   const picker=$<HTMLSelectElement>('modelPicker');
   if(data.session.modelKey&&configuredModels.some(m=>m.key===data.session.modelKey))picker.value=data.session.modelKey;
-  $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===picker.value)?.label??'OpenRouter');
   $('cost').textContent=data.session.usage.tokens+' tokens'+(data.session.usage.unknown?' · usage incomplete':data.session.modelKey?.startsWith('ollama/')?' · local':' · $'+data.session.costUsd.toFixed(4));
   setBusy(data.session.busy);
   $('approvals').replaceChildren();
@@ -184,10 +183,10 @@ function renderActivity(){
       summary.append(el('span','event-marker '+e.state,''));
       const item=el('span','event-summary','');
       item.append(el('span','event-title',e.type==='tool'?toolLabel(e.tool):e.type==='task'?'Agent task':e.type==='approval'?'Approval required':e.type==='usage'?'Model usage':e.type));
-      item.append(el('span','event-sub',e.state+' · '+new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})));
+      item.append(el('span','event-sub',new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})));
       summary.append(item,el('span','event-open','⌄'));
       details.append(summary);
-      const fields={timestamp:e.timestamp,task:e.taskId,agentRun:e.agentRunId,invocation:e.invocationId,atlasOperation:e.atlasOperationId,project:e.projectId,workspace:e.workspaceId,selectedNode:e.selectedNodeId,executingNode:e.executingNodeId??'Not confirmed'};
+      const fields={state:e.state,timestamp:e.timestamp,task:e.taskId,agentRun:e.agentRunId,invocation:e.invocationId,atlasOperation:e.atlasOperationId,project:e.projectId,workspace:e.workspaceId,selectedNode:e.selectedNodeId,executingNode:e.executingNodeId??'Not confirmed'};
       details.append(el('pre','',JSON.stringify(fields,null,2)));
     }
     if(parent.children[index]!==details)parent.insertBefore(details,parent.children[index]??null);
@@ -269,18 +268,4 @@ $<HTMLFormElement>('form').onsubmit=event=>{void submit(event);};
 $('stop').onclick=()=>{if(current)void api('/sessions/'+current+'/abort',{method:'POST',body:'{}'}).then(()=>poll()).catch(notify);};
 $<HTMLTextAreaElement>('prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$<HTMLFormElement>('form').requestSubmit();}};
 $('toggleInspector').onclick=()=>{const panel=$('inspector');panel.hidden=!panel.hidden;$('toggleInspector').setAttribute('aria-expanded',String(!panel.hidden));};
-$('showTasks').onclick=async()=>{
-  const list=$('taskList');list.hidden=!list.hidden;
-  $('showTasks').setAttribute('aria-expanded',String(!list.hidden));
-  if(list.hidden)return;
-  try{
-    const data=await get<{tasks:Task[]}>('/tasks');list.replaceChildren();
-    for(const t of data.tasks.slice(0,35)){
-      const button=el('button','session','') as HTMLButtonElement;
-      button.append(el('span','session-icon',t.state==='completed'?'✓':t.state==='failed'?'!':'◷'),el('span','session-title',t.prompt.slice(0,70)));
-      button.title=t.state+' · '+t.prompt;button.onclick=()=>{void select(t.conversationId).then(closeSidebar).catch(notify);};list.append(button);
-    }
-    if(!data.tasks.length)list.append(el('span','sidebar-empty','No recent tasks.'));
-  }catch(e){notify(e);}
-};
 void bootstrap();
