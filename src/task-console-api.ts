@@ -68,5 +68,7 @@ export function taskConsoleDetail(engine:Engine,id:string) {
   const children=engine.store.db.prepare("SELECT data FROM tasks WHERE json_extract(data, '$.parentId')=? ORDER BY rowid DESC LIMIT 20")
     .all(id).map(row=>JSON.parse(String(row.data)) as Task);
   return {task,conversation:conversation?{id:conversation.id,title:conversation.title,modelKey:conversation.modelKey??null,
-    internal:engine.isInternalConversation(conversation)}:null,approvals,children};
+    internal:!!conversation.internalParentConversationId ||
+      engine.store.db.prepare("SELECT id FROM tasks WHERE conversation_id=? AND json_extract(data, '$.parentId') IS NOT NULL LIMIT 1")
+        .get(conversation.id)!==undefined}:null,approvals,children};
 }

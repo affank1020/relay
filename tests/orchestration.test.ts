@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { once } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createPlatform } from '../src/platform.js';
 import { Engine, type Limits } from '../src/engine.js';
 import { Store, type Task } from '../src/store.js';
@@ -279,7 +282,7 @@ test('family caps include earlier root turns, child joins, and per-family reserv
   }finally{await engine.stop();store.close();}
 });
 
-test('retired child usage stays charged to its original session after synthesis, deletion and reopen',async()=>{
+test('retired child usage stays charged to its original session after synthesis and deletion',async()=>{
   const store=new Store(':memory:');
   const record=(input:number,costUsd:number)=>({input,output:0,cacheRead:0,cacheWrite:0,costUsd,costKind:'estimated' as const});
   const harness=fixture(async r=>{
@@ -402,4 +405,37 @@ test('delegated Pi conversations do not appear in sidebar sessions, remain inspe
       {id:string;internalParentConversationId?:string});
     assert.deepEqual((await (await api('/sessions')).json() as {sessions:Array<{id:string}>}).sessions.map(x=>x.id),[c.id]);
   }finally{await new Promise<void>(resolve=>server.close(()=>resolve()));await engine.stop();store.close();}
+});
+
+test('retired child spend survives SQLite restart and does not retain deleted transcripts',async()=>{
+  const folder=await mkdtemp(join(tmpdir(),'relay-retired-child-'));
+  const file=join(folder,'relay.sqlite');
+  let store=new Store(file);
+  try{
+    const h=fixture(async()=> 'not executed');h.deleteConversationSessions=async()=>{};
+    const engine=new Engine(store,h,{...limits,sessionUsd:0.3,reserveUsd:0.02});
+    const parentChat=engine.conversation(),childChat=engine.conversation(undefined,parentChat.id);
+    const now=new Date().toISOString();
+    const parent:Task={id:crypto.randomUUID(),conversationId:parentChat.id,requestId:'root-record',
+      prompt:'root private instructions',state:'completed',createdAt:now,parentId:null,dependencies:[],
+      attemptOf:null,result:'answer',error:null,usage:[]};
+    const child:Task={...parent,id:crypto.randomUUID(),conversationId:childChat.id,requestId:'child-record',
+      prompt:'private child prompt',result:'private child result',parentId:parent.id,
+      usage:[{input:8,output:0,cacheRead:0,cacheWrite:0,costUsd:0.29,costKind:'estimated'}]};
+    store.save('tasks',parent);store.save('tasks',child);
+    await engine.deleteConversation(childChat.id);
+    assert.equal(store.retiredFamilyUsage(parentChat.id).tokens,8);
+    store.close();
+    store=new Store(file);
+    const resumed=new Engine(store,h,{...limits,sessionUsd:0.3,reserveUsd:0.02});
+    assert.equal(store.retiredFamilyUsage(parentChat.id).costUsd,0.29);
+    assert.equal(store.retiredUsage().costUsd,0.29);
+    assert.throws(()=>resumed.enqueue(parentChat.id,'next turn','retired-reopen-001'),/Inference budget/);
+    const ledger=JSON.stringify(store.db.prepare('SELECT * FROM retired_family_usage').all());
+    assert.doesNotMatch(ledger,/private child/);
+    await resumed.stop();
+  }finally{
+    if(store.db.isOpen)store.close();
+    await rm(folder,{recursive:true,force:true});
+  }
 });
