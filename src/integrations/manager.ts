@@ -59,18 +59,53 @@ export interface ProviderTransport {
   close():Promise<void>;
 }
 type McpClientConnection=Pick<Client,'listTools'|'callTool'|'close'>;
+interface McpSession {
+  promise:Promise<McpClientConnection>;
+  active:number;
+  stale:boolean;
+  closed:boolean;
+}
 export class HttpProviderTransport implements ProviderTransport {
-  private client?:Promise<McpClientConnection>;
+  private session?:McpSession;
   // Injection tests a genuine session lifecycle without using live credentials.
   constructor(private readonly config:ProviderConfig,
     private readonly open?:()=>Promise<McpClientConnection>) {}
-  private connect():Promise<McpClientConnection> {
-    if(this.client)return this.client;
-    const promise=this.open?this.open():this.openHttp();
-    this.client=promise;
-    // Failed initial negotiation does not poison subsequent discovery.
-    void promise.catch(()=>{if(this.client===promise)this.client=undefined;});
-    return promise;
+  private getSession():McpSession {
+    if(this.session)return this.session;
+    const session:McpSession={
+      promise:this.open?this.open():this.openHttp(),
+      active:0,stale:false,closed:false
+    };
+    this.session=session;
+    // Initial handshake failures cannot poison future attempts.
+    void session.promise.catch(()=>{
+      if(this.session===session)this.session=undefined;
+    });
+    return session;
+  }
+  private async retireIdle(session:McpSession):Promise<void> {
+    if(!session.stale||session.active||session.closed)return;
+    session.closed=true;
+    // Close only when every request using this particular client has settled.
+    await session.promise.then(client=>client.close()).catch(()=>{});
+  }
+  private async withClient<T>(operation:(client:McpClientConnection)=>Promise<T>):Promise<T> {
+    const session=this.getSession();
+    // Reserve before awaiting connect, so a simultaneous failure cannot close
+    // a connection before another caller has even entered its RPC.
+    session.active++;
+    try{
+      return await operation(await session.promise);
+    }catch(error){
+      session.stale=true;
+      if(this.session===session)this.session=undefined;
+      // Retire this generation for new calls but DO NOT interrupt active peers.
+      // An ambiguous invocation is never automatically retried.
+      throw error;
+    }finally{
+      session.active--;
+      await this.retireIdle(session);
+    }
   }
   private async openHttp():Promise<McpClientConnection> {
     const client=new Client({name:'relay-'+this.config.id,version:'1.0.0'});
@@ -79,16 +114,9 @@ export class HttpProviderTransport implements ProviderTransport {
     try {await client.connect(transport,{timeout:8000});return client;}
     catch(error){await client.close().catch(()=>{});throw error;}
   }
-  private async invalidate(client:McpClientConnection):Promise<void> {
-    const pending=this.client;
-    if(!pending||await pending.catch(()=>undefined)!==client)return;
-    // Never retry a failed call; only future discovery may reconnect.
-    this.client=undefined;
-    await client.close().catch(()=>{});
-  }
   async list(signal:AbortSignal):Promise<ListedTool[]> {
-    const client=await this.connect(),tools:ListedTool[]=[];
-    try {
+    return this.withClient(async client=>{
+      const tools:ListedTool[]=[];
       let cursor:string|undefined;
       for(let page=0;page<3;page++){
         signal.throwIfAborted();
@@ -99,17 +127,15 @@ export class HttpProviderTransport implements ProviderTransport {
         if(!cursor)return tools;
       }
       throw new Error('Tool catalogue page limit exceeded');
-    }catch(error){await this.invalidate(client);throw error;}
+    });
   }
   async call(name:string,args:Record<string,unknown>,signal:AbortSignal):Promise<unknown> {
-    const client=await this.connect();
-    try {return await client.callTool({name,arguments:args},undefined,{signal,timeout:20000});}
-    catch(error){await this.invalidate(client);throw error;}
+    return this.withClient(client=>client.callTool({name,arguments:args},undefined,{signal,timeout:20000}));
   }
   async close():Promise<void>{
-    const pending=this.client;
-    this.client=undefined;
-    if(pending)await (await pending.catch(()=>undefined))?.close().catch(()=>{});
+    const session=this.session;
+    this.session=undefined;
+    if(session){session.stale=true;await this.retireIdle(session);}
   }
 }
 const safeSchema=(schema:Record<string,unknown>):boolean=>{

@@ -290,5 +290,66 @@ test('uncertain MCP reads need explicit reconciliation; Atlas uncertainties cann
     assert.equal(store.events(c.id).at(-1)?.type,'reconciliation');
     await engine.deleteConversation(c.id);
     assert.equal(store.get('conversations',c.id),undefined);
+    const retained=store.db.prepare('SELECT read_count,acknowledged_at FROM retired_read_reconciliations WHERE conversation_id=?')
+      .get(c.id) as {read_count:number;acknowledged_at:string}|undefined;
+    assert.equal(retained?.read_count,1);
+    assert.ok(retained?.acknowledged_at);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM events WHERE conversation_id=?').get(c.id)?.n,0);
+    const schema=store.db.prepare("SELECT sql FROM sqlite_master WHERE name='retired_read_reconciliations'").get() as {sql:string};
+    assert.doesNotMatch(schema.sql,/args|result|prompt|tool_name|invocation_id/);
   }finally{await engine.stop();store.close();await registry.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('one failed MCP RPC does not terminate another agent sharing the client',async()=>{
+  const config=configuredProviders({RELAY_GITHUB_TOKEN:'fake'})[0];
+  let generations=0,closed=0,dispatches=0;
+  let firstStarted!:()=>void,secondStarted!:()=>void;
+  const firstEntered=new Promise<void>(resolve=>{firstStarted=resolve;});
+  const secondEntered=new Promise<void>(resolve=>{secondStarted=resolve;});
+  let failFirst!:()=>void,finishSecond!:()=>void;
+  const firstGate=new Promise<void>(resolve=>{failFirst=resolve;});
+  const secondGate=new Promise<void>(resolve=>{finishSecond=resolve;});
+  let unexpectedlyClosed=false;
+  const provider=new HttpProviderTransport(config,async()=>{
+    generations++;
+    let open=true;
+    return {
+      listTools:async()=>({tools:[{name:'issue_read',inputSchema:{type:'object'}}]}),
+      callTool:async()=>{
+        dispatches++;
+        if(dispatches===1){
+          firstStarted();
+          await firstGate;
+          throw new Error('first RPC timed out');
+        }
+        secondStarted();
+        await secondGate;
+        if(!open)throw new Error('peer connection was closed');
+        return {content:[{type:'text',text:'second completed'}]};
+      },
+      close:async()=>{
+        closed++;
+        if(!open)throw new Error('duplicate close');
+        open=false;
+        unexpectedlyClosed=true;
+      }
+    } as never;
+  });
+  const signal=new AbortController().signal;
+  try{
+    const first=provider.call('issue_read',{id:1},signal);
+    await firstEntered;
+    const second=provider.call('issue_read',{id:2},signal);
+    await secondEntered;
+    failFirst();
+    await assert.rejects(first,/first RPC timed out/);
+    assert.equal(closed,0,'must keep connection open while peer is in flight');
+    assert.equal(unexpectedlyClosed,false);
+    finishSecond();
+    assert.deepEqual(await second,{content:[{type:'text',text:'second completed'}]});
+    assert.equal(closed,1,'stale session closes after all peers finish');
+    assert.equal(dispatches,2,'each call dispatched once, never silently retried');
+    assert.equal((await provider.list(signal)).length,1);
+    assert.equal(generations,2,'next discovery gets a fresh connection');
+  }finally{await provider.close();}
 });

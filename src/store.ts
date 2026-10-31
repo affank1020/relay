@@ -55,6 +55,9 @@ export class Store {
       CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS invocations(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS retired_usage(conversation_id TEXT PRIMARY KEY, cost_usd REAL NOT NULL, tokens INTEGER NOT NULL, unknown INTEGER NOT NULL, measured INTEGER NOT NULL, usage_count INTEGER NOT NULL);
+      -- Minimal, non-content acknowledgement ledger persists after deletion.
+      -- No tool args/results, invocation IDs, names or transcript are retained.
+      CREATE TABLE IF NOT EXISTS retired_read_reconciliations(conversation_id TEXT PRIMARY KEY, read_count INTEGER NOT NULL CHECK(read_count>0), acknowledged_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS pending_session_deletions(conversation_id TEXT PRIMARY KEY);
       PRAGMA user_version=2; COMMIT;`);
   }
@@ -117,6 +120,14 @@ export class Store {
       const unknown=usage.some(u=>u.costUsd===null||u.input===null||u.output===null)?1:0;
       const measured=usage.every(u=>u.costKind==='measured')?1:0;
       this.db.prepare('INSERT INTO retired_usage(conversation_id,cost_usd,tokens,unknown,measured,usage_count) VALUES(?,?,?,?,?,?)').run(id,cost,tokens,unknown,measured,usage.length);
+      const acknowledged=tasks.flatMap(t=>this.invocationRecords(t.id))
+        .filter(r=>r.kind==='mcp_read'&&r.state==='reconciled_read');
+      if(acknowledged.length){
+        const acknowledgedAt=acknowledged.map(r=>typeof r.reconciledAt==='string'?r.reconciledAt:'')
+          .sort().at(-1)||new Date().toISOString();
+        this.db.prepare('INSERT INTO retired_read_reconciliations(conversation_id,read_count,acknowledged_at) VALUES(?,?,?)')
+          .run(id,acknowledged.length,acknowledgedAt);
+      }
       const deleteApproval=this.db.prepare('DELETE FROM approvals WHERE id=?');
       const ids=new Set(tasks.map(t=>t.id));
       for(const approval of this.all<Approval>('approvals'))if(ids.has(approval.taskId))deleteApproval.run(approval.id);

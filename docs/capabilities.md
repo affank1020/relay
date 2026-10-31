@@ -102,15 +102,20 @@ particular Skill was used or that any underlying action succeeded.
 A remote MCP `isError` response or an oversized response means the request
 returned; the invocation is recorded as a known `failed_read`. A connection
 loss or timeout after dispatch is `uncertain` and Relay does not retry the
-request automatically. Transport failures close and invalidate the connection
-so **the next** discovery can establish a new MCP session.
+request automatically. Failed sessions are removed from the shared connection
+cache, but their transport closes only after all already-active agent requests
+settle. The next discovery can establish a new MCP session without interrupting
+unrelated in-flight requests.
 
 A conversation can be deleted after known read failures. If the only remaining
 blockers are uncertain MCP reads, the delete dialog presents an explicit
 acknowledgement; the authenticated POST
 `/api/sessions/:id/reconcile-mcp-reads` with `{"confirmed":true}` retires
-those read-only invocation ledger entries, preserving an audit event, after
-which the user can delete the conversation. The endpoint rejects running,
+those read-only invocation ledger entries, writing a reconciliation event while
+the conversation exists, after which the user can delete the conversation. The
+normal deletion erases conversation events, but a minimal retained ledger row
+persists the number of acknowledged reads and the acknowledgement timestamp,
+without the transcript, arguments, tool output, or invocation IDs. The endpoint rejects running,
 interrupted or unknown operations and never reconciles Atlas tool actions or
 unclassified invocation records. This acknowledges uncertain *read receipts*,
 not successful execution, and it does not silently reissue a tool call.
