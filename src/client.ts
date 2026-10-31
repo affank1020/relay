@@ -431,8 +431,13 @@ function applyLiveBatch(events:ExecutionEvent[]){
         if(row.result.length>=offset&&row.result.slice(start,offset)===delta)continue;
         if(row.result.length===start){
           row.result+=delta;
-          if(row.content?.className==='streaming-text')row.content.textContent=row.result;
-          else{
+          if(row.content?.className==='streaming-text'){
+            const node=row.content.firstChild;
+            // Append the actual new token span; rewriting the entire text
+            // on each chunk causes needless layout work on long responses.
+            if(node?.nodeType===3 && 'appendData' in node)(node as Text).appendData(delta);
+            else row.content.textContent=row.result;
+          }else{
             const content=el('div','streaming-text',row.result);
             row.assistant.insertBefore(content,row.status);
             row.content?.remove();
