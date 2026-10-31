@@ -7,7 +7,7 @@ const constraints=new Set(['type','properties','required','additionalProperties'
   'minItems','maxItems','minProperties','maxProperties','enum','const',
   'anyOf','oneOf','allOf','format']);
 const plain=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==='object'&&!Array.isArray(v);
-const numeric=(v:unknown)=>typeof v==='number'&&Number.isFinite(v);
+const numeric=(v:unknown):v is number=>typeof v==='number'&&Number.isFinite(v);
 export function supportedSchema(v:unknown,depth=0):v is Schema {
   if(!plain(v)||depth>8||Object.keys(v).some(k=>!metadata.has(k)&&!constraints.has(k)))return false;
   if(v.type!==undefined && !['object','array','string','number','integer','boolean','null'].includes(String(v.type)))return false;
