@@ -3,6 +3,8 @@ import { renderMarkdown } from './markdown.js';
 import { mountTaskConsole } from './task-console.js';
 import { AtlasContextPicker } from './atlas-picker.js';
 import type { AtlasContext } from './atlas-context.js';
+import { projectAtlasCheckouts } from './atlas-awareness.js';
+import { renderAtlasCheckoutViews } from './atlas-awareness-ui.js';
 interface Summary { id:string; title:string; modelKey?:string; atlasContext?:AtlasContext|null; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
 interface Snapshot { session:Summary; tasks:Task[]; approvals:Approval[]; }
 function $<T extends HTMLElement=HTMLElement>(id:string):T { const n=document.getElementById(id);if(!n)throw new Error('Missing element '+id);return n as T; }
@@ -14,11 +16,13 @@ const activity:ExecutionEvent[]=[];
 // One latest event per tool invocation is retained for each task, including old
 // turns and paginated history replayed when a conversation is reopened.
 const toolReceipts=new Map<string,Map<string,ExecutionEvent>>();
+// Rebuildable, session-scoped Atlas facts (separate from the capped inspector).
+const atlasObservations=new Map<string,ExecutionEvent>();
 let receiptVersion=0;
 // Keep a stable DOM node for each turn. Stream updates must not remount the
 // conversation, which would lose selection, focus and expanded tool details.
 interface MessageRow {
-  assistant:HTMLElement; tools:HTMLElement; content:HTMLElement|null;
+  assistant:HTMLElement; tools:HTMLElement; awareness:HTMLElement; awarenessKey:string; content:HTMLElement|null;
   status:HTMLElement; error:HTMLElement; retry:HTMLButtonElement;
   result:string; terminal:boolean; receiptKey:string;
 }
@@ -74,7 +78,7 @@ function openSessionMenu(id:string,anchor:HTMLButtonElement){
   $<HTMLButtonElement>('menuRename').focus();
 }
 function resetSelection(){
-  epoch++;current=null;cursor=0;resetConversationView();activity.length=0;toolReceipts.clear();receiptVersion=0;
+  epoch++;current=null;cursor=0;resetConversationView();activity.length=0;toolReceipts.clear();atlasObservations.clear();receiptVersion=0;
   if(timer)clearTimeout(timer);timer=undefined;
   $('activity').replaceChildren();$('approvals').replaceChildren();$('messages').replaceChildren(emptyConversation());
   $('title').textContent='New chat';$('cost').textContent='0 tokens';
@@ -226,6 +230,7 @@ function render(data:Snapshot){
     renderSessions();
   }
   const messages=$('messages');
+  const observedViews=projectAtlasCheckouts([...atlasObservations.values()]);
   const firstPaint=!lastView;
   const nearBottom=messages.scrollHeight-messages.scrollTop-messages.clientHeight<120;
   if(!data.tasks.length) {
@@ -239,6 +244,7 @@ function render(data:Snapshot){
         const assistant=el('div','message assistant','');
         const tools=el('div','inline-tools','');
         tools.hidden=true;
+        const awareness=el('div','atlas-awareness','');awareness.hidden=true;
         const status=el('p','status-line','');
         const error=el('p','error','');error.hidden=true;
         const retry=el('button','action','Retry in new conversation') as HTMLButtonElement;
@@ -247,9 +253,9 @@ function render(data:Snapshot){
           if(!window.confirm('Confirm you have checked Atlas for any completed or uncertain tool effects. A retry may repeat work.'))return;
           try {const r=await (await api('/tasks/'+task.id+'/retry',{method:'POST',body:'{"reconciled":true}'})).json() as {task:Task};await select(r.task.conversationId);}catch(e){notify(e);}
         };
-        assistant.append(tools,status,error,retry);
+        assistant.append(tools,awareness,status,error,retry);
         messages.append(assistant);
-        row={assistant,tools,content:null,status,error,retry,result:'',terminal:false,receiptKey:''};
+        row={assistant,tools,awareness,awarenessKey:'',content:null,status,error,retry,result:'',terminal:false,receiptKey:''};
         messageRows.set(task.id,row);
       }
       const events=currentToolEvents(task.id);
@@ -263,6 +269,12 @@ function render(data:Snapshot){
         }
         row.tools.hidden=events.length===0;
         row.receiptKey=receiptKey;
+      }
+      const matching=observedViews.filter(view=>view.taskId===task.id);
+      const awarenessKey=JSON.stringify(matching);
+      if(row.awarenessKey!==awarenessKey){
+        renderAtlasCheckoutViews(row.awareness,matching);
+        row.awarenessKey=awarenessKey;
       }
       const terminal=['completed','failed','interrupted','cancelled'].includes(task.state);
       // During generation, reuse a single text node instead of reparsing and
@@ -356,6 +368,10 @@ async function poll(){
     for(const event of replay.events){
       if(event.sequence<=cursor||event.type==='delta')continue;
       indexToolReceipt(event);
+       if(event.type==='atlas_resource'||(event.type==='tool'&&event.workspaceId&&['failed','denied','cancelled'].includes(event.state))){
+         atlasObservations.set(event.id,event);
+         if(atlasObservations.size>3000)atlasObservations.delete(atlasObservations.keys().next().value!);
+       }
       if(event.type==='phase'&&event.taskId)taskPhases.set(event.taskId,event.state);
       activity.push(event);
     }
@@ -385,7 +401,7 @@ async function poll(){
 }
 async function select(id:string){
   closeTaskConsole();
-  epoch++;current=id;cursor=0;resetConversationView();activity.length=0;toolReceipts.clear();receiptVersion=0;$('activity').replaceChildren();remember('relay.conversation',id);
+  epoch++;current=id;cursor=0;resetConversationView();activity.length=0;toolReceipts.clear();atlasObservations.clear();receiptVersion=0;$('activity').replaceChildren();remember('relay.conversation',id);
   const generation=epoch;const data=await get<Snapshot>('/sessions/'+id);
   if(generation!==epoch)return;
   render(data);await refresh();void poll();
