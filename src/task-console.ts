@@ -129,7 +129,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       row.children[0].textContent=short(task.prompt,145)||'Untitled task';
       const source=conversations.get(task.conversationId)?.title??'Unavailable conversation';
       const relations=[task.parentId?'Delegated':'',task.dependencies.length?task.dependencies.length+' dependencies':'',task.attemptOf?'Retry':''].filter(Boolean).join(' · ');
-      row.children[1].textContent=label(task.state)+' · '+short(source,35)+' · '+timestamp(task.createdAt)+(relations?' · '+relations:'');
+      const model=conversations.get(task.conversationId)?.modelKey;
+      row.children[1].textContent=label(task.state)+' · '+short(source,35)+(model?' · '+short(model,28):'')+' · '+timestamp(task.createdAt)+(relations?' · '+relations:'');
       row.children[2].textContent=short(task.error||task.result||'',135);
       row.title=task.prompt;
       if(list.children[index]!==row)list.insertBefore(row,list.children[index]??null);
@@ -301,6 +302,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
           event.atlasOperationId?'Atlas operation: '+event.atlasOperationId:'',
           event.selectedNodeId?'Selected node: '+event.selectedNodeId:'',
           event.executingNodeId?'Executing node (reported receipt): '+event.executingNodeId:'',
+          event.agentRunId&&event.agentRunId!==event.taskId?'Agent run: '+event.agentRunId:'',
           event.invocationId?'Invocation: '+event.invocationId:''
         ].filter(Boolean);
         if(labels.length)item.append(node('p','task-event-fields',labels.join(' · ')));
