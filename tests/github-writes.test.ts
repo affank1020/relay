@@ -275,3 +275,63 @@ test('cancelling a pending GitHub write rejects its approval with no remote disp
     assert.deepEqual(store.all<Approval>('approvals').map(a=>a.state),['rejected']);
   }finally{await engine.stop();store.close();await registry.close();await rm(root,{recursive:true,force:true});}
 });
+
+
+test('rejected GitHub write does not block uncertain read reconciliation or conversation deletion',async()=>{
+  const store=new Store(':memory:');
+  const task={...taskFixture(store),state:'completed' as const};
+  store.save('tasks',task);
+  const harness={version:1 as const,capabilities:{persistence:true,cancellation:true,tools:true},
+    deleteConversationSessions:async()=>{},run:async()=>''};
+  const engine=new Engine(store,harness,{concurrency:1,queue:4,sessionUsd:0,globalUsd:0,
+    sessionTokens:0,reserveUsd:0,maxRunMs:1000});
+  const readId=task.id+':read',writeId=task.id+':rejected-write';
+  try {
+    store.save('invocations',{id:readId,kind:'mcp_read',state:'uncertain',
+      invocationId:randomUUID(),toolName:'github:issue_read'});
+    store.save('invocations',{id:writeId,kind:'mcp_write',state:'denied_before_dispatch',
+      invocationId:randomUUID(),toolName:'github:create_issue'});
+    await assert.rejects(engine.deleteConversation(task.conversationId),
+      /uncertain read-only MCP invocations/);
+    assert.equal(engine.reconcileMcpReadInvocations(task.conversationId,true),1,
+      'only the read should be reconciled');
+    assert.equal(store.get<{state:string}>('invocations',readId)?.state,'reconciled_read');
+    assert.equal(store.get<{state:string}>('invocations',writeId)?.state,'denied_before_dispatch',
+      'do not reclassify the rejected write as a read');
+    const receipts=store.events(task.conversationId).filter(e=>e.type==='reconciliation');
+    assert.equal(receipts.length,1);
+    assert.equal(receipts[0].tool,'github:issue_read');
+    assert.equal(receipts[0].agentRunId,task.agentRunId);
+    await engine.deleteConversation(task.conversationId);
+    assert.equal(store.get('conversations',task.conversationId),undefined);
+    const ledger=store.db.prepare(
+      'SELECT read_count FROM retired_read_reconciliations WHERE conversation_id=?'
+    ).get(task.conversationId) as {read_count:number}|undefined;
+    assert.equal(ledger?.read_count,1);
+  }finally{await engine.stop();store.close();}
+});
+
+test('a dispatched or uncertain GitHub mutation still blocks read reconciliation',async()=>{
+  for(const state of ['dispatched','uncertain']){
+    const store=new Store(':memory:');
+    const task={...taskFixture(store),state:'completed' as const};
+    store.save('tasks',task);
+    const engine=new Engine(store,{version:1,capabilities:{persistence:true,cancellation:true,tools:true},
+      deleteConversationSessions:async()=>{},run:async()=>''},
+      {concurrency:1,queue:4,sessionUsd:0,globalUsd:0,sessionTokens:0,reserveUsd:0,maxRunMs:1000});
+    const readId=task.id+':read',writeId=task.id+':write';
+    try {
+      store.save('invocations',{id:readId,kind:'mcp_read',state:'uncertain',
+        invocationId:randomUUID(),toolName:'github:issue_read'});
+      store.save('invocations',{id:writeId,kind:'mcp_write',state,
+        invocationId:randomUUID(),toolName:'github:create_issue'});
+      assert.throws(()=>engine.reconcileMcpReadInvocations(task.conversationId,true),
+        /uncertain tool invocations/);
+      assert.equal(store.get<{state:string}>('invocations',readId)?.state,'uncertain');
+      assert.equal(store.get<{state:string}>('invocations',writeId)?.state,state);
+      assert.equal(store.events(task.conversationId).filter(e=>e.type==='reconciliation').length,0);
+      await assert.rejects(engine.deleteConversation(task.conversationId),
+        /uncertain tool invocations/);
+    }finally{await engine.stop();store.close();}
+  }
+});
