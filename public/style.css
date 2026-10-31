@@ -481,7 +481,7 @@ dialog button[type=submit] { width: 100%; margin-top: 12px; padding: 11px; borde
 .task-actions .action { border: 1px solid var(--border-strong); }
 .task-actions .task-danger { color: var(--danger); }
 .task-error { color: var(--danger); overflow-wrap: anywhere; font-size: 12px; }
-.task-result { margin: 6px 0 20px; color: var(--text-secondary); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-result { margin: 6px 0 20px; max-height: min(50dvh, 540px); overflow: auto; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-width: thin; }
 .task-section-heading { margin: 22px 0 12px; font-size: 13px; font-weight: 570; }
 .task-relation { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .task-label { flex: 0 0 100px; color: var(--text-muted); font-size: 11px; }
