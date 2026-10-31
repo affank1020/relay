@@ -1,7 +1,9 @@
 import type { Task, ExecutionEvent, Approval } from './store.js';
 import { renderMarkdown } from './markdown.js';
 import { mountTaskConsole } from './task-console.js';
-interface Summary { id:string; title:string; modelKey?:string; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
+import { AtlasContextPicker } from './atlas-picker.js';
+import type { AtlasContext } from './atlas-context.js';
+interface Summary { id:string; title:string; modelKey?:string; atlasContext?:AtlasContext|null; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
 interface Snapshot { session:Summary; tasks:Task[]; approvals:Approval[]; }
 function $<T extends HTMLElement=HTMLElement>(id:string):T { const n=document.getElementById(id);if(!n)throw new Error('Missing element '+id);return n as T; }
 const hosted=window.location.protocol==='https:';
@@ -23,6 +25,66 @@ function indexToolReceipt(event:ExecutionEvent){
 }
 let configuredModels:{key:string;label:string}[]=[];
 let knownSessions:Summary[]=[];
+let sendRecoveryNotice='';
+function clearPendingForDeletedConversation(id:string){
+  if(pending?.conversationId!==id)return;
+  const unsent=pending.message;
+  pending=null;
+  remember('relay.pending','');
+  const prompt=$<HTMLTextAreaElement>('prompt');
+  if(!prompt.value.trim()||prompt.value.trim()===unsent.trim()){
+    prompt.value=unsent;
+    sendRecoveryNotice='That conversation was deleted. Your unconfirmed message is in the composer; review it before sending.';
+  }else{
+    sendRecoveryNotice='That conversation was deleted. An unconfirmed send was cleared; your current draft is unchanged.';
+  }
+  $('notice').textContent=sendRecoveryNotice;
+}
+let menuTarget:string|null=null, menuAnchor:HTMLButtonElement|null=null, dialogTarget:string|null=null;
+function closeSessionMenu(restoreFocus=false){
+  const menu=$('sessionMenu'),anchor=menuAnchor;
+  menu.hidden=true;
+  if(anchor)anchor.setAttribute('aria-expanded','false');
+  menuTarget=null;menuAnchor=null;
+  // Escape is a keyboard dismissal: return to the still-mounted invoker.
+  // Pointer dismissal and modal transitions must not steal the new focus.
+  if(restoreFocus&&anchor?.isConnected)anchor.focus();
+}
+function openSessionMenu(id:string,anchor:HTMLButtonElement){
+  const menu=$('sessionMenu');
+  if(menuTarget===id&&!menu.hidden){closeSessionMenu();return;}
+  closeSessionMenu();
+  menuTarget=id;menuAnchor=anchor;anchor.setAttribute('aria-expanded','true');
+  const rect=anchor.getBoundingClientRect();
+  menu.style.left=Math.max(8,Math.min(window.innerWidth-166,rect.right-158))+'px';
+  menu.style.top=Math.max(8,Math.min(window.innerHeight-86,rect.bottom+3))+'px';
+  menu.hidden=false;
+  $<HTMLButtonElement>('menuRename').focus();
+}
+function resetSelection(){
+  epoch++;current=null;cursor=0;lastView='';activity.length=0;toolReceipts.clear();receiptVersion=0;
+  if(timer)clearTimeout(timer);timer=undefined;
+  $('activity').replaceChildren();$('approvals').replaceChildren();$('messages').replaceChildren(emptyConversation());
+  $('title').textContent='New chat';$('cost').textContent='0 tokens';
+  setBusy(false);remember('relay.conversation','');
+  renderSessions();
+}
+function openRename(id:string){
+  const session=knownSessions.find(s=>s.id===id);if(!session)return;
+  closeSessionMenu();dialogTarget=id;
+  $<HTMLInputElement>('renameInput').value=session.title;
+  $('renameError').textContent='';
+  const dialog=$<HTMLDialogElement>('renameDialog');dialog.showModal();
+  $<HTMLInputElement>('renameInput').focus();$<HTMLInputElement>('renameInput').select();
+}
+function openDelete(id:string){
+  const session=knownSessions.find(s=>s.id===id);if(!session)return;
+  closeSessionMenu();dialogTarget=id;
+  $('deleteName').textContent=session.title;
+  $('deleteError').textContent='';
+  $<HTMLDialogElement>('deleteDialog').showModal();
+  $<HTMLButtonElement>('deleteCancel').focus();
+}
 const text=(e:unknown)=>e instanceof Error?e.message:String(e);
 function el(tag:string,className:string,value:string){const n=document.createElement(tag);n.className=className;n.textContent=value;return n;}
 function remember(key:string,value:string){try{window.sessionStorage?.setItem(key,value);}catch{}}
@@ -37,6 +99,7 @@ async function api(path:string,options:RequestInit={}):Promise<Response>{
 }
 async function get<T>(path:string){return await (await api(path)).json() as T;}
 function notify(error:unknown){$('notice').textContent=text(error);}
+const atlasPicker=new AtlasContextPicker($('atlasContext'),api,notify);
 function setBusy(value:boolean){
   busy=value;
   $<HTMLButtonElement>('send').disabled=value||submitting;
@@ -53,20 +116,34 @@ function currentToolEvents(taskId:string){
   return [...(toolReceipts.get(taskId)?.values()??[])].sort((a,b)=>a.sequence-b.sequence);
 }
 function renderSessions(){
+  const menu=$('sessionMenu');
+  // A refresh replaces the sidebar buttons. If keyboard focus was in the
+  // open actions group, give it back to the new invoker after rendering.
+  const focusedMenuTarget=!menu.hidden&&document.activeElement&&menu.contains(document.activeElement)
+    ?menuTarget:null;
+  closeSessionMenu();
+  let focusRestored=false;
   const q=$<HTMLInputElement>('sessionSearch').value.trim().toLowerCase();
   const matched=knownSessions.filter(s=>s.title.toLowerCase().includes(q));
   $('sessionCount').textContent=String(matched.length);
   const parent=$('sessions');parent.replaceChildren();
   for(const session of matched){
+    const row=el('div','session-row','');
     const button=el('button','session'+(session.id===current&&!taskConsole.visible?' selected':''),'') as HTMLButtonElement;
     button.type='button';button.title=session.title;
-    const title=el('span','session-title',session.title);
-    button.append(title);
+    button.append(el('span','session-title',session.title));
     if(session.busy)button.append(el('span','session-running',''));
-    button.onclick=()=>{void select(session.id).catch(notify);closeSidebar();};
-    parent.append(button);
+    button.onclick=()=>{closeSessionMenu();void select(session.id).catch(notify);closeSidebar();};
+    const more=el('button','session-more','⋯') as HTMLButtonElement;
+    more.type='button';more.title='Conversation actions';
+    more.setAttribute('aria-label','Actions for '+session.title);
+    more.setAttribute('aria-controls','sessionMenu');more.setAttribute('aria-expanded','false');
+    more.onclick=event=>{event.stopPropagation();openSessionMenu(session.id,more);};
+    row.append(button,more);parent.append(row);
+    if(session.id===focusedMenuTarget){more.focus();focusRestored=true;}
   }
   if(!matched.length)parent.append(el('p','sidebar-empty',q?'No matching conversations.':'No conversations yet.'));
+  if(focusedMenuTarget&&!focusRestored)$<HTMLInputElement>('sessionSearch').focus();
 }
 function closeSidebar(){document.body?.classList?.remove('sidebar-open');}
 function fillPrompt(value:string){
@@ -119,6 +196,10 @@ async function refresh(){
   atlas.title=state.atlas==='configured'?'Atlas MCP configured, not independently health checked':'Atlas is not connected';
   $('atlasLabel').textContent=state.atlas==='configured'?'Atlas MCP':state.atlas==='mock'?'Atlas (sample)':'Atlas not configured';
   $('atlasOrb').className='status-orb'+(state.atlas==='configured'?'':' is-muted');
+  // A stale tab may still have a pending send aimed at a chat deleted
+  // elsewhere. The authoritative session listing invalidates that target.
+  if(pending&&!list.sessions.some(s=>s.id===pending!.conversationId))
+    clearPendingForDeletedConversation(pending.conversationId);
   knownSessions=list.sessions;
   renderSessions();
   return list.sessions;
@@ -166,6 +247,7 @@ function render(data:Snapshot){
     lastView=serialized;
   }
   if(!taskConsole.visible)$('title').textContent=data.session.title;
+  atlasPicker.setSession(data.session);
   const picker=$<HTMLSelectElement>('modelPicker');
   if(data.session.modelKey&&!configuredModels.some(m=>m.key===data.session.modelKey)&&![...picker.options].some(x=>x.value===data.session.modelKey)){
     const missing=document.createElement('option');missing.value=data.session.modelKey;
@@ -227,9 +309,25 @@ async function poll(){
     if(activity.length>300)activity.splice(0,activity.length-300);
     renderActivity();
     render(snapshot);
-    $('notice').textContent=pending?'A send is awaiting confirmation. Retry uses the same request ID.':'';
-  }catch(e){notify('Connection interrupted. Reconnecting safely; no prompt is resubmitted. '+text(e));}
-  finally{polling=false;if(timer)clearTimeout(timer);timer=setTimeout(()=>{void poll();},600);}
+    $('notice').textContent=pending?'A send is awaiting confirmation. Retry uses the same request ID.':sendRecoveryNotice;
+  }catch(e){
+    if(generation===epoch && text(e).includes('Conversation not found')){
+      clearPendingForDeletedConversation(id);
+      try {
+        const sessions=await refresh();
+        if(current===id){
+          const fallback=sessions.find(s=>s.id!==id);
+          if(fallback)void select(fallback.id).catch(notify);
+          else resetSelection();
+        }
+      }catch(failure){notify(failure);}
+    }else if(generation===epoch)notify('Connection interrupted. Reconnecting safely; no prompt is resubmitted. '+text(e));
+  }
+  finally{
+    polling=false;
+    if(timer)clearTimeout(timer);
+    if(current)timer=setTimeout(()=>{void poll();},600);
+  }
 }
 async function select(id:string){
   closeTaskConsole();
@@ -249,9 +347,13 @@ async function submit(event:Event){
     remember('relay.pending',JSON.stringify(pending));
     const {conversationId,message,requestId}=pending;
     await api('/sessions/'+conversationId+'/messages',{method:'POST',body:JSON.stringify({message,requestId})});
-    pending=null;remember('relay.pending','');prompt.value='';
+    pending=null;remember('relay.pending','');prompt.value='';sendRecoveryNotice='';
     if(current!==conversationId)await select(conversationId);else await poll();
-  }catch(e){notify('Send not confirmed. Press Send to retry the same request safely. '+text(e));}
+  }catch(e){
+    if(text(e)==='Conversation not found'&&pending)
+      clearPendingForDeletedConversation(pending.conversationId);
+    else notify('Send not confirmed. Press Send to retry the same request safely. '+text(e));
+  }
   finally{submitting=false;setBusy(busy);}
 }
 function hostedError(error:unknown,stage:'api'|'session'){
@@ -266,6 +368,8 @@ async function bootstrap(){
     const sessions=await refresh();stage='session';
     const remembered=recall('relay.conversation');
     try{const saved=JSON.parse(recall('relay.pending')||'null');if(saved&&typeof saved.message==='string'&&typeof saved.requestId==='string'&&typeof saved.conversationId==='string')pending=saved;}catch{}
+    if(pending&&!sessions.some(s=>s.id===pending!.conversationId))
+      clearPendingForDeletedConversation(pending.conversationId);
     if(!current){const selected=sessions.find(s=>s.id===remembered)||sessions[0];if(selected)await select(selected.id);else await create();}
   }catch(e){if(hosted)hostedError(e,stage);else $<HTMLDialogElement>('login').showModal();}
 }
@@ -300,7 +404,62 @@ $<HTMLFormElement>('loginForm').onsubmit=async event=>{
   catch(e){$('error').textContent=text(e);}
 };
 $('settings').onclick=()=>{if(hosted){void bootstrap();return;}token='';$<HTMLDialogElement>('login').showModal();};
-$('new').onclick=()=>{void create().then(closeSidebar).catch(notify);};
+$('new').onclick=()=>{closeSessionMenu();void create().then(closeSidebar).catch(notify);};
+$<HTMLButtonElement>('menuRename').onclick=()=>{if(menuTarget)openRename(menuTarget);};
+$<HTMLButtonElement>('menuDelete').onclick=()=>{if(menuTarget)openDelete(menuTarget);};
+$<HTMLButtonElement>('renameCancel').onclick=()=>$<HTMLDialogElement>('renameDialog').close();
+$<HTMLButtonElement>('deleteCancel').onclick=()=>$<HTMLDialogElement>('deleteDialog').close();
+$<HTMLDialogElement>('renameDialog').onclose=()=>{dialogTarget=null;};
+$<HTMLDialogElement>('deleteDialog').onclose=()=>{dialogTarget=null;};
+$<HTMLFormElement>('renameForm').onsubmit=event=>{
+  event.preventDefault();
+  const id=dialogTarget;if(!id)return;
+  const input=$<HTMLInputElement>('renameInput'),title=input.value.trim();
+  if(!title||[...title].length>120||/[\u0000-\u001f\u007f-\u009f]/u.test(title)){
+    $('renameError').textContent='Use 1–120 characters without control characters.';return;
+  }
+  const save=$<HTMLButtonElement>('renameSave');save.disabled=true;
+  void (async()=>{
+    try{
+      await api('/sessions/'+id,{method:'PATCH',body:JSON.stringify({title})});
+      $<HTMLDialogElement>('renameDialog').close();
+      $('notice').textContent='';
+      if(current===id)await select(id);else await refresh();
+    }catch(e){$('renameError').textContent=text(e);}
+    finally{save.disabled=false;}
+  })();
+};
+$<HTMLFormElement>('deleteForm').onsubmit=event=>{
+  event.preventDefault();
+  const id=dialogTarget;if(!id)return;
+  const confirm=$<HTMLButtonElement>('deleteConfirm');confirm.disabled=true;
+  void (async()=>{
+    try{
+      await api('/sessions/'+id,{method:'DELETE'});
+      $<HTMLDialogElement>('deleteDialog').close();
+      if(pending?.conversationId===id){pending=null;remember('relay.pending','');}
+      const wasCurrent=current===id;
+      if(wasCurrent){epoch++;current=null;if(timer)clearTimeout(timer);}
+      const sessions=await refresh();
+      $('notice').textContent='';
+      if(wasCurrent){
+        if(sessions.length)await select(sessions[0].id);
+        else resetSelection();
+      }
+    }catch(e){$('deleteError').textContent=text(e);}
+    finally{confirm.disabled=false;}
+  })();
+};
+document.addEventListener?.('pointerdown',event=>{
+  const target=event.target as Node|null;
+  if(target&&!$('sessionMenu').contains(target)&&!menuAnchor?.contains(target))closeSessionMenu();
+});
+document.addEventListener?.('keydown',event=>{
+  if(event.key==='Escape'&&!$('sessionMenu').hidden){
+    event.preventDefault();
+    closeSessionMenu(true);
+  }
+});
 $<HTMLInputElement>('sessionSearch').oninput=renderSessions;
 $('openSidebar').onclick=()=>{document.body?.classList?.add('sidebar-open');};
 // Explicit shortcut, matching the keycap in the sidebar. Do not intercept regular typing.

@@ -8,16 +8,19 @@ import { test } from 'node:test';
 const source=readFileSync(new URL('../dist/public/app.js',import.meta.url),'utf8');
 const flush=async()=>{for(let i=0;i<6;i++)await new Promise<void>(resolve=>setImmediate(resolve));};
 
+let focusedElement:Element|null=null;
 class Element {
   readonly children:Element[]=[];
   readonly dataset:Record<string,string>={};
   parent:Element|null=null;
   textContent='';className='';value='';hidden=false;disabled=false;
-  title='';open=false;scrollHeight=0;scrollTop=0;clientHeight=0;
+  title='';open=false;isConnected=true;scrollHeight=0;scrollTop=0;clientHeight=0;
+  style={left:'',top:''}; attributes:Record<string,string>={};
   onclick?:()=>void;
   onsubmit?:()=>void;
   onkeydown?:()=>void;
   oninput?:()=>void;
+  onclose?:()=>void;
   constructor(readonly tag='div'){}
   append(...nodes:Element[]){for(const node of nodes)this.insertBefore(node,null);}
   insertBefore(node:Element,before:Element|null) {
@@ -30,10 +33,16 @@ class Element {
   replaceChildren(...nodes:Element[]){for(const child of this.children)child.parent=null;this.children.splice(0);this.append(...nodes);}
   get lastElementChild():Element|null{return this.children.at(-1)??null;}
   remove(){if(this.parent){const index=this.parent.children.indexOf(this);if(index>=0)this.parent.children.splice(index,1);this.parent=null;}}
-  focus(){}
-  showModal(){}
-  close(){}
-  setAttribute(_name:string,_value:string){}
+  focus(){focusedElement=this;}
+  contains(node:Element|null):boolean{
+    for(let parent=node;parent;parent=parent.parent)if(parent===this)return true;
+    return false;
+  }
+  select(){}
+  getBoundingClientRect(){return {right:215,bottom:120};}
+  showModal(){this.open=true;}
+  close(){this.open=false;this.onclose?.();}
+  setAttribute(name:string,value:string){this.attributes[name]=value;}
 }
 
 const event=(id:string,sequence:number)=>({
@@ -89,7 +98,7 @@ test('Activity details stay expanded across idle polls and newly prepended event
   assert.strictEqual(list.children[1],original,'new events must not replace the expanded row');
   assert.equal(original.open,true);
 
-  const second=element('sessions').children[1];
+  const second=element('sessions').children[1].children.find(x=>x.className.includes('session'))!;
   assert.ok(second.onclick);
   second.onclick();
   await flush();
@@ -173,8 +182,9 @@ test('newly titled first-message chats are searchable without navigation or refr
   assert.equal(sessionListings,2,'send path should not require a third sessions refresh');
   const matches=element('sessions').children;
   assert.equal(matches.length,1);
-  assert.equal(matches[0].title,'Investigate build failures');
-  assert.ok(matches[0].children.some(child=>child.textContent==='Investigate build failures'));
+  const conversationButton=matches[0].children.find(child=>child.className.includes('session'))!;
+  assert.equal(conversationButton.title,'Investigate build failures');
+  assert.ok(conversationButton.children.some(child=>child.textContent==='Investigate build failures'));
   assert.ok(nextPoll,'polling remains scheduled');
 });
 
@@ -219,4 +229,231 @@ test('Atlas receipts survive >500 event replay, 300-event inspector eviction and
     assert.equal(pills.children[0].children.at(-1)?.textContent,'completed');
     assert.equal(element('activity').children.length,100,'inspector remains capped at latest 100 visible rows');
   }
+});
+
+test('conversation menu renames and deletes only after confirmation; failed requests keep dialog state',async()=>{
+  const nodes=new Map<string,Element>();
+  const element=(id:string):Element=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id)!;};
+  let sessions=[{id:'c1',title:'First',modelKey:'free'}, {id:'c2',title:'Second',modelKey:'free'}];
+  let deleted=false,blocked=true,patches=0,deletes=0;
+  const context={
+    window:{location:{protocol:'https:'},innerWidth:1000,innerHeight:600,sessionStorage:{getItem:()=>null,setItem:()=>{}}},
+    document:{getElementById:element,createElement:(name:string)=>new Element(name)},
+    Headers,Response,URL,
+    setTimeout:(_fn:()=>void)=>1, clearTimeout:()=>{},
+    fetch:async(url:string,opts?:RequestInit)=>{
+      if(url==='/api/status')return new Response(JSON.stringify({provider:'OpenRouter',model:'free',atlas:'configured'}));
+      if(url==='/api/sessions')return new Response(JSON.stringify({sessions}));
+      if(url==='/api/sessions/c1' && opts?.method==='PATCH'){
+        patches++;
+        const title=(JSON.parse(opts.body as string) as {title:string}).title;
+        sessions=sessions.map(s=>s.id==='c1'?{...s,title}:s);
+        return new Response(JSON.stringify({session:{...sessions[0],busy:false,costUsd:0,usage:{tokens:0,unknown:false}}}));
+      }
+      if(url==='/api/sessions/c1' && opts?.method==='DELETE'){
+        deletes++;
+        if(blocked)return new Response(JSON.stringify({error:'Conversation has active or uncertain tasks'}),{status:409});
+        deleted=true;sessions=sessions.filter(s=>s.id!=='c1');
+        return new Response(null,{status:204});
+      }
+      const match=url.match(/^\/api\/sessions\/(c[12])$/);
+      if(match) {
+        const selected=sessions.find(s=>s.id===match[1]);
+        return new Response(JSON.stringify({session:{...selected,busy:false,costUsd:0,usage:{costKind:'estimated',tokens:0,unknown:false}},tasks:[],approvals:[]}));
+      }
+      if(url.startsWith('/api/sessions/c1/events?after=')||url.startsWith('/api/sessions/c2/events?after='))
+        return new Response(JSON.stringify({events:[],nextCursor:0,hasMore:false}));
+      throw Error('Unexpected '+url);
+    }
+  };
+  runInNewContext(source,context,{filename:'dist/public/app.js'});
+  await flush();
+  const firstRow=element('sessions').children[0];
+  const more=firstRow.children.find(e=>e.className==='session-more')!;
+  assert.ok(more,'chat actions button present');
+  (more.onclick as unknown as ((e:{stopPropagation():void})=>void))({stopPropagation(){}});
+  assert.equal(element('sessionMenu').hidden,false);
+  element('menuRename').onclick?.();
+  assert.equal(element('renameDialog').open,true);
+  assert.equal(element('renameInput').value,'First');
+  element('renameInput').value='  ';
+  (element('renameForm').onsubmit as unknown as ((e:{preventDefault():void})=>void))({preventDefault(){}});
+  assert.equal(patches,0);
+  assert.match(element('renameError').textContent,/1–120/);
+  element('renameInput').value='  Renamed  ';
+  (element('renameForm').onsubmit as unknown as ((e:{preventDefault():void})=>void))({preventDefault(){}});
+  await flush();
+  assert.equal(patches,1);
+  assert.equal(sessions[0].title,'Renamed');
+  assert.equal(element('renameDialog').open,false);
+  assert.equal(element('title').textContent,'Renamed');
+
+  const renamedRow=element('sessions').children[0];
+  const renamedMore=renamedRow.children.find(e=>e.className==='session-more')!;
+  (renamedMore.onclick as unknown as ((e:{stopPropagation():void})=>void))({stopPropagation(){}});
+  element('menuDelete').onclick?.();
+  assert.equal(element('deleteDialog').open,true);
+  assert.equal(element('deleteName').textContent,'Renamed');
+  assert.equal(deletes,0,'opening the menu/dialog must not delete');
+  (element('deleteForm').onsubmit as unknown as ((e:{preventDefault():void})=>void))({preventDefault(){}});
+  await flush();
+  assert.equal(deletes,1);
+  assert.equal(deleted,false);
+  assert.equal(element('deleteDialog').open,true);
+  assert.match(element('deleteError').textContent,/active or uncertain tasks/);
+  blocked=false;
+  (element('deleteForm').onsubmit as unknown as ((e:{preventDefault():void})=>void))({preventDefault(){}});
+  await flush();
+  assert.equal(deletes,2);
+  assert.equal(deleted,true);
+  assert.equal(element('deleteDialog').open,false);
+  assert.equal(sessions.length,1);
+  assert.equal(element('title').textContent,'Second');
+  assert.equal(element('sessions').children.length,1);
+});
+
+
+test('stale tab clears an unconfirmed send after another tab deletes the chat',async()=>{
+  const nodes=new Map<string,Element>();
+  const element=(id:string):Element=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id)!;};
+  const storage=new Map<string,string>();
+  let deleted=false,seq=0,pollAgain:(()=>void)|undefined;
+  const posts:Array<{conversation:string;message:string;requestId:string}>=[];
+  const context={
+    window:{location:{protocol:'https:'},sessionStorage:{getItem:(key:string)=>storage.get(key)??null,setItem:(key:string,value:string)=>{storage.set(key,value);}}},
+    document:{getElementById:element,createElement:(name:string)=>new Element(name)},
+    Headers,Response,URL,
+    crypto:{randomUUID:()=> 'new-request-'+(++seq)},
+    setTimeout:(fn:()=>void)=>{pollAgain=fn;return 1;},
+    clearTimeout:()=>{pollAgain=undefined;},
+    fetch:async(url:string,options?:RequestInit)=>{
+      if(url==='/api/status')return new Response(JSON.stringify({provider:'OpenRouter',model:'free',atlas:'configured'}));
+      if(url==='/api/sessions')return new Response(JSON.stringify({sessions:deleted?[{id:'c2',title:'Survivor'}]:[{id:'c1',title:'Deleted elsewhere'},{id:'c2',title:'Survivor'}]}));
+      const sending=url.match(/^\/api\/sessions\/(c[12])\/messages$/);
+      if(sending&&options?.method==='POST'){
+        const body=JSON.parse(options.body as string) as {message:string;requestId:string};
+        posts.push({conversation:sending[1],...body});
+        if(sending[1]==='c1')return new Response(JSON.stringify({error:'Temporary send failure'}),{status:503});
+        return new Response(JSON.stringify({task:{conversationId:'c2',id:'task-2'}}),{status:202});
+      }
+      const session=url.match(/^\/api\/sessions\/(c[12])$/);
+      if(session) {
+        if(deleted&&session[1]==='c1')return new Response(JSON.stringify({error:'Conversation not found'}),{status:404});
+        return new Response(JSON.stringify({session:{id:session[1],title:session[1]==='c1'?'Deleted elsewhere':'Survivor',busy:false,costUsd:0,usage:{costKind:'estimated',tokens:0,unknown:false}},tasks:[],approvals:[]}));
+      }
+      if(url.startsWith('/api/sessions/c1/events?after=')||url.startsWith('/api/sessions/c2/events?after='))
+        return new Response(JSON.stringify({events:[],nextCursor:0,hasMore:false}));
+      throw Error('Unexpected request '+url);
+    }
+  };
+  runInNewContext(source,context,{filename:'dist/public/app.js'});
+  await flush();
+  const prompt=element('prompt');
+  prompt.value='Unconfirmed message to A';
+  (element('form').onsubmit as unknown as ((e:{preventDefault():void})=>void))({preventDefault(){}});
+  await flush();
+  assert.equal(posts.length,1);
+  assert.equal(posts[0].conversation,'c1');
+  assert.match(storage.get('relay.pending')??'',/c1/);
+  // A second tab permanently deletes this now-idle conversation.
+  deleted=true;
+  const poll=pollAgain;
+  assert.ok(poll);
+  poll();
+  await flush();
+  assert.equal(element('title').textContent,'Survivor');
+  assert.equal(storage.get('relay.pending'),'','stale pending request must be cleared durably');
+  assert.equal(prompt.value,'Unconfirmed message to A','unsent text remains editable');
+  assert.match(element('notice').textContent,/deleted.*unconfirmed message/i);
+  prompt.value='New message to B';
+  (element('form').onsubmit as unknown as ((e:{preventDefault():void})=>void))({preventDefault(){}});
+  await flush();
+  assert.equal(posts.length,2);
+  assert.equal(posts[1].conversation,'c2');
+  assert.equal(posts[1].message,'New message to B');
+  assert.notEqual(posts[1].requestId,posts[0].requestId);
+  assert.equal(storage.get('relay.pending'),'');
+});
+
+
+test('conversation actions restore keyboard focus on Escape and refresh without stealing pointer or modal focus',async()=>{
+  focusedElement=null;
+  const nodes=new Map<string,Element>();
+  const element=(id:string):Element=>{
+    if(!nodes.has(id))nodes.set(id,new Element());
+    return nodes.get(id)!;
+  };
+  const handlers:{keydown:Array<(e:{key:string;preventDefault():void})=>void>;pointerdown:Array<(e:{target:Element})=>void>}={keydown:[],pointerdown:[]};
+  const document={
+    getElementById:element,
+    createElement:(tag:string)=>new Element(tag),
+    get activeElement(){return focusedElement;},
+    addEventListener:(type:string,cb:never)=>{
+      if(type==='keydown')handlers.keydown.push(cb);
+      if(type==='pointerdown')handlers.pointerdown.push(cb);
+    }
+  };
+  // The tiny DOM fixture does not parse index.html, so wire menu children
+  // explicitly for the browser's menu.contains(activeElement) behaviour.
+  element('sessionMenu').append(element('menuRename'),element('menuDelete'));
+  const context={
+    window:{location:{protocol:'https:'},innerWidth:1000,innerHeight:600,sessionStorage:{getItem:()=>null,setItem:()=>{}}},
+    document,Headers,Response,URL,
+    setTimeout:(_callback:()=>void)=>1,clearTimeout:()=>{},
+    fetch:async(url:string)=>{
+      if(url==='/api/status')return new Response(JSON.stringify({provider:'OpenRouter',model:'free',atlas:'configured'}));
+      if(url==='/api/sessions')return new Response(JSON.stringify({sessions:[{id:'c1',title:'Focus test'}]}));
+      if(url==='/api/sessions/c1')return new Response(JSON.stringify(snapshot('c1')));
+      if(url.startsWith('/api/sessions/c1/events?after='))return new Response(JSON.stringify({events:[],nextCursor:0,hasMore:false}));
+      throw Error('Unexpected '+url);
+    }
+  };
+  runInNewContext(source,context,{filename:'dist/public/app.js'});
+  await flush();
+  const actions=()=>element('sessions').children[0].children.find(x=>x.className==='session-more')!;
+  const clickActions=(button:Element)=>{
+    button.focus();
+    (button.onclick as unknown as ((e:{stopPropagation():void})=>void))({stopPropagation(){}});
+  };
+  const original=actions();
+  clickActions(original);
+  assert.equal(element('sessionMenu').hidden,false);
+  assert.strictEqual(focusedElement,element('menuRename'),'opening moves focus to first action');
+  assert.equal(original.attributes['aria-expanded'],'true');
+  let escapePrevented=false;
+  for(const handler of handlers.keydown)handler({key:'Escape',preventDefault:()=>{escapePrevented=true;}});
+  assert.equal(escapePrevented,true);
+  assert.equal(element('sessionMenu').hidden,true);
+  assert.strictEqual(focusedElement,original,'Escape restores the still-connected invoker');
+  assert.equal(original.attributes['aria-expanded'],'false');
+
+  clickActions(original);
+  assert.strictEqual(focusedElement,element('menuRename'));
+  element('sessionSearch').oninput?.();
+  const refreshed=actions();
+  assert.notStrictEqual(refreshed,original,'sidebar refresh replaces the invoker');
+  assert.strictEqual(focusedElement,refreshed,'refresh restores focus to the new invoker');
+  assert.equal(element('sessionMenu').hidden,true);
+
+  clickActions(refreshed);
+  element('menuRename').onclick?.();
+  assert.equal(element('renameDialog').open,true);
+  assert.strictEqual(focusedElement,element('renameInput'),'modal takes keyboard focus');
+  element('renameDialog').close();
+
+  clickActions(refreshed);
+  const outside=element('new');
+  for(const handler of handlers.pointerdown)handler({target:outside});
+  assert.equal(element('sessionMenu').hidden,true);
+  assert.strictEqual(focusedElement,element('menuRename'),
+    'pointer dismissal must not re-focus the actions button');
+  outside.focus();
+  assert.strictEqual(focusedElement,outside);
+
+  clickActions(refreshed);
+  refreshed.isConnected=false;
+  focusedElement=element('menuRename');
+  for(const handler of handlers.keydown)handler({key:'Escape',preventDefault:()=>{}});
+  assert.strictEqual(focusedElement,element('menuRename'),
+    'never focus a stale/detached invoker');
 });

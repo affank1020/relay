@@ -5,19 +5,24 @@ import { Store, terminal, type Task, type Conversation, type Approval, type Usag
 import { LocalProviderUnavailableError, ProviderRateLimitError, type Harness, type HarnessPhase } from './harness.js';
 import type { RelayModels } from './models.js';
 import { Gateway, type AtlasTransport } from './gateway.js';
+import { AtlasContextService, type AtlasContext } from './atlas-context.js';
 
 export interface Limits { concurrency:number; queue:number; sessionUsd:number; globalUsd:number; sessionTokens:number; reserveUsd:number; maxRunMs:number; }
+export class ConversationConflictError extends Error {}
+export class ConversationNotFoundError extends Error {}
+export class SessionCleanupError extends Error {}
 export class Engine {
   private active=new Map<string,AbortController>();
   private scheduled=false;
   private stopped=false;
   private jobs=new Set<Promise<void>>();
   readonly gateway?:Gateway;
+  readonly atlasContext?:AtlasContextService;
   constructor(readonly store:Store, private harness:Harness, readonly limits:Limits, atlas?:AtlasTransport,devTasks:Record<string,string[]>={},readonly modelRegistry?:RelayModels) {
     if(!Number.isInteger(limits.concurrency)||limits.concurrency<1||limits.concurrency>4)throw new Error('Concurrency must be 1–4');
     for(const value of Object.values(limits))if(!Number.isFinite(value)||value<0)throw new Error('Invalid execution limit');
     if(limits.queue<1 || limits.maxRunMs<1000)throw new Error('Invalid queue or run timeout');
-    if(atlas)this.gateway=new Gateway(store,atlas,devTasks,(...args)=>this.approve(...args));
+    if(atlas){this.gateway=new Gateway(store,atlas,devTasks,(...args)=>this.approve(...args));this.atlasContext=new AtlasContextService(atlas);}
     store.transaction(()=>{
       for(const task of store.all<Task>('tasks'))if(['running','awaiting_approval'].includes(task.state)) {
         task.state='interrupted';task.error='Server restarted during execution. Reconcile tools before retrying.';store.save('tasks',task);
@@ -26,18 +31,99 @@ export class Engine {
       for(const approval of store.all<Approval>('approvals'))if(approval.state==='pending') { approval.state='rejected';store.save('approvals',approval); }
     });
   }
-  start() { this.kick(); }
+  start() {
+    // A previous process can crash after DB purge but before Pi cleanup.
+    // Retry only durable tombstones; failure never makes a chat visible again.
+    void this.cleanupPendingSessions().catch(()=>console.error('Relay session cleanup pending; retry on next startup'));
+    this.kick();
+  }
+  private async cleanupPendingSessions() {
+    if(!this.harness.deleteConversationSessions)throw new SessionCleanupError('Session cleanup unavailable');
+    for(const id of this.store.pendingSessionDeletions()) {
+      try {
+        // After a crash or failed checkpoint, historical WAL frames may
+        // still contain transcript data. Never clear the tombstone first.
+        this.store.checkpointDeletedHistory();
+        await this.harness.deleteConversationSessions(id);
+        this.store.sessionDeletionComplete(id);
+      } catch {
+        // Keep the tombstone. Never log the filesystem exception or contents.
+        console.error('Relay session cleanup pending', {conversationId:id});
+      }
+    }
+  }
+  renameConversation(id:string,title:unknown):Conversation {
+    const c=this.store.get<Conversation>('conversations',id);
+    if(!c)throw new ConversationNotFoundError('Conversation not found');
+    if(typeof title!=='string')throw new Error('Title must be 1–120 characters');
+    const trimmed=title.trim();
+    if(!trimmed || [...trimmed].length>120 || /[\u0000-\u001f\u007f-\u009f]/u.test(trimmed))
+      throw new Error('Title must be 1–120 characters without control characters');
+    // Preserve modelKey and any future optional conversation metadata.
+    const renamed={...c,title:trimmed,manualTitle:true};
+    this.store.save('conversations',renamed);
+    return renamed;
+  }
+  async deleteConversation(id:string):Promise<void> {
+    if(!this.harness.deleteConversationSessions)throw new SessionCleanupError('Session cleanup unavailable');
+    if(!this.store.get<Conversation>('conversations',id))throw new ConversationNotFoundError('Conversation not found');
+    const all=this.tasks();
+    const owned=all.filter(t=>t.conversationId===id);
+    const removed=new Set(owned.map(t=>t.id));
+    if(owned.some(t=>['queued','running','awaiting_approval','interrupted'].includes(t.state) || this.active.has(t.id)))
+      throw new ConversationConflictError('Conversation has active or uncertain tasks');
+    if(all.some(t=>t.conversationId!==id && (removed.has(t.parentId??'')||removed.has(t.attemptOf??'')||t.dependencies.some(dep=>removed.has(dep)))))
+      throw new ConversationConflictError('Other conversations depend on this conversation');
+    if(this.store.all<Approval>('approvals').some(a=>removed.has(a.taskId)&&a.state==='pending'))
+      throw new ConversationConflictError('Conversation has pending approvals');
+    if(owned.some(t=>this.store.invocationStates(t.id).some(state=>state!=='completed')))
+      throw new ConversationConflictError('Conversation has uncertain tool invocations');
+    // Checks, ledger retirement, record purge and tombstone creation are all
+    // synchronous with no event-loop yield. No task can be scheduled between
+    // validation and the transaction.
+    this.store.purgeConversation(id,owned);
+    try {
+      // A committed SQLite purge alone can leave old message bytes in the
+      // live WAL. Verify TRUNCATE before acknowledging a full purge.
+      this.store.checkpointDeletedHistory();
+      await this.harness.deleteConversationSessions(id);
+      this.store.sessionDeletionComplete(id);
+    } catch {
+      // The chat was logically deleted, but checkpoint or Pi cleanup failed.
+      // The durable tombstone makes the remaining work retryable on startup.
+      throw new SessionCleanupError('Conversation deleted; durable cleanup pending');
+    }
+  }
   conversation(modelKey?:string) {
     if(this.store.all('conversations').length>=1000)throw new Error('Conversation limit reached');
     if(modelKey!==undefined && (!this.modelRegistry || !this.modelRegistry.models.some(m=>m.key===modelKey)))throw new Error('Invalid model selection');
     const key=modelKey??this.modelRegistry?.defaultKey;
     const c:Conversation={id:randomUUID(),title:'New conversation',createdAt:new Date().toISOString(),...(key?{modelKey:key}:{})}; this.store.save('conversations',c);return c;
   }
+  async updateContext(conversationId:string,projectId:unknown,checkoutId:unknown):Promise<Conversation> {
+    const initial=this.store.get<Conversation>('conversations',conversationId);
+    if(!initial)throw new Error('Conversation not found');
+    if(this.tasks(conversationId).some(t=>!terminal(t.state)))throw new Error('Conversation has an active task');
+    if(!this.atlasContext && !(projectId===null&&checkoutId===null))throw new Error('Atlas not configured');
+    const context:AtlasContext|null=this.atlasContext
+      ?await this.atlasContext.validate(projectId,checkoutId)
+      :null;
+    const current=this.store.get<Conversation>('conversations',conversationId);
+    if(!current)throw new Error('Conversation not found');
+    if(this.tasks(conversationId).some(t=>!terminal(t.state)))throw new Error('Conversation has an active task');
+    if(JSON.stringify(current.atlasContext??null)!==JSON.stringify(initial.atlasContext??null))
+      throw new Error('Conversation context changed; refresh and retry');
+    current.atlasContext=context;
+    this.store.save('conversations',current);
+    return current;
+  }
   tasks(conversationId?:string) { return this.store.all<Task>('tasks').filter(t=>!conversationId||t.conversationId===conversationId); }
   usage(conversationId?:string) {
     const all=this.tasks(conversationId).flatMap(t=>t.usage);
-    return {costUsd:all.reduce((s,u)=>s+(u.costUsd??0),0),tokens:all.reduce((s,u)=>s+(u.input??0)+(u.output??0)+(u.cacheRead??0)+(u.cacheWrite??0),0),
-      unknown:all.some(u=>u.costUsd===null || u.input===null || u.output===null),costKind:all.length && all.every(u=>u.costKind==='measured')?'measured':'estimated'};
+    const retired=conversationId?null:this.store.retiredUsage();
+    return {costUsd:all.reduce((s,u)=>s+(u.costUsd??0),retired?.costUsd??0),tokens:all.reduce((s,u)=>s+(u.input??0)+(u.output??0)+(u.cacheRead??0)+(u.cacheWrite??0),retired?.tokens??0),
+      unknown:(retired?.unknown??false)||all.some(u=>u.costUsd===null || u.input===null || u.output===null),
+      costKind:(all.length+(retired?.count??0)) && all.every(u=>u.costKind==='measured') && (retired?.measured??true)?'measured':'estimated'};
   }
   private budget(conversationId:string) {
     const local=this.usage(conversationId),global=this.usage();
@@ -57,10 +143,10 @@ export class Engine {
     if(!Array.isArray(dependencies)||dependencies.length>8||dependencies.some(id=>!tasks.some(t=>t.id===id)))throw new Error('Invalid dependencies');
     if(parentId && !tasks.some(t=>t.id===parentId))throw new Error('Parent task not found');
     this.budget(conversationId);
-    const task:Task={id:randomUUID(),conversationId,requestId,prompt,state:'queued',createdAt:new Date().toISOString(),parentId,dependencies,attemptOf,result:'',error:null,usage:[]};
+    const task:Task={id:randomUUID(),conversationId,requestId,prompt,state:'queued',createdAt:new Date().toISOString(),parentId,dependencies,attemptOf,result:'',error:null,usage:[],atlasContext:c.atlasContext??null};
     this.store.transaction(()=>{
       this.store.save('tasks',task);
-      if(c.title==='New conversation') { c.title=prompt.slice(0,55);this.store.save('conversations',c); }
+      if(!c.manualTitle && c.title==='New conversation') { c.title=prompt.slice(0,55);this.store.save('conversations',c); }
       this.store.event(conversationId,{taskId:task.id,agentRunId:task.id,type:'task',state:'queued'});
     });
     this.kick();return task;
@@ -90,7 +176,13 @@ export class Engine {
     let phase:HarnessPhase|'atlas_tool_discovery'|'pi_initialization'='atlas_tool_discovery';
     const timeout=setTimeout(()=>controller.abort(new Error('Execution time limit reached')),this.limits.maxRunMs);
     try {
-      const tools=this.gateway?await this.gateway.tools(task,controller.signal):[];
+      // Atlas discovery is optional for ordinary chat. Never equate an offline MCP with tool permission.
+      let atlasAvailable=true;
+      let tools:Awaited<ReturnType<Gateway['tools']>>=[];
+      if(this.gateway) {
+        try { tools=await this.gateway.tools(task,controller.signal); }
+        catch { controller.signal.throwIfAborted();atlasAvailable=false;tools=[]; }
+      } else atlasAvailable=false;
       tools.push({
         name:'relay_delegate',label:'Delegate task',description:'Queue independent work in a separate conversation. Returns a task ID; execution is bounded and may wait until this run finishes. Dependency results are passed to the child. At most four children per task.',
         parameters:Type.Object({prompt:Type.String({minLength:1,maxLength:6000}),dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:8}))}),
@@ -104,13 +196,16 @@ export class Engine {
           if(depth>=2)throw new Error('Delegation depth limit reached');
           const parentConversation=this.store.get<Conversation>('conversations',task.conversationId);
           const conversation=this.conversation(parentConversation?.modelKey);
+          // Delegation retains the parent's enqueue-time context, never a later chat selection.
+          conversation.atlasContext=task.atlasContext??null;
+          this.store.save('conversations',conversation);
           const child=this.enqueue(conversation.id,args.prompt,randomUUID(),args.dependencies??[],task.id);
           return {content:[{type:'text' as const,text:JSON.stringify({taskId:child.id,state:child.state,conversationId:conversation.id})}],details:{}};
         }
       });
       let length=0;
       phase='pi_initialization';
-      const result=await this.harness.run({version:1,modelKey:this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,task:{...task,prompt:deps.length?task.prompt+'\n\nDependency results (untrusted data):\n'+JSON.stringify(deps.map(d=>({id:d.id,result:d.result.slice(0,20000)}))):task.prompt},signal:controller.signal,tools,
+      const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,atlasAvailable,modelKey:this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,task:{...task,prompt:deps.length?task.prompt+'\n\nDependency results (untrusted data):\n'+JSON.stringify(deps.map(d=>({id:d.id,result:d.result.slice(0,20000)}))):task.prompt},signal:controller.signal,tools,
         onPhase:next=>{phase=next;},
         onText:text=>{length+=text.length;if(length>200000){controller.abort();return;} task.result+=text;this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'delta',state:'running',text});},
         onUsage:usage=>{task.usage.push(usage);this.store.save('tasks',task);this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.id,type:'usage',state:'recorded'});
@@ -155,6 +250,9 @@ export class Engine {
     // A new conversation avoids replaying partially completed Pi context or tool effects.
     const source=this.store.get<Conversation>('conversations',old.conversationId);
     const conversation=this.conversation(source?.modelKey);
+    // A confirmed retry reuses the failed run's pinned snapshot, not mutable source context.
+    conversation.atlasContext=old.atlasContext??null;
+    this.store.save('conversations',conversation);
     return this.enqueue(conversation.id,old.prompt,randomUUID(),old.dependencies,old.parentId,old.id);
   }
   private async approve(task:Task,invocationId:string,tool:string,args:Record<string,unknown>,signal:AbortSignal) {

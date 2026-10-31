@@ -83,15 +83,19 @@ test('real Pi SDK initializes restricted persistent session before cancellation 
 });
 
 
-test('failed task identifies the safe execution stage without disclosing exception contents',async()=>{
+test('offline Atlas continues ordinary chat, while Pi failures retain safe phase attribution',async()=>{
   const store=new Store(':memory:');
   const atlas={list:async()=>{throw new Error('secret-atlas-response');},call:async()=>{throw new Error('unreachable');},close:async()=>{}};
-  const engine=new Engine(store,fixtureHarness(async()=>assert.fail('harness must not run')),limits,atlas);
+  const engine=new Engine(store,fixtureHarness(async request=>{
+    assert.equal(request.atlasAvailable,false);
+    assert.deepEqual(request.tools.map(t=>t.name),['relay_delegate']);
+    return 'offline chat works';
+  }),limits,atlas);
   try {
     const c=engine.conversation();engine.enqueue(c.id,'status','request-stage-001');
-    await until(()=>engine.tasks()[0]?.state==='failed');
-    assert.match(engine.tasks()[0].error||'',/atlas_tool_discovery/);
-    assert.doesNotMatch(engine.tasks()[0].error||'',/secret-atlas-response/);
+    await until(()=>engine.tasks()[0]?.state==='completed');
+    assert.equal(engine.tasks()[0].result,'offline chat works');
+    assert.doesNotMatch(JSON.stringify(engine.tasks()),/secret-atlas-response/);
   } finally {await engine.stop();store.close();}
 
   const secondStore=new Store(':memory:');
