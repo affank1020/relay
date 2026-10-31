@@ -6,23 +6,58 @@
 export type InlineToken={type:'text'|'strong'|'em'|'code'|'link';text:string;href?:string};
 export type BlockToken={type:'paragraph'|'heading'|'list'|'quote'|'code';text?:string;level?:number;items?:string[];ordered?:boolean;lang?:string};
 
+// A Markdown link destination can contain nested or escaped parentheses.
+// The closing ')' is only a delimiter at depth zero; unlike a [^\s)]+
+// regex this preserves URLs like /wiki/Function_(mathematics).
+function parseDestination(source:string,start:number):{value:string;end:number}|null{
+  let value='',depth=0;
+  for(let i=start;i<source.length && i-start<2048;i++){
+    const char=source[i];
+    if(char==='\\'){
+      if(i+1>=source.length)return null;
+      const escaped=source[++i];
+      value+='()\\'.includes(escaped)?escaped:'\\'+escaped;
+      continue;
+    }
+    if(/\s/.test(char))return null;
+    if(char==='('){depth++;value+=char;continue;}
+    if(char===')'){
+      if(depth===0)return value?{value,end:i}:null;
+      depth--;value+=char;continue;
+    }
+    value+=char;
+  }
+  return null;
+}
+
 export function inlineTokens(source:string):InlineToken[]{
   const parts:InlineToken[]=[];
-  const pattern=/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*\n]+)\*\*|`([^`\n]+)`|\*([^*\n]+)\*/g;
-  let start=0;
-  for(const match of source.matchAll(pattern)){
-    const index=match.index??0;
-    if(index>start)parts.push({type:'text',text:source.slice(start,index)});
-    if(match[1]&&match[2]){
+  const pattern=/\[([^\]\n]+)\]\(|\*\*([^*\n]+)\*\*|\`([^\`\n]+)\`|\*([^*\n]+)\*/g;
+  let cursor=0;
+  for(let match=pattern.exec(source);match;match=pattern.exec(source)){
+    if(match.index<cursor)continue;
+    if(match[1]){
+      const dest=parseDestination(source,pattern.lastIndex);
+      if(!dest)continue;
       let href:string|undefined;
-      try{const url=new URL(match[2]);if(['https:','http:'].includes(url.protocol))href=url.href;}catch{}
-      parts.push(href?{type:'link',text:match[1],href}:{type:'text',text:match[0]});
-    }else if(match[3])parts.push({type:'strong',text:match[3]});
-    else if(match[4])parts.push({type:'code',text:match[4]});
-    else parts.push({type:'em',text:match[5]??match[0]});
-    start=index+match[0].length;
+      try{
+        const url=new URL(dest.value);
+        if(url.protocol==='https:'||url.protocol==='http:')href=url.href;
+      }catch{}
+      if(!href)continue;
+      if(match.index>cursor)parts.push({type:'text',text:source.slice(cursor,match.index)});
+      parts.push({type:'link',text:match[1],href});
+      cursor=dest.end+1;
+      pattern.lastIndex=cursor;
+      continue;
+    }
+    if(match.index>cursor)parts.push({type:'text',text:source.slice(cursor,match.index)});
+    if(match[2])parts.push({type:'strong',text:match[2]});
+    else if(match[3])parts.push({type:'code',text:match[3]});
+    else parts.push({type:'em',text:match[4]??match[0]});
+    cursor=pattern.lastIndex;
   }
-  if(start<source.length)parts.push({type:'text',text:source.slice(start)});
+  if(cursor<source.length)parts.push({type:'text',text:source.slice(cursor)});
   return parts;
 }
 
