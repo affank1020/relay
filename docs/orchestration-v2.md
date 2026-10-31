@@ -81,6 +81,44 @@ event-only disclosure during a rolling deployment. Unbounded child logs and
 raw internal transcripts remain available only through authenticated task
 inspection, not the inline chat snapshot.
 
-## What remains
+## B4: Descendant budget accounting and final acceptance
 
-Further slices should add user-editable/Skill-backed profile manifests, explicit per-child Skill admission, robust aggregate cost reservations, external side-effect receipts across additional connectors, approval slot release, richer retry/recovery controls and browser/device QA. This first slice does **not** claim those are delivered. CI fixture tests are not a credentialed multi-agent production smoke.
+Delegated token/cost ceilings now apply to the **entire nested agent subtree**,
+including children, siblings and inference-only join continuations. Spend
+reported by one child reduces the entire subtree's remaining allowance. Before
+admission or dispatch, the scheduler includes measured/estimated usage and
+active per-run USD reservations, and fails closed on unknown usage or missing
+ancestry. Live usage callbacks cancel the active run when the aggregate limit
+is reached. A coordinator cannot bypass its limit by spawning independent
+child conversations. This is best-effort containment around provider usage
+receipts, **not a prepaid hard cap**: a provider may incur in-flight cost before
+reporting tokens or price, so real billing can exceed these ceilings.
+
+### Acceptance matrix
+
+- Automated: non-Atlas two-worker fan-out/fan-in, dependency handling,
+  structured and plain-text handoff, persisted IDs, restart interruption,
+  cancellation propagation, capability isolation, usage ledgers, nested
+  aggregate token/cost exhaustion, and rendering of child state after reload.
+- Automated with actual Pi SDK **without inference credentials**: restrictive
+  session initialization and cancellation. These tests verify the adapter
+  contract but do not demonstrate a provider completing an AI response.
+- Browser CI: task console and inline subagent inspection, streaming and
+  reconnect UI, approvals, and separate GitHub/Skills browser suites.
+- **Not yet credentialed / deployed acceptance:** Real Pi-powered parent
+  delegates two agents, they call an authorised MCP provider, receive and
+  synthesise verifiable tool results, and the UI survives reload/reconnect.
+  Test a restarted in-flight provider, failed or offline local model, and an
+  approval held while unrelated work progresses on a real deployment.
+  Record the deployed commit, model, provider, timestamps, task/run IDs,
+  observed tool receipts and actual outcomes before marking this complete.
+
+## Deferred extensions
+
+User-editable/Skill-backed profile manifests, explicit per-child Skills,
+prepaid provider cost reservations, general-purpose durable side-effect
+reconciliation across all connectors, and releasing an inference slot for
+pending human approvals require separate design and acceptance. Existing
+approval waits remain slot-occupying, so a concurrency-1 deployment cannot
+serve another inference until the approval resolves or the run is cancelled.
+Do **not** represent this as a verified fully unattended orchestration agent.
