@@ -42,7 +42,10 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
       if(path==='/api/sessions'&&req.method==='POST'){
         const data=await body(req);
         if(data.modelKey!==undefined&&typeof data.modelKey!=='string')throw new Error('Invalid model selection');
-        if(typeof data.modelKey==='string'&&data.modelKey.startsWith('ollama/')&&modelRegistry)await refreshOllamaModels(modelRegistry);
+        if(typeof data.modelKey==='string'&&data.modelKey.startsWith('ollama/')){
+          if(modelRegistry)await refreshOllamaModels(modelRegistry);
+          if(modelRegistry?.ollama?.online!==true)throw new Error('Local model unavailable');
+        }
         return send(res,201,{session:summary(engine.conversation(data.modelKey as string|undefined))});
       }
       if(path==='/api/tasks'&&req.method==='GET')return send(res,200,{tasks:engine.tasks().slice(-200).reverse()});
@@ -80,7 +83,7 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
     }catch(error){
       // Only deterministic validation errors are exposed. Provider/tool errors are recorded as safe task states.
       const text=error instanceof Error?error.message:'Request failed';
-      const safe=/^(Invalid model selection|Message length|A stable|Conversation|Request identity|Task queue|Invalid depend|Parent task|Inference budget|Task cannot|Explicit reconciliation|Approval is|Task is|approved must|message and|Invalid event|Request too|Expected an)/.test(text)?text:'Request could not be completed';
+      const safe=/^(Local model unavailable|Invalid model selection|Message length|A stable|Conversation|Request identity|Task queue|Invalid depend|Parent task|Inference budget|Task cannot|Explicit reconciliation|Approval is|Task is|approved must|message and|Invalid event|Request too|Expected an)/.test(text)?text:'Request could not be completed';
       if(!res.headersSent)send(res,400,{error:safe});else res.end();
     }
   });
