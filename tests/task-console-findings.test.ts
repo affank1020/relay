@@ -330,3 +330,58 @@ test('a complete filtered page evicts nonselected tasks that left the filter',as
     globalThis.clearTimeout=previousClear;
   }
 });
+
+
+test('an older selected task is preserved while in scope and cleared after its state changes',async()=>{
+  const items=Array.from({length:53},(_,i)=>({
+    ...task(String(i+1).padStart(8,'0')+'-2222-2222-2222-222222222222',A,'running'),
+    createdAt:new Date(Date.parse(when)+(i+1)*1000).toISOString(),
+    prompt:'Older '+(i+1),rowid:i+1
+  }));
+  const oldest=items[0];
+  const mutations:string[]=[];
+  let scheduled:(()=>void)|undefined;
+  const oldTimeout=globalThis.setTimeout,oldClear=globalThis.clearTimeout;
+  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
+  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
+  try {
+    await fixture(async(get,_ui)=>{
+      const running=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Running');
+      assert.ok(running);running.onclick?.();await flush();
+      get('taskMore').onclick?.();await flush();
+      assert.equal(get('taskRows').children.filter(row=>row.className.split(' ').includes('task-row')).length,53);
+      const row=get('taskRows').children.find(item=>item.children[0]?.textContent==='Older 1');
+      assert.ok(row);row.onclick?.();await flush();
+      const cancel=get('taskDetail').querySelector('.task-actions')?.children.find(b=>b.textContent==='Cancel task');
+      assert.ok(cancel);
+      assert.ok(scheduled);scheduled();await flush();
+      assert.ok(get('taskDetail').querySelector('.task-actions'),'old in-scope task is retained');
+      oldest.state='completed';
+      assert.ok(scheduled);scheduled();await flush();
+      assert.equal(get('taskDetail').querySelector('.task-actions'),null);
+      assert.equal(get('taskDetail').children[0]?.textContent,'Select a task to inspect its work.');
+      assert.ok(!get('taskRows').children.some(item=>item.children[0]?.textContent==='Older 1'));
+      cancel.onclick?.();await flush();
+      assert.equal(mutations.length,0,'detached cancel never dispatches a mutation');
+    },async(url,options)=>{
+      if(options?.method==='POST'){mutations.push(url);return response({});}
+      if(url==='/sessions')return response({sessions:[sessions[0]]});
+      if(url.startsWith('/task-console/tasks?')){
+        const search=new URL(url,'http://relay.local').searchParams;
+        const eligible=items.filter(item=>(!search.get('state')||item.state===search.get('state'))&&
+          (!search.get('cursor')||item.rowid<Number(search.get('cursor'))))
+          .sort((a,b)=>b.rowid-a.rowid);
+        const page=eligible.slice(0,50);
+        return response({tasks:page,counts:{running:items.filter(item=>item.state==='running').length},
+          nextCursor:eligible.length>50?String(page.at(-1)?.rowid):null,hasMore:eligible.length>50});
+      }
+      const selected=items.find(item=>url==='/task-console/tasks/'+item.id);
+      if(selected)return response({task:selected,conversation:sessions[0],children:[],approvals:[]});
+      if(url.includes('/events?'))return response({events:[],nextCursor:0,hasMore:false});
+      throw Error('Unexpected URL '+url);
+    });
+  } finally {
+    globalThis.setTimeout=oldTimeout;
+    globalThis.clearTimeout=oldClear;
+  }
+});
