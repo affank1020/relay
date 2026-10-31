@@ -22,6 +22,10 @@ jobs:
         run: npm run build
       - name: Test compiled browser and real Pi server
         run: npm test
+      - name: Install headless Chromium for browser regression tests
+        run: npx playwright install --with-deps chromium
+      - name: Test actual browser task console scrolling
+        run: node --import tsx --test --test-timeout=65000 tests/task-console-browser.browser.ts
       - name: Reject checked-in JavaScript source
         run: |
           test -z "$(find src tests public -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' -o -name '*.jsx' \) -print)"

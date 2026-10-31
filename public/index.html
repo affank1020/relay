@@ -21,6 +21,7 @@
     <div class="sidebar-heading"><span>Chats</span><span id="sessionCount"></span></div>
     <nav id="sessions" aria-label="Conversations"></nav>
     <div class="sidebar-bottom">
+      <button id="openTaskConsole" class="secondary-action" type="button" aria-pressed="false" aria-controls="taskConsole"><svg class="nav-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 9h8M8 14h5"/></svg> Tasks &amp; agents</button>
       <a class="secondary-action atlas-link" href="https://atlas.affankhan.dev" target="_blank" rel="noopener noreferrer"><svg class="nav-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/></svg> Open Atlas <svg class="nav-icon external" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a>
       <footer><span class="dot" aria-hidden="true"></span><span id="connection">Connecting…</span><button id="settings" title="Reconnect" aria-label="Reconnect"><svg class="nav-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 8A8 8 0 1 0 19 16M20 3v5h-5"/></svg></button></footer>
     </div>
@@ -32,6 +33,26 @@
       </div>
       <div class="topbar-actions"><div id="atlasContext" class="atlas-context"></div><span id="state" class="run-state" hidden>Working</span><button id="toggleInspector" class="action" aria-expanded="false" aria-controls="inspector"><span>Activity</span></button></div>
     </header>
+    <section id="taskConsole" class="task-console" aria-label="Tasks and agents" hidden>
+      <div class="task-console-head">
+        <div class="task-console-counts" id="taskCounts" role="group" aria-label="Task status filters"></div>
+        <div class="task-console-filters">
+          <select id="taskConversationFilter" aria-label="Filter tasks by conversation"><option value="">All conversations</option></select>
+          <input id="taskSearch" type="search" placeholder="Search tasks" aria-label="Search loaded tasks">
+          <button id="taskRefresh" class="action" type="button">Refresh</button>
+        </div>
+      </div>
+      <div class="task-console-layout">
+        <div class="task-console-list-pane">
+          <div id="taskFeedback" class="task-feedback" role="status" aria-live="polite"></div>
+          <div id="taskRows" class="task-rows" aria-label="Tasks"></div>
+          <button id="taskMore" class="action task-more" type="button" hidden>Load older tasks</button>
+        </div>
+        <section id="taskDetail" class="task-detail" aria-label="Selected task">
+          <p class="task-feedback">Select a task to inspect its work.</p>
+        </section>
+      </div>
+    </section>
     <section id="messages" class="messages" aria-live="polite">
       <div class="empty"><h2>What are we working on?</h2></div>
     </section>

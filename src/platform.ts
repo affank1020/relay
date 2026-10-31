@@ -5,6 +5,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { ConversationConflictError, ConversationNotFoundError, SessionCleanupError, type Engine } from './engine.js';
 import type { Conversation, Task, Approval } from './store.js';
 import { terminal } from './store.js';
+import { taskConsolePage, taskConsoleDetail } from './task-console-api.js';
 import { refreshOllamaModels, type RelayModels } from './models.js';
 import { AtlasContextError } from './atlas-context.js';
 
@@ -58,6 +59,12 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         if(!engine.atlasContext)return send(res,503,{error:'Atlas not configured'});
         await engine.atlasContext.validate(atlasCheckouts[1],null);
         return send(res,200,{checkouts:await engine.atlasContext.checkouts(atlasCheckouts[1])});
+      }
+      if(path==='/api/task-console/tasks'&&req.method==='GET')return send(res,200,taskConsolePage(engine,url));
+      const consoleDetail=path.match(/^\/api\/task-console\/tasks\/([a-f0-9-]+)$/);
+      if(consoleDetail&&req.method==='GET'){
+        const detail=taskConsoleDetail(engine,consoleDetail[1]);
+        return detail?send(res,200,detail):send(res,404,{error:'Task not found'});
       }
       if(path==='/api/tasks'&&req.method==='GET')return send(res,200,{tasks:engine.tasks().slice(-200).reverse()});
       const conversation=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/messages|\/events|\/abort|\/context)?$/);
@@ -127,7 +134,7 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
       // Only deterministic validation errors are exposed. Provider/tool errors are recorded as safe task states.
       if(error instanceof AtlasContextError)return send(res,error.status,{error:error.message});
       const text=error instanceof Error?error.message:'Request failed';
-      const safe=/^(Atlas not configured|Conversation has an active task|Conversation context changed|Local model unavailable|Invalid model selection|Message length|A stable|Conversation|Request identity|Task queue|Invalid depend|Parent task|Inference budget|Task cannot|Explicit reconciliation|Approval is|Task is|approved must|message and|Invalid event|Request too|Expected an)/.test(text)?text:'Request could not be completed';
+      const safe=/^(Atlas not configured|Conversation has an active task|Conversation context changed|Local model unavailable|Invalid model selection|Message length|A stable|Conversation|Request identity|Task queue|Invalid depend|Parent task|Inference budget|Task cannot|Explicit reconciliation|Approval is|Task is|approved must|message and|Invalid event|Invalid task|Invalid conversation filter|Request too|Expected an)/.test(text)?text:'Request could not be completed';
       if(!res.headersSent)send(res,/^(Atlas not configured)/.test(text)?503:/^(Conversation has an active task|Conversation context changed)/.test(text)?409:400,{error:safe});else res.end();
     }
   });
