@@ -4,9 +4,8 @@ import { mountTaskConsole } from './task-console.js';
 import { AtlasContextPicker } from './atlas-picker.js';
 import type { AtlasContext } from './atlas-context.js';
 import { projectAtlasCheckouts } from './atlas-awareness.js';
-import { renderAtlasCheckoutViews } from './atlas-awareness-ui.js';
 import { projectAtlasDetails } from './atlas-awareness-details.js';
-import { renderAtlasDetailViews } from './atlas-awareness-details-ui.js';
+import { renderAtlasAwarenessRow,refreshAtlasAwarenessRows } from './atlas-awareness-render.js';
 import { parseAtlasWebOrigin } from './atlas-navigation.js';
 import { readLiveChatEvents } from './live-chat.js';
 interface Summary { id:string; title:string; modelKey?:string; atlasContext?:AtlasContext|null; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
@@ -223,7 +222,13 @@ function emptyConversation(){
 async function refresh(){
   const [state,list]=await Promise.all([get<{provider:string;model:string;atlas:string;ollamaOnline?:boolean;defaultModelKey?:string;atlasWebOrigin?:string;models?:{key:string;label:string}[]}>('/status'),get<{sessions:Summary[]}>('/sessions')]);
   configuredModels=state.models??[];
-  atlasWebOrigin=parseAtlasWebOrigin(state.atlasWebOrigin);
+  const nextAtlasWebOrigin=parseAtlasWebOrigin(state.atlasWebOrigin);
+  if(atlasWebOrigin!==nextAtlasWebOrigin){
+    atlasWebOrigin=nextAtlasWebOrigin;
+    // /status refresh does not necessarily fetch a conversation snapshot:
+    // update mounted resource cards in place on origin changes.
+    refreshAtlasAwarenessRows(messageRows,[...atlasObservations.values()],atlasWebOrigin);
+  }
   if(configuredModels.length){
     const picker=$<HTMLSelectElement>('modelPicker'),previous=picker.value;
     picker.replaceChildren();
@@ -310,20 +315,7 @@ function render(data:Snapshot){
         row.tools.hidden=events.length===0;
         row.receiptKey=receiptKey;
       }
-      const matching=observedViews.filter(view=>view.taskId===task.id);
-      const details=observedDetails.filter(view=>view.taskId===task.id);
-      const awarenessKey=JSON.stringify(matching)+'|'+JSON.stringify(details)+'|'+matching.map(view=>
-        view.gitObservedAt&&Date.now()-Date.parse(view.gitObservedAt)>5*60_000?'stale':'recent').join(',')+
-        '|'+details.map(view=>{
-          const at=view.detail.kind==='review_pr'?view.detail.currentHead.checkedAt:undefined;
-          return !at||!Number.isFinite(Date.parse(at))||Date.now()-Date.parse(at)>5*60_000
-            ?'historical':'recent';
-        }).join(',');
-      if(row.awarenessKey!==awarenessKey){
-        renderAtlasCheckoutViews(row.awareness,matching,atlasWebOrigin);
-        renderAtlasDetailViews(row.awareness,details,atlasWebOrigin);
-        row.awarenessKey=awarenessKey;
-      }
+      renderAtlasAwarenessRow(row,task.id,observedViews,observedDetails,atlasWebOrigin);
       const children=delegatedStates.get(task.id)??new Map<string,string>();
       const delegationKey=[...children].map(([id,state])=>id+':'+state).join('|');
       if(row.delegationKey!==delegationKey){
