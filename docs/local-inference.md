@@ -44,12 +44,22 @@ The server persists all chat prompts/outputs on the VPS even for local inference
    ```sh
    cd ~/relay
    docker compose -f compose.yaml -f compose.ingress.yaml exec -T relay \
-      node -e "fetch(process.argv[1],{headers:{Host:'localhost:11434'},signal:AbortSignal.timeout(10000)}).then(r=>{console.log('HTTP',r.status);if(!r.ok)process.exitCode=1}).catch(e=>{console.error(e.cause?.code||e.name);process.exitCode=1})" \
-      "https://<mac-name>.<tailnet-name>.ts.net:10000/v1/models"
+      node -e '
+      const https = require("node:https");
+      const hostname = "<mac-name>.<tailnet-name>.ts.net";
+      https.get({hostname,port:10000,path:"/v1/models",servername:hostname,
+        headers:{Host:"localhost:11434"},timeout:10000},
+        res=>{console.log("HTTP",res.statusCode);res.resume();
+          if(res.statusCode!==200)process.exitCode=1;})
+      .on("error",e=>{console.error(e.code,e.message);process.exitCode=1});
+      '
+
    ```
 
-   Ollama rejects non-loopback Host headers with HTTP 403. Node fetch does
-   not honour a custom Host header, so Relay uses a loopback-only reverse
+   Ollama rejects non-loopback Host headers with HTTP 403. Node's HTTPS client
+   can otherwise use the overridden Host as TLS SNI, causing an EPROTO TLS
+   alert; keep SNI explicitly pinned to the actual .ts.net hostname.
+   Node fetch cannot reliably supply the required Host header, so Relay uses a loopback-only reverse
    proxy to apply `Host: localhost:11434` to both Pi inference and model
    discovery. This preserves TLS validation against the `.ts.net` hostname
    and does not publish another Docker or VPS port.
