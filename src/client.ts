@@ -528,3 +528,57 @@ $('toggleInspector').onclick=()=>{const panel=$('inspector');panel.hidden=!panel
 // Refresh optional Ollama availability without changing conversations.
 window.setInterval?.(()=>{if(document.visibilityState!=='hidden')void refresh().catch(()=>{});},60_000);
 void bootstrap();
+
+type CapabilitySnapshot={
+  skills:Array<{id:string;name:string;description:string;version:string;revision:string|null;installed:boolean;enabled:boolean;loadFailure:string|null}>;
+  integrations:Array<{id:string;label:string;enabled:boolean;configured:boolean;state:string;availableTools:string[]}>;
+};
+async function drawCapabilities(snapshot:CapabilitySnapshot){
+  const parent=$('capabilitiesContent');
+  parent.replaceChildren();
+  for(const [title,kind,items] of [
+    ['Skills','skills',snapshot.skills],
+    ['Integrations','integrations',snapshot.integrations]
+  ] as const){
+    const group=el('section','capabilities-group','');
+    group.append(el('h3','',title));
+    for(const item of items){
+      const row=el('div','capability-row','');
+      const label=document.createElement('label');
+      const check=document.createElement('input');
+      check.type='checkbox';check.checked=item.enabled;
+      const available=kind==='skills'?item.installed:item.configured;
+      check.disabled=!available;check.setAttribute('aria-label','Enable '+(kind==='skills'?item.name:item.label));
+      const description=kind==='skills'?item.description:(item.availableTools.length?item.availableTools.length+' approved read tools':'Read-only MCP');
+      const info=el('span','','');
+      info.append(el('span','capability-name',kind==='skills'?item.name:item.label),
+        el('div','capability-description',description));
+      label.append(check,info);
+      const state=kind==='skills'?(item.loadFailure??'v'+item.version):item.state;
+      row.append(label,el('span','capability-state',state));
+      check.onchange=()=>{
+        check.disabled=true;
+        void (async()=>{
+          try{
+            const response=await api('/capabilities/'+kind+'/'+item.id,{method:'PATCH',body:JSON.stringify({enabled:check.checked})});
+            $('capabilitiesError').textContent='';
+            await drawCapabilities(await response.json() as CapabilitySnapshot);
+          }catch(e){
+            $('capabilitiesError').textContent=text(e);
+            check.checked=!check.checked;check.disabled=false;
+          }
+        })();
+      };
+      group.append(row);
+    }
+    parent.append(group);
+  }
+}
+$<HTMLButtonElement>('openCapabilities').onclick=()=>{
+  $<HTMLDialogElement>('capabilitiesDialog').showModal();
+  $('capabilitiesContent').textContent='Loading…';
+  $('capabilitiesError').textContent='';
+  void get<CapabilitySnapshot>('/capabilities').then(drawCapabilities).catch(e=>{$('capabilitiesError').textContent=text(e);});
+  closeSidebar();
+};
+$<HTMLButtonElement>('closeCapabilities').onclick=()=>$<HTMLDialogElement>('capabilitiesDialog').close();

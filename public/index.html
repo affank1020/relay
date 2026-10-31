@@ -22,6 +22,7 @@
     <nav id="sessions" aria-label="Conversations"></nav>
     <div class="sidebar-bottom">
       <button id="openTaskConsole" class="secondary-action" type="button" aria-pressed="false" aria-controls="taskConsole"><svg class="nav-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 9h8M8 14h5"/></svg> Tasks &amp; agents</button>
+      <button id="openCapabilities" class="secondary-action" type="button">Skills &amp; integrations</button>
       <a class="secondary-action atlas-link" href="https://atlas.affankhan.dev" target="_blank" rel="noopener noreferrer"><svg class="nav-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/></svg> Open Atlas <svg class="nav-icon external" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a>
       <footer><span class="dot" aria-hidden="true"></span><span id="connection">Connecting…</span><button id="settings" title="Reconnect" aria-label="Reconnect"><svg class="nav-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 8A8 8 0 1 0 19 16M20 3v5h-5"/></svg></button></footer>
     </div>
@@ -94,6 +95,13 @@
     <p id="deleteError" class="dialog-error" role="alert"></p>
     <div class="dialog-actions"><button id="deleteCancel" type="button">Cancel</button><button id="deleteConfirm" class="destructive" type="submit">Delete permanently</button></div>
   </form>
+</dialog>
+<dialog id="capabilitiesDialog" aria-labelledby="capabilitiesTitle">
+  <div class="capabilities-panel">
+    <div class="capabilities-header"><h2 id="capabilitiesTitle">Skills &amp; integrations</h2><button id="closeCapabilities" type="button" class="icon-button" aria-label="Close">×</button></div>
+    <div id="capabilitiesContent" role="status" aria-live="polite"></div>
+    <p id="capabilitiesError" class="dialog-error" role="alert"></p>
+  </div>
 </dialog>
 <dialog id="login"><form id="loginForm"><div class="wordmark">relay<span class="brand-period">.</span></div><h2>Connect</h2><input id="token" type="password" placeholder="Access token" autocomplete="off" minlength="24" required><button type="submit">Connect</button><p id="error" role="alert"></p></form></dialog>
 </body></html>

@@ -629,3 +629,18 @@ dialog #deleteName { color: var(--text); overflow-wrap: anywhere; }
   .task-detail { flex: 1 0 auto; overflow: visible; padding: 16px 4px 30px; }
   .task-detail h2 { font-size: 16px; }
 }
+
+/* Compact, opt-in capability settings: ordinary chat remains the default. */
+#capabilitiesDialog { width: min(520px,calc(100vw - 28px)); max-height: 85dvh; background: var(--surface, #16171c); color: var(--text, #f5f5f5); border: 1px solid var(--border, #393939); border-radius: 10px; padding: 0; }
+#capabilitiesDialog::backdrop { background: rgba(0,0,0,.72); }
+.capabilities-panel { padding: 22px; overflow: auto; max-height: 83dvh; }
+.capabilities-header { display:flex;align-items:center;justify-content:space-between;margin-bottom:18px; }
+.capabilities-header h2 { margin:0;font-size:17px;font-weight:600; }
+.capabilities-group { margin-top:18px; }
+.capabilities-group h3 {font-size:13px;margin:0 0 8px;}
+.capability-row {display:flex;justify-content:space-between;gap:18px;align-items:center;padding:12px 0;border-bottom:1px solid var(--border);}
+.capability-row label {display:flex;align-items:center;gap:12px;cursor:pointer;}
+.capability-row input {accent-color:var(--accent);}
+.capability-description {font-size:11px;color:var(--text-muted);margin-top:4px;}
+.capability-state {font-size:11px;color:var(--text-muted);white-space:nowrap;}
+.capability-row .capability-name {font-size:13px;}

@@ -8,8 +8,9 @@ import { terminal } from './store.js';
 import { taskConsolePage, taskConsoleDetail } from './task-console-api.js';
 import { refreshOllamaModels, type RelayModels } from './models.js';
 import { AtlasContextError } from './atlas-context.js';
+import type { CapabilityRegistry } from './capabilities.js';
 
-export function createPlatform(engine:Engine, token:string, staticDir:string, model:string, modelRegistry?:RelayModels) {
+export function createPlatform(engine:Engine, token:string, staticDir:string, model:string, modelRegistry?:RelayModels,capabilities?:CapabilityRegistry) {
   if(token.length<24)throw new Error('RELAY_ACCESS_TOKEN must be 24+ characters');
   if(!model.endsWith(':free'))throw new Error('Relay requires a free OpenRouter model');
   const summary=(c:Conversation)=>({...c,busy:engine.tasks(c.id).some(t=>!terminal(t.state)),costUsd:engine.usage(c.id).costUsd,usage:engine.usage(c.id)});
@@ -39,6 +40,21 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
       if(path==='/api/status'&&req.method==='GET'){
         if(modelRegistry)await refreshOllamaModels(modelRegistry);
         return send(res,200,{harness:'Pi',provider:modelRegistry?.ollama?'OpenRouter + Ollama':'OpenRouter',model,models:modelRegistry?.models??[],defaultModelKey:modelRegistry?.defaultKey,ollamaOnline:modelRegistry?.ollama?.online,atlas:engine.gateway?'configured':'not configured',active:engine.tasks().filter(t=>['running','awaiting_approval'].includes(t.state)).length,maxActive:engine.limits.concurrency,usage:engine.usage(),limits:engine.limits});
+      }
+      if(path==='/api/capabilities'&&req.method==='GET'){
+        if(!capabilities)return send(res,503,{error:'Capabilities unavailable'});
+        return send(res,200,await capabilities.list());
+      }
+      const capability=path.match(/^\/api\/capabilities\/(skills|integrations)\/([a-z0-9_-]+)$/);
+      if(capability&&req.method==='PATCH'){
+        if(!capabilities)return send(res,503,{error:'Capabilities unavailable'});
+        const data=await body(req);
+        if(Object.keys(data).length!==1||typeof data.enabled!=='boolean')
+          return send(res,400,{error:'Expected enabled boolean'});
+        if(!(capability[1]==='skills'?capabilities.skills.contains(capability[2]):capabilities.connections.contains(capability[2])))
+          return send(res,404,{error:'Unknown capability'});
+        await capabilities.update(capability[1] as 'skills'|'integrations',capability[2],data.enabled);
+        return send(res,200,await capabilities.list());
       }
       if(path==='/api/sessions'&&req.method==='GET')return send(res,200,{sessions:engine.store.all<Conversation>('conversations').reverse().map(summary)});
       if(path==='/api/sessions'&&req.method==='POST'){
