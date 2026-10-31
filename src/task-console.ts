@@ -62,6 +62,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   let status='all';
   let conversation='';
   let selected:string|null=null;
+  // Relation links intentionally open tasks outside the active list filters.
+  let inspectingRelation=false;
   let pinnedId:string|null=null;
   let selectedData:Detail|null=null;
   let selectedFingerprint='';
@@ -74,6 +76,10 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   let gapFloor:number|null=null;
   let gapCursor:string|null=null;
   let gapScanStart:number|null=null;
+  // An older task may join an already-exhausted state filter. A separate
+  // deliberate rescan can discover it without discarding the loaded history.
+  let membershipCursor:string|null=null;
+  let matchingCount=0;
   let pagingRevision=0;
   let initialPageLoaded=false;
   let olderCheckOffset=0;
@@ -107,6 +113,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   }
   function countView(counts:Counts) {
     const sum=states.reduce((total,state)=>total+(counts[state]??0),0);
+    matchingCount=status==='all'?sum:counts[status as State]??0;
     for(const state of filters) {
       const value=countNodes.get(state);
       if(value)value.textContent=String(state==='all'?sum:counts[state as State]??0);
@@ -114,6 +121,18 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       control?.classList.toggle('active',state===status);
       control?.setAttribute('aria-pressed',String(state===status));
     }
+  }
+  function needsMembershipScan() {
+    // Only after exhausting the deep frontier. A count difference means that
+    // some previously out-of-filter old task may now match.
+    if(!paginationInitialized||hasMore||gapCursor!==null||
+        newestBoundary!==null&&gapFloor!==null&&newestBoundary>gapFloor)return false;
+    let loaded=0;
+    for(const task of tasks.values()) {
+      if((status==='all'||task.state===status)&&
+          (!conversation||task.conversationId===conversation))loaded++;
+    }
+    return matchingCount>loaded;
   }
   function renderRows() {
     const needle=search.value.trim().toLowerCase();
@@ -150,7 +169,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     if(!filtered.length&&initialPageLoaded) {
       if(!placeholder)list.append(node('p','task-feedback task-rows-empty','No tasks match this filter.'));
     } else placeholder?.remove();
-    more.hidden=!(hasMore||gapCursor!==null||
+    more.hidden=!(hasMore||gapCursor!==null||membershipCursor!==null||needsMembershipScan()||
       (newestBoundary!==null&&gapFloor!==null&&newestBoundary>gapFloor));
   }
   async function loadConversations() {
@@ -181,10 +200,10 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
         // previously loaded older rows.
         for(const id of tasks.keys())if(!incoming.has(id))tasks.delete(id);
         olderIds.clear();
-        if(selected&&!incoming.has(selected))clearSelection();
+        if(selected&&!incoming.has(selected)&&!inspectingRelation)clearSelection();
         if(cursor!==null||hasMore||gapCursor!==null||newestBoundary!==null)pagingRevision++;
         cursor=null;hasMore=false;paginationInitialized=true;newestBoundary=null;
-        gapFloor=null;gapCursor=null;gapScanStart=null;
+        gapFloor=null;gapCursor=null;gapScanStart=null;membershipCursor=null;
       } else {
         const boundary=Number(response.nextCursor);
         if(!Number.isSafeInteger(boundary)||boundary<1)
@@ -235,7 +254,9 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
         // Polls that move the newest-page boundary never rewind it. Any gap
         // between the initial and current boundary is separately pageable
         // after the deep history has been read.
-        if(!paginationInitialized) {
+        if(!paginationInitialized||gapFloor===null) {
+          // This includes the normal 50→51 transition after an initially
+          // exhaustive page: the first nonexhaustive response creates history.
           cursor=response.nextCursor;hasMore=true;
           paginationInitialized=true;
           gapFloor=boundary;
@@ -258,16 +279,22 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   async function older() {
     if(!visible||pendingEpoch===listEpoch||more.disabled)return;
     const deep=hasMore&&cursor!==null;
-    if(!deep) {
-      if(gapCursor===null) {
-        if(newestBoundary===null||gapFloor===null||newestBoundary<=gapFloor)return;
-        // Freeze one gap scan at this high-water mark. Later inserts are
-        // handled by a subsequent scan, never by resetting this cursor.
+    let kind:'deep'|'gap'|'membership'=deep?'deep':'gap';
+    if(!deep&&gapCursor===null) {
+      if(newestBoundary!==null&&gapFloor!==null&&newestBoundary>gapFloor) {
+        // A fixed high-water mark prevents new inserts restarting the gap scan.
         gapScanStart=newestBoundary;
         gapCursor=String(newestBoundary);
-      }
+      } else kind='membership';
     }
-    const pageCursor=deep?cursor!:gapCursor!;
+    if(kind==='membership'&&membershipCursor===null) {
+      if(!needsMembershipScan()||newestBoundary===null)return;
+      // Reconcile an older task becoming eligible after the deep cursor
+      // reached EOF. Continue scanning on deliberate clicks, not background
+      // polls, so loaded history and memory remain under user control.
+      membershipCursor=String(newestBoundary);
+    }
+    const pageCursor=kind==='deep'?cursor!:kind==='gap'?gapCursor!:membershipCursor!;
     const generation=listEpoch,revision=pagingRevision;
     more.disabled=true;
     try {
@@ -278,13 +305,11 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
         tasks.set(task.id,task);
         if(!newestIds.has(task.id))olderIds.add(task.id);
       }
-      if(deep) {
-        // This frontier progresses monotonically toward the oldest row, even
-        // while polling reports new tasks above it.
+      if(kind==='deep') {
         cursor=response.nextCursor;hasMore=response.hasMore;
-      } else {
-        // Finish the snapshot once a page reaches the previously covered
-        // boundary, even if its 50 results overlap already loaded rows.
+      } else if(kind==='gap') {
+        // The gap ends once we reach the oldest boundary already covered by
+        // deep history, even if the returned page overlaps known task IDs.
         const next=Number(response.nextCursor);
         if(response.hasMore&&Number.isSafeInteger(next)&&next>gapFloor!) {
           gapCursor=response.nextCursor;
@@ -292,6 +317,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
           gapFloor=gapScanStart;
           gapCursor=null;gapScanStart=null;
         }
+      } else {
+        membershipCursor=response.hasMore?response.nextCursor:null;
       }
       renderRows();
     } catch(error) {message(errorText(error));}
@@ -299,6 +326,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   }
   function clearSelection() {
     // Invalidate any pending detail or event request before removing actionable controls.
+    inspectingRelation=false;
     if(pinnedId&&!newestIds.has(pinnedId)&&!olderIds.has(pinnedId))tasks.delete(pinnedId);
     pinnedId=null;
     detailEpoch++;
@@ -311,7 +339,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     listEpoch++;
     clearSelection();
     cursor=null;hasMore=false;paginationInitialized=false;newestBoundary=null;
-    gapFloor=null;gapCursor=null;gapScanStart=null;pagingRevision++;
+    gapFloor=null;gapCursor=null;gapScanStart=null;membershipCursor=null;
+    matchingCount=0;pagingRevision++;
     initialPageLoaded=false;olderCheckOffset=0;
     newestIds.clear();olderIds.clear();tasks.clear();pinnedId=null;rows.clear();list.replaceChildren();
     message('Loading tasks…');
@@ -324,7 +353,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     wrapper.append(node('span','task-label',title));
     for(const id of ids) {
       const task=tasks.get(id);
-      const action=button(short(task?.prompt||id,90),()=>{void inspect(id);},'task-relation-link');
+      const action=button(short(task?.prompt||id,90),()=>{void inspect(id,true);},'task-relation-link');
       action.title=id;
       wrapper.append(action);
     }
@@ -479,12 +508,13 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       }
     }
   }
-  async function inspect(id:string) {
+  async function inspect(id:string,fromRelation=false) {
     if(pinnedId&&pinnedId!==id) {
       if(!newestIds.has(pinnedId)&&!olderIds.has(pinnedId))tasks.delete(pinnedId);
       pinnedId=null;
     }
     selected=id;
+    inspectingRelation=fromRelation;
     detailEpoch++;
     const generation=detailEpoch;
     events=[];eventCursor=0;eventMore=false;eventLoading=false;
@@ -526,8 +556,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     try {
       const data=await read<Detail>('/task-console/tasks/'+id);
       if(!visible||generation!==detailEpoch)return;
-      if((status!=='all'&&data.task.state!==status) ||
-          (conversation&&data.task.conversationId!==conversation)) {
+      if(!inspectingRelation&&((status!=='all'&&data.task.state!==status) ||
+          (conversation&&data.task.conversationId!==conversation))) {
         // A task can finish or fail while excluded by the server-side filter,
         // even if it was previously on an older loaded page.
         tasks.delete(id);newestIds.delete(id);olderIds.delete(id);
@@ -535,7 +565,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
         renderRows();
         return;
       }
-      tasks.set(id,data.task);
+      if(tasks.has(id))tasks.set(id,data.task);
       if(detailVersion(data)!==selectedFingerprint)drawDetail(data);
       // Continue any partial replay on every visible poll; once caught up,
       // the same cursor also picks up new task events.
