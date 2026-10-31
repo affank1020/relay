@@ -66,6 +66,9 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   let selectedFingerprint='';
   let cursor:string|null=null;
   let hasMore=false;
+  let paginationInitialized=false;
+  let initialPageLoaded=false;
+  let olderCheckOffset=0;
   let newestIds=new Set<string>();
   let olderIds=new Set<string>();
   let listEpoch=0;
@@ -136,7 +139,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       if(list.children[index]!==row)list.insertBefore(row,list.children[index]??null);
     }
     const placeholder=list.querySelector('.task-rows-empty');
-    if(!filtered.length&&pendingEpoch!==listEpoch) {
+    if(!filtered.length&&initialPageLoaded) {
       if(!placeholder)list.append(node('p','task-feedback task-rows-empty','No tasks match this filter.'));
     } else placeholder?.remove();
     more.hidden=!hasMore;
@@ -164,32 +167,63 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       if(generation!==listEpoch||!visible)return;
       const incoming=new Set(response.tasks.map(task=>task.id));
       if(!response.hasMore) {
-        // When every match fits the first page, absence is authoritative:
-        // previously loaded rows that left the filter must not remain visible.
+        // The whole filtered set fits on one page, so absence is authoritative.
         for(const id of tasks.keys())if(!incoming.has(id))tasks.delete(id);
         olderIds.clear();
         if(selected&&!incoming.has(selected))clearSelection();
-        cursor=null;hasMore=false;
+        cursor=null;hasMore=false;paginationInitialized=true;
       } else {
-        // Keep displaced first-page rows. The exclusive pagination cursor still
-        // points below the ORIGINAL page boundary, so dropping a displaced row
-        // makes it unreachable when new tasks arrive while the list is open.
-        for(const id of newestIds)if(!incoming.has(id))olderIds.add(id);
-        const selectionNeedsChecking=selected!==null&&status!=='all'&&
-          newestIds.has(selected)&&!incoming.has(selected);
-        if(selectionNeedsChecking) {
-          // Displacement and a state transition look identical in a filtered
-          // page. Keep selection, but remove unverified actions until the
-          // authoritative task detail is fetched.
-          selectedFingerprint='';
-          detail.replaceChildren(node('p','task-feedback','Checking task state…'));
-          eventList=null;eventMoreButton=null;
+        // A missing first-page row may have been displaced by an insertion OR
+        // moved out of a state filter. Reconcile its persisted state instead of
+        // assuming displacement and presenting stale queue/approval rows.
+        const missing=[...newestIds].filter(id=>!incoming.has(id));
+        const older=[...olderIds].filter(id=>!incoming.has(id)&&!missing.includes(id));
+        const capacity=50-missing.length;
+        const checkOlder:string[]=[];
+        if(capacity>0&&older.length) {
+          for(let i=0;i<Math.min(capacity,older.length);i++)
+            checkOlder.push(older[(olderCheckOffset+i)%older.length]);
+          olderCheckOffset=(olderCheckOffset+checkOlder.length)%older.length;
         }
-        if(cursor===null) {cursor=response.nextCursor;hasMore=response.hasMore;}
+        const check=[...missing,...checkOlder];
+        if(check.length) {
+          if(selected&&missing.includes(selected)&&status!=='all') {
+            // No mutations while selected state is being checked.
+            selectedFingerprint='';
+            detail.replaceChildren(node('p','task-feedback','Checking task state…'));
+            eventList=null;eventMoreButton=null;
+          }
+          const responseStates=await read<{states:Record<string,{state:State;conversationId:string}>}>(
+            '/task-console/task-states?ids='+encodeURIComponent(check.join(',')));
+          if(generation!==listEpoch||!visible)return;
+          for(const id of check) {
+            const state=responseStates.states[id];
+            if(!state||(status!=='all'&&state.state!==status)||
+                (conversation&&state.conversationId!==conversation)) {
+              tasks.delete(id);olderIds.delete(id);
+              if(selected===id)clearSelection();
+            } else {
+              const cached=tasks.get(id);
+              if(cached)tasks.set(id,{...cached,state:state.state});
+              if(missing.includes(id))olderIds.add(id);
+            }
+          }
+        }
+        // Cursor belongs to the oldest originally loaded page, not to each
+        // newest-page poll. A fully exhausted cursor remains exhausted unless
+        // a burst of inserts leaves a gap with no overlap to loaded history.
+        if(!paginationInitialized||
+            (!hasMore&&!response.tasks.some(task=>tasks.has(task.id)))) {
+          cursor=response.nextCursor;hasMore=response.hasMore;
+          paginationInitialized=true;
+        }
       }
       newestIds=incoming;
-      for(const task of response.tasks)tasks.set(task.id,task);
-      // An idle refresh updates the newest rows without discarding older pages.
+      for(const task of response.tasks) {
+        tasks.set(task.id,task);
+        olderIds.delete(task.id);
+      }
+      initialPageLoaded=true;
       countView(response.counts);
       message('');
       renderRows();
@@ -222,7 +256,8 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   async function reset() {
     listEpoch++;
     clearSelection();
-    cursor=null;hasMore=false;newestIds.clear();olderIds.clear();tasks.clear();rows.clear();list.replaceChildren();
+    cursor=null;hasMore=false;paginationInitialized=false;initialPageLoaded=false;olderCheckOffset=0;
+    newestIds.clear();olderIds.clear();tasks.clear();rows.clear();list.replaceChildren();
     message('Loading tasks…');
     if(!visible)return;
     await firstPage();
