@@ -77,6 +77,12 @@ test('unknown and outdated review freshness never become a false clean claim',()
     ...fixtureSummary(),currentHead:{state:'unavailable'},latestReviewHead:'unknown'});
   assert.equal(unknown?.detail?.kind,'review_pr');
   assert.equal(unknown?.detail&&atlasDetailSummary(unknown.detail).status,'Review freshness unknown');
+  assert.equal(observeAtlasDetailResult('code_reviews_pr_summary',args,{
+    ...fixtureSummary(),currentHead:{state:'unavailable'},latestReviewHead:'outdated'}),null,
+    'outdated review cannot be asserted when GitHub is unavailable');
+  assert.equal(observeAtlasDetailResult('code_reviews_pr_summary',args,{
+    ...fixtureSummary(),currentHead:{state:'open',sha:gitHead},latestReviewHead:'unknown'}),null,
+    'unknown freshness contradicts a verified matching PR head');
   const outdated=observeAtlasDetailResult('code_reviews_pr_summary',args,{
     ...fixtureSummary(),currentHead:{state:'open',sha:'a'.repeat(40)},
     latestReviewHead:'outdated'});

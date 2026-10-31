@@ -107,10 +107,16 @@ export function observeAtlasDetailResult(toolName:string,args:Record<string,unkn
     const checkedAt=currentHead.checkedAt;
     if(checkedAt!==undefined&&(typeof checkedAt!=='string'||!Number.isFinite(Date.parse(checkedAt))))return null;
     const state=currentHead.state as 'open'|'closed'|'unavailable';
-    // Atlas's evaluated comparison is the authority; no 'current' claim
-    // without an actual verified head and saved review.
+    // Reject contradictory freshness claims instead of showing a false
+    // "current" or "outdated" review under an unavailable GitHub head.
+    const currentSha=typeof currentHead.sha==='string'&&SHA.test(currentHead.sha)
+      ?currentHead.sha.toLowerCase():undefined;
+    if(state!=='unavailable'&&!currentSha)return null;
     if(data.latestReviewHead==='current'&&(!latest||state==='unavailable'||
-      typeof currentHead.sha!=='string'||currentHead.sha.toLowerCase()!==latest.headSha))return null;
+      currentSha!==latest.headSha))return null;
+    if(data.latestReviewHead==='outdated'&&(!latest||state==='unavailable'||
+      currentSha===latest.headSha))return null;
+    if(data.latestReviewHead==='unknown'&&(!latest||state!=='unavailable'))return null;
     if(data.latestReviewHead==='no_stored_review'&&latest)return null;
     const detail:AtlasDetail={kind:'review_pr',repository:requestedRepo,prNumber,recordedRounds,
       latestReviewHead:data.latestReviewHead as Extract<AtlasDetail,{kind:'review_pr'}>['latestReviewHead'],
