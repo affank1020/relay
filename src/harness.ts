@@ -1,4 +1,4 @@
-import { mkdir, readdir } from 'node:fs/promises';
+import { mkdir, readdir, lstat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { Task, Usage } from './store.js';
@@ -7,7 +7,13 @@ import { formatAtlasContext, type AtlasContext } from './atlas-context.js';
 
 export type HarnessPhase = 'preparing_directories' | 'loading_model' | 'checking_local_provider' | 'loading_resources' | 'opening_session' | 'creating_session' | 'running_inference' | 'finalizing_response';
 export interface HarnessRequest { version:1; task:Task; modelKey?:string; atlasContext?:AtlasContext|null; atlasAvailable?:boolean; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; }
-export interface Harness { readonly version:1; readonly capabilities: { persistence:boolean; cancellation:boolean; tools:boolean }; run(request:HarnessRequest):Promise<string>; }
+export interface Harness {
+  readonly version:1;
+  readonly capabilities: { persistence:boolean; cancellation:boolean; tools:boolean };
+  run(request:HarnessRequest):Promise<string>;
+  // Required for durable chat deletion. Engine refuses deletion if absent.
+  deleteConversationSessions?(conversationId:string):Promise<void>;
+}
 const count=(n:unknown)=>typeof n==='number' && Number.isFinite(n) && n>=0?n:null;
 export const isPiRateLimited=(detail:unknown):boolean=>typeof detail==='string' && /\b429\b|\brate[\s_-]?limit(?:ed|ing)?\b/i.test(detail);
 export class ProviderRateLimitError extends Error { constructor(){super('OpenRouter rate limit');this.name='ProviderRateLimitError';} }
@@ -18,6 +24,21 @@ export class PiHarness implements Harness {
   private runtime?:Promise<ModelRuntime>;
   constructor(private root:string,private modelId:string,private registry?:RelayModels) {
     if(!modelId.endsWith(':free'))throw new Error('Only explicit free OpenRouter variants are permitted');
+  }
+  async deleteConversationSessions(conversationId:string):Promise<void> {
+    if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(conversationId))
+      throw new Error('Invalid conversation ID');
+    const directory=join(this.root,'sessions',conversationId);
+    try {
+      const stat=await lstat(directory);
+      // Never traverse a symlink or an unexpected file in the persistent
+      // session root. Keep the DB tombstone for manual reconciliation.
+      if(stat.isSymbolicLink() || !stat.isDirectory())throw new Error('Unsafe Pi session directory');
+    } catch(error) {
+      if((error as NodeJS.ErrnoException).code==='ENOENT')return;
+      throw error;
+    }
+    await rm(directory,{recursive:true,force:true,maxRetries:2,retryDelay:100});
   }
   async run({task,modelKey,atlasContext,atlasAvailable,signal,tools,onText,onUsage,onPhase}:HarnessRequest):Promise<string> {
     onPhase?.('preparing_directories');
