@@ -24,7 +24,7 @@ export function atlasList(reply:unknown):Record<string,unknown>[] {
   if(!outer)throw new AtlasContextError(503,'Atlas is unavailable');
   if(outer.isError===true) {
     const messages=Array.isArray(outer.content)?outer.content.map(c=>record(c)?.text).filter(v=>typeof v==='string') as string[]:[];
-    const denied=messages.some(v=>/\\b(401|403|forbidden|unauthori[sz]ed|permission denied)\\b/i.test(v));
+    const denied=messages.some(v=>/\b(401|403|forbidden|unauthori[sz]ed|permission denied)\b/i.test(v));
     throw new AtlasContextError(denied?403:503,denied?'Atlas access denied':'Atlas is unavailable');
   }
   const structured=record(outer.structuredContent);
@@ -47,7 +47,7 @@ export class AtlasContextService {
     catch(e){
       if(e instanceof AtlasContextError)throw e;
       const message=e instanceof Error?e.message:'';
-      if(/\\b(401|403|forbidden|unauthori[sz]ed|permission denied)\\b/i.test(message))
+      if(/\b(401|403|forbidden|unauthori[sz]ed|permission denied)\b/i.test(message))
         throw new AtlasContextError(403,'Atlas access denied');
       throw new AtlasContextError(503,'Atlas is unavailable');
     }
