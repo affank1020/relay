@@ -1,11 +1,12 @@
 import type { Task, ExecutionEvent, Approval } from './store.js';
-interface Summary { id:string; title:string; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
+interface Summary { id:string; title:string; modelKey?:string; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
 interface Snapshot { session:Summary; tasks:Task[]; approvals:Approval[]; }
 function $<T extends HTMLElement=HTMLElement>(id:string):T { const n=document.getElementById(id);if(!n)throw new Error('Missing element '+id);return n as T; }
 const hosted=window.location.protocol==='https:';
 let token='',current:string|null=null,busy=false,polling=false,timer:ReturnType<typeof setTimeout>|undefined,cursor=0,epoch=0,lastView='',submitting=false;
 let pending:{conversationId:string;message:string;requestId:string}|null=null;
 const activity:ExecutionEvent[]=[];
+let configuredModels:{key:string;label:string}[]=[];
 const text=(e:unknown)=>e instanceof Error?e.message:String(e);
 function el(tag:string,className:string,value:string){const n=document.createElement(tag);n.className=className;n.textContent=value;return n;}
 function remember(key:string,value:string){try{window.sessionStorage?.setItem(key,value);}catch{}}
@@ -22,8 +23,15 @@ async function get<T>(path:string){return await (await api(path)).json() as T;}
 function notify(error:unknown){$('notice').textContent=text(error);}
 function setBusy(value:boolean){busy=value;$<HTMLButtonElement>('send').disabled=value||submitting;$<HTMLTextAreaElement>('prompt').disabled=value;$('stop').hidden=!value;$('state').textContent=value?'Working…':'Idle';}
 async function refresh(){
-  const [state,list]=await Promise.all([get<{provider:string;model:string;atlas:string}>('/status'),get<{sessions:Summary[]}>('/sessions')]);
-  $('model').textContent=state.provider+' · '+state.model;
+  const [state,list]=await Promise.all([get<{provider:string;model:string;atlas:string;defaultModelKey?:string;models?:{key:string;label:string}[]}>('/status'),get<{sessions:Summary[]}>('/sessions')]);
+  configuredModels=state.models??[];
+  if(configuredModels.length){
+    const picker=$<HTMLSelectElement>('modelPicker'),previous=picker.value;
+    picker.replaceChildren();
+    for(const option of configuredModels){const item=document.createElement('option');item.value=option.key;item.textContent=option.label;picker.append(item);}
+    picker.value=configuredModels.some(x=>x.key===previous)?previous:(state.defaultModelKey??configuredModels[0].key);
+  }
+  $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===$<HTMLSelectElement>('modelPicker').value)?.label??state.model);
   $('connection').textContent='Pi connected';$('subtitle').textContent='Atlas '+state.atlas;
   $('sessions').replaceChildren();
   for(const s of list.sessions){const button=el('button','session'+(s.id===current?' selected':''),s.title) as HTMLButtonElement;button.type='button';button.onclick=()=>{void select(s.id).catch(notify);};$('sessions').append(button);}
@@ -50,6 +58,9 @@ function render(data:Snapshot){
     lastView=serialized;
   }
   $('title').textContent=data.session.title;
+  const picker=$<HTMLSelectElement>('modelPicker');
+  if(data.session.modelKey&&configuredModels.some(m=>m.key===data.session.modelKey))picker.value=data.session.modelKey;
+  $('model').textContent='Pi · '+(configuredModels.find(m=>m.key===picker.value)?.label??'OpenRouter');
   $('cost').textContent=(data.session.usage.unknown?'Usage incomplete · ':'')+data.session.usage.costKind+' $'+data.session.costUsd.toFixed(4)+' · '+data.session.usage.tokens+' tokens';
   setBusy(data.session.busy);
   $('approvals').replaceChildren();
@@ -104,7 +115,7 @@ async function select(id:string){
   if(generation!==epoch)return;
   render(data);await refresh();void poll();
 }
-async function create(){const result=await (await api('/sessions',{method:'POST',body:'{}'})).json() as {session:Summary};await select(result.session.id);$<HTMLTextAreaElement>('prompt').focus();}
+async function create(){const modelKey=$<HTMLSelectElement>('modelPicker').value;const result=await (await api('/sessions',{method:'POST',body:JSON.stringify(modelKey?{modelKey}:{})})).json() as {session:Summary};await select(result.session.id);$<HTMLTextAreaElement>('prompt').focus();}
 async function submit(event:Event){
   event.preventDefault();if(busy||submitting)return;
   const prompt=$<HTMLTextAreaElement>('prompt');const value=prompt.value.trim();if(!value&&!pending)return;
@@ -143,6 +154,7 @@ $<HTMLFormElement>('loginForm').onsubmit=async event=>{
 };
 $('settings').onclick=()=>{if(hosted){void bootstrap();return;}token='';$<HTMLDialogElement>('login').showModal();};
 $('new').onclick=()=>{void create().catch(notify);};
+$<HTMLSelectElement>('modelPicker').onchange=()=>{void create().catch(notify);};
 $<HTMLFormElement>('form').onsubmit=event=>{void submit(event);};
 $('stop').onclick=()=>{if(current)void api('/sessions/'+current+'/abort',{method:'POST',body:'{}'}).then(()=>poll()).catch(notify);};
 $<HTMLTextAreaElement>('prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$<HTMLFormElement>('form').requestSubmit();}};
