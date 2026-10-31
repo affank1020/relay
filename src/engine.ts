@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Type } from '@sinclair/typebox';
-import { Store, terminal, type Task, type Conversation, type Approval, type Usage } from './store.js';
+import { Store, terminal, type Task, type Conversation, type Approval, type Usage, type InvocationRecord } from './store.js';
 import { LocalProviderUnavailableError, ProviderRateLimitError, type Harness, type HarnessPhase } from './harness.js';
 import type { RelayModels } from './models.js';
 import type { CapabilityRegistry } from './capabilities.js';
@@ -13,6 +13,13 @@ export interface Limits { concurrency:number; queue:number; sessionUsd:number; g
 export class ConversationConflictError extends Error {}
 export class ConversationNotFoundError extends Error {}
 export class SessionCleanupError extends Error {}
+// Deletion and read-only reconciliation must agree on which side effects are
+// terminal. Only pre-dispatch denied GitHub writes are known to be harmless:
+// dispatched or uncertain mutations are never eligible for read reconciliation.
+const settledInvocation=(record:InvocationRecord):boolean=>
+  record.state==='completed' ||
+  (record.kind==='mcp_read' && ['failed_read','reconciled_read'].includes(record.state)) ||
+  (record.kind==='mcp_write' && record.state==='denied_before_dispatch');
 export class Engine {
   private active=new Map<string,AbortController>();
   private scheduled=false;
@@ -135,9 +142,7 @@ export class Engine {
     if(this.store.all<Approval>('approvals').some(a=>removed.has(a.taskId)&&a.state==='pending'))
       throw new ConversationConflictError('Conversation has pending approvals');
     const outstanding=all.filter(t=>removed.has(t.id)).flatMap(t=>this.store.invocationRecords(t.id))
-      .filter(r=>r.state!=='completed' &&
-        !(r.kind==='mcp_read'&&['failed_read','reconciled_read'].includes(r.state)) &&
-        !(r.kind==='mcp_write'&&r.state==='denied_before_dispatch'));
+      .filter(r=>!settledInvocation(r));
     if(outstanding.length) {
       if(outstanding.every(r=>r.kind==='mcp_read'&&['uncertain','dispatched','validating'].includes(r.state)))
         throw new ConversationConflictError('Conversation has uncertain read-only MCP invocations');
@@ -192,8 +197,7 @@ export class Engine {
     if(this.store.all<Approval>('approvals').some(a=>a.state==='pending'&&owned.some(t=>t.id===a.taskId)))
       throw new ConversationConflictError('Conversation has pending approvals');
     const records=owned.flatMap(task=>this.store.invocationRecords(task.id).map(record=>({task,record})));
-    const blocking=records.filter(({record})=>record.state!=='completed' &&
-      !(record.kind==='mcp_read'&&['failed_read','reconciled_read'].includes(record.state)));
+    const blocking=records.filter(({record})=>!settledInvocation(record));
     if(blocking.some(({record})=>record.kind!=='mcp_read' ||
         !['uncertain','dispatched','validating'].includes(record.state)))
       throw new ConversationConflictError('Conversation has uncertain tool invocations');
@@ -203,8 +207,8 @@ export class Engine {
       for(const {task,record} of blocking){
         this.store.save('invocations',{...record,state:'reconciled_read',
           reconciledAt:new Date().toISOString()});
-        this.store.event(conversationId,{taskId:task.id,agentRunId:task.id,
-          invocationId:record.invocationId??null,tool:record.toolName??null,
+        this.store.event(conversationId,{taskId:task.id,agentId:task.agentId??null,
+          agentRunId:task.agentRunId??null,invocationId:record.invocationId??null,tool:record.toolName??null,
           type:'reconciliation',state:'read_reconciled'});
       }
     });
