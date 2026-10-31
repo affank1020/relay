@@ -4,6 +4,9 @@ import {atlasCheckoutLink,atlasDetailLink,atlasNodeLink,parseAtlasWebOrigin} fro
 import {verifyAtlasReadOnlyConnection} from '../src/atlas-smoke.js';
 import type {AtlasTransport} from '../src/gateway.js';
 import type {AtlasDetail} from '../src/atlas-awareness-details.js';
+import { createPlatform } from '../src/platform.js';
+import type { Engine } from '../src/engine.js';
+import { once } from 'node:events';
 
 const project='008b191b-96c2-4a5f-92f6-1f13d6d790d5';
 const store='0140b619-4f75-454e-92a3-c8b595c9dee5';
@@ -151,4 +154,44 @@ test('smoke rejects duplicate catalogue entries, malformed identities and denied
     list:async()=>[{name:'get_atlas_status',inputSchema:{}}],
     call:async()=>({isError:true,structuredContent:{result:{name:'false success'}}})};
   await assert.rejects(verifyAtlasReadOnlyConnection(failure),/operation failed/);
+});
+
+test('authenticated status exposes the trusted Compose-supplied Atlas origin only when connected',async()=>{
+  const token='relay-test-token-at-least-twentyfour';
+  const stub={
+    gateway:{},
+    tasks:()=>[],
+    usage:()=>({costUsd:0}),
+    limits:{concurrency:1}
+  } as unknown as Engine;
+  const web=createPlatform(stub,token,'.','cohere/north-mini-code:free',undefined,undefined,
+    'https://atlas.example.com');
+  web.listen(0,'127.0.0.1');
+  await once(web,'listening');
+  const address=web.address();
+  assert.ok(address&&typeof address==='object');
+  const url='http://127.0.0.1:'+address.port+'/api/status';
+  try{
+    const denied=await fetch(url);
+    assert.equal(denied.status,401);
+    const response=await fetch(url,{headers:{Authorization:'Bearer '+token}});
+    assert.equal(response.status,200);
+    const status=await response.json() as {atlasWebOrigin?:string;atlas:string};
+    assert.equal(status.atlasWebOrigin,'https://atlas.example.com');
+    assert.equal(status.atlas,'configured');
+  }finally{await new Promise<void>((resolve,reject)=>web.close(error=>error?reject(error):resolve()));}
+  const notConnected=createPlatform({...stub,gateway:undefined} as Engine,
+    token,'.','cohere/north-mini-code:free',undefined,undefined,'https://atlas.example.com');
+  notConnected.listen(0,'127.0.0.1');
+  await once(notConnected,'listening');
+  try{
+    const address=notConnected.address();
+    assert.ok(address&&typeof address==='object');
+    const response=await fetch('http://127.0.0.1:'+address.port+'/api/status',
+      {headers:{Authorization:'Bearer '+token}});
+    assert.equal(response.status,200);
+    const status=await response.json() as {atlasWebOrigin?:string;atlas:string};
+    assert.equal(status.atlasWebOrigin,undefined);
+    assert.equal(status.atlas,'not configured');
+  }finally{await new Promise<void>((resolve,reject)=>notConnected.close(error=>error?reject(error):resolve()));}
 });

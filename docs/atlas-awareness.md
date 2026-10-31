@@ -4,7 +4,7 @@ Relay displays optional Atlas context only from successful, structured and allow
 
 ## Read-only navigation
 
-Set **ATLAS_WEB_ORIGIN** to an operator-trusted Atlas Web **origin**, for example \`https://atlas.example.com\`. The setting is separate from \`ATLAS_MCP_URL\`; it is used only to generate links from verified resource IDs. It cannot carry a username/password, path, query or fragment. The only permitted plaintext HTTP origins are \`localhost\`, \`127.0.0.1\` and \`[::1]\` for local development. If absent, no Atlas Web links are rendered.
+Set **ATLAS_WEB_ORIGIN** in the Relay deployment \`.env\` (Compose explicitly forwards it into the service) to an operator-trusted Atlas Web **origin**, for example \`https://atlas.example.com\`. The setting is separate from \`ATLAS_MCP_URL\`; it is used only to generate links from verified resource IDs. It cannot carry a username/password, path, query or fragment. The only permitted plaintext HTTP origins are \`localhost\`, \`127.0.0.1\` and \`[::1]\` for local development. If absent, no Atlas Web links are rendered.
 
 Routes are based on the actual Atlas Web hash router (see \`apps/web/src/App.tsx\` in Atlas):
 - Project: \`#/projects/{projectId}\`
@@ -17,11 +17,13 @@ The setting is exposed to the authenticated Relay frontend through \`/api/status
 
 ## Operator credentialed smoke
 
-This is **not** an automatic startup probe. On a configured Relay host with the existing read-only service token, run:
+This is **not** an automatic startup probe. On a configured production Relay host, with the existing read-only service token in its Compose environment, run against the **deployed** container:
 
 \`\`\`sh
-npm run atlas:smoke
+docker compose exec -T relay npm run atlas:smoke
 \`\`\`
+
+The build bundles the smoke entrypoint as \`dist/atlas-smoke.js\`; the production image does not include \`tsx\` or the original TypeScript script. For a source checkout with installed dependencies, run \`npm run build\` first. The optional \`ATLAS_SMOKE_PROJECT_ID\` can be injected for a one-off check using \`docker compose exec -T -e ATLAS_SMOKE_PROJECT_ID=<uuid> relay npm run atlas:smoke\`.
 
 Requires \`ATLAS_MCP_URL\` and \`ATLAS_MCP_TOKEN\` as usual. Optionally set \`ATLAS_SMOKE_PROJECT_ID\` to an authorised project UUID for a specific \`get_project\` identity check. The smoke checks:
 

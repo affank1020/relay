@@ -11,7 +11,7 @@
     "test": "npm run build && node --import tsx --test --test-timeout=65000 tests/*.test.ts",
     "typecheck": "npm run check",
     "verify": "npm run check && npm test",
-    "atlas:smoke": "node --import tsx scripts/atlas-smoke.ts"
+    "atlas:smoke": "node dist/atlas-smoke.js"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",
