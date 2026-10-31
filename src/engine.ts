@@ -5,7 +5,7 @@ import { Store, terminal, type Task, type Conversation, type Approval, type Usag
 import { LocalProviderUnavailableError, ProviderRateLimitError, type Harness, type HarnessPhase } from './harness.js';
 import type { RelayModels } from './models.js';
 import { Gateway, READ_TOOLS, type AtlasTransport } from './gateway.js';
-import { ancestryRoot, delegationPolicy, handoffPrompt, used, validateDependencies, type DelegationSnapshot } from './orchestration.js';
+import { originatingConversation, completedDependencyReceipts, delegationPolicy, handoffPrompt, used, validateDependencies, type DelegationSnapshot, type DependencyReceipt } from './orchestration.js';
 import { AtlasContextService, type AtlasContext } from './atlas-context.js';
 
 export interface Limits { concurrency:number; queue:number; sessionUsd:number; globalUsd:number; sessionTokens:number; reserveUsd:number; maxRunMs:number; }
@@ -84,6 +84,17 @@ export class Engine {
       throw new ConversationConflictError('Conversation has active or uncertain tasks');
     if(all.some(t=>t.conversationId!==id && (removed.has(t.parentId??'')||removed.has(t.attemptOf??'')||t.dependencies.some(dep=>removed.has(dep)))))
       throw new ConversationConflictError('Other conversations depend on this conversation');
+    // A completed child still supplies its parent's future synthesis. Removing
+    // it while the parent is running/waiting or its join is active loses data.
+    // Check both directions before the synchronous purge transaction.
+    const byId=new Map(all.map(task=>[task.id,task]));
+    if(owned.some(child=>{
+      const parent=child.parentId?byId.get(child.parentId):undefined;
+      if(!parent||parent.conversationId===id)return false;
+      const join=parent.joinTaskId?byId.get(parent.joinTaskId):undefined;
+      return !terminal(parent.state) || (join!==undefined&&!terminal(join.state));
+    }))
+      throw new ConversationConflictError('Child results are still needed for parent synthesis');
     if(this.store.all<Approval>('approvals').some(a=>removed.has(a.taskId)&&a.state==='pending'))
       throw new ConversationConflictError('Conversation has pending approvals');
     if(owned.some(t=>this.store.invocationStates(t.id).some(state=>state!=='completed')))
@@ -135,30 +146,29 @@ export class Engine {
       unknown:(retired?.unknown??false)||all.some(u=>u.costUsd===null || u.input===null || u.output===null),
       costKind:(all.length+(retired?.count??0)) && all.every(u=>u.costKind==='measured') && (retired?.measured??true)?'measured':'estimated'};
   }
+  private familyUsage(conversationId:string,parentId:string|null=null) {
+    const all=this.tasks(),byId=new Map(all.map(task=>[task.id,task]));
+    const parent=parentId?byId.get(parentId):null;
+    if(parentId&&!parent)throw new Error('Parent task not found');
+    const rootConversation=parent?originatingConversation(parent,byId):conversationId;
+    // Every root turn in that conversation, all descendants, and all join
+    // continuations share one session. Each record is counted exactly once.
+    const family=all.filter(task=>originatingConversation(task,byId)===rootConversation);
+    const usage=used(family.flatMap(task=>task.usage));
+    const reserved=family.filter(task=>this.active.has(task.id)).length*this.limits.reserveUsd;
+    return {costUsd:usage.usd,tokens:usage.tokens,unknown:usage.unknown,reserved};
+  }
   private budget(conversationId:string,parentId:string|null=null,delegation?:DelegationSnapshot) {
-    const local=this.usage(conversationId),global=this.usage();
+    const family=this.familyUsage(conversationId,parentId),global=this.usage();
     const reserved=this.active.size*this.limits.reserveUsd;
-    // Descendant conversations share their initiating conversation's session
-    // budget. Creating new child sessions must not reset the parent's limit.
-    let family=local;
-    if(parentId) {
-      const all=this.tasks();
-      const byId=new Map(all.map(task=>[task.id,task]));
-      const parent=byId.get(parentId);
-      if(!parent)throw new Error('Parent task not found');
-      const root=ancestryRoot(parent,byId);
-      const descendants=all.filter(task=>ancestryRoot(task,byId)===root);
-      const usage=used(descendants.flatMap(task=>task.usage));
-      family={costUsd:usage.usd,tokens:usage.tokens,unknown:usage.unknown,costKind:'estimated'};
-    }
-    if((this.limits.sessionUsd>0 && (family.unknown || family.costUsd+this.limits.reserveUsd>this.limits.sessionUsd)) ||
+    if((this.limits.sessionUsd>0 && (family.unknown || family.costUsd+family.reserved+this.limits.reserveUsd>this.limits.sessionUsd)) ||
        (this.limits.globalUsd>0 && (global.unknown || global.costUsd+reserved+this.limits.reserveUsd>this.limits.globalUsd)) ||
        (this.limits.sessionTokens>0 && (family.unknown || family.tokens>=this.limits.sessionTokens)) ||
        (delegation?.maxCostUsd!=null && this.limits.reserveUsd>delegation.maxCostUsd))
       throw new Error('Inference budget exhausted or usage unavailable');
   }
   enqueue(conversationId:string,prompt:string,requestId:string,dependencies:string[]=[],parentId:string|null=null,
-    attemptOf:string|null=null,options:{delegation?:DelegationSnapshot;kind?:'agent'|'join';continuationOf?:string;agentId?:string;modelKey?:string}={}) {
+    attemptOf:string|null=null,options:{delegation?:DelegationSnapshot;kind?:'agent'|'join';continuationOf?:string;agentId?:string;modelKey?:string;retryDependencyResults?:DependencyReceipt[]}={}) {
     if(typeof prompt!=='string'||!prompt.trim()||prompt.length>6000)throw new Error('Message length must be 1–6000');
     if(typeof requestId!=='string'||!requestId.match(/^[a-zA-Z0-9_-]{8,100}$/))throw new Error('A stable requestId is required');
     const c=this.store.get<Conversation>('conversations',conversationId);if(!c)throw new Error('Conversation not found');
@@ -184,7 +194,8 @@ export class Engine {
       ...(options.modelKey??c.modelKey?{modelKey:options.modelKey??c.modelKey}:{}),
       ...(options.delegation?{delegation:options.delegation}:{}),
       ...(options.kind?{kind:options.kind}:{}),
-      ...(options.continuationOf?{continuationOf:options.continuationOf}:{})};
+      ...(options.continuationOf?{continuationOf:options.continuationOf}:{}),
+      ...(options.retryDependencyResults?.length?{retryDependencyResults:options.retryDependencyResults}: {})};
     this.store.transaction(()=>{
       this.store.save('tasks',task);
       if(!c.manualTitle && c.title==='New conversation') { c.title=prompt.slice(0,55);this.store.save('conversations',c); }
@@ -360,11 +371,14 @@ export class Engine {
       const joinedChildren=parent?this.tasks().filter(child=>child.parentId===parent.id):[];
       if(parent && joinedChildren.some(child=>!terminal(child.state)))
         throw new Error('Child results are not yet terminal');
+      const dependencyResults=[
+        ...deps.map(d=>({id:d.id,state:d.state,result:d.result.slice(0,12000)})),
+        ...(task.retryDependencyResults??[]).map(d=>({id:d.taskId,state:'completed',result:d.result}))
+      ];
       const prompt=parent?handoffPrompt(parent,joinedChildren):
         task.prompt+
         (task.delegation?.context?'\n\nExplicit delegated context (untrusted):\n'+task.delegation.context:'')+
-        (deps.length?'\n\nDependency results (untrusted data):\n'+
-          JSON.stringify(deps.map(d=>({id:d.id,state:d.state,result:d.result.slice(0,12000)}))):'');
+        (dependencyResults.length?'\n\nDependency results (untrusted data):\n'+JSON.stringify(dependencyResults):'');
       const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,atlasAvailable,
         modelKey:task.modelKey??this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,
         task:{...task,prompt},signal:controller.signal,tools,
@@ -388,14 +402,8 @@ export class Engine {
           task.usage.push(usage);this.store.save('tasks',task);
           this.store.event(task.conversationId,{taskId:task.id,
             agentId:task.agentId??null,agentRunId:task.agentRunId??null,type:'usage',state:'recorded'});
-          const own=used(task.usage),global=this.usage(),local=this.usage(task.conversationId);
-          let family=local;
-          if(task.parentId || task.continuationOf) {
-            const all=this.tasks(),byId=new Map(all.map(t=>[t.id,t]));
-            const root=ancestryRoot(byId.get(task.parentId??task.continuationOf!)!,byId);
-            const total=used(all.filter(t=>ancestryRoot(t,byId)===root || t.id===task.id).flatMap(t=>t.usage));
-            family={costUsd:total.usd,tokens:total.tokens,unknown:total.unknown,costKind:'estimated'};
-          }
+          const own=used(task.usage),global=this.usage();
+          const family=this.familyUsage(task.conversationId,task.parentId??task.continuationOf??null);
           if((task.delegation?.maxTokens!=null&&(own.unknown||own.tokens>=task.delegation.maxTokens))||
             (task.delegation?.maxCostUsd!=null&&(own.unknown||own.usd>=task.delegation.maxCostUsd))||
             (this.limits.sessionTokens>0&&(family.unknown||family.tokens>=this.limits.sessionTokens))||
@@ -437,14 +445,22 @@ export class Engine {
     const old=this.store.get<Task>('tasks',id);if(old?.kind==='join')throw new Error('Retry the parent task after reconciliation');
     if(!old||!terminal(old.state)||old.state==='completed')throw new Error('Task cannot be retried');
     if(!confirmed)throw new Error('Explicit reconciliation confirmation is required before retrying');
-    // A new conversation avoids replaying partially completed Pi context or tool effects.
+    // A new conversation avoids replaying partially executed Pi tool effects.
+    // Cross-conversation task IDs cannot be dependencies on the new task.
+    // Capture only completed dependencies as bounded, immutable untrusted data.
+    const snapshots=completedDependencyReceipts(old,new Map(this.tasks().map(t=>[t.id,t])));
     const source=this.store.get<Conversation>('conversations',old.conversationId);
-    const conversation=this.conversation(source?.modelKey);
-    // A confirmed retry reuses the failed run's pinned snapshot, not mutable source context.
+    const conversation=this.conversation(old.modelKey??source?.modelKey);
     conversation.atlasContext=old.atlasContext??null;
     this.store.save('conversations',conversation);
-    return this.enqueue(conversation.id,old.prompt,randomUUID(),old.dependencies,old.parentId,old.id,
-      {agentId:old.agentId,modelKey:old.modelKey,delegation:old.delegation});
+    try {
+      return this.enqueue(conversation.id,old.prompt,randomUUID(),[],old.parentId,old.id,
+        {agentId:old.agentId,modelKey:old.modelKey,delegation:old.delegation,retryDependencyResults:snapshots});
+    } catch(error) {
+      // A failed retry admission must not leave an empty conversation.
+      this.store.db.prepare('DELETE FROM conversations WHERE id=?').run(conversation.id);
+      throw error;
+    }
   }
   private async approve(task:Task,invocationId:string,tool:string,args:Record<string,unknown>,signal:AbortSignal) {
     const approval:Approval={id:randomUUID(),taskId:task.id,invocationId,tool,args,state:'pending'};

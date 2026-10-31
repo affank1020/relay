@@ -56,9 +56,14 @@ export class Gateway {
       }
     }));
   }
-  async invoke(task:Task,callId:string,name:string,args:Record<string,unknown>,signal:AbortSignal):Promise<unknown> {
-    // Enforcement is at invocation, not just at Pi tool discovery.
-    if(task.parentId && (!READ_TOOLS.has(name) || !task.delegation?.toolNames.includes('atlas_'+name)))
+  async invoke(task:Task,callId:string,name:string,args:Record<string,unknown>,signal:AbortSignal,
+    internalRead=false):Promise<unknown> {
+    // The internal flag is only for the two server-side placement verification
+    // reads. They remain on READ_TOOLS and never enter the child's Pi tool list.
+    if(internalRead && name!=='get_workspace' && name!=='get_node')
+      throw new Error('Invalid internal verification tool');
+    if(task.parentId && (!READ_TOOLS.has(name) ||
+      (!internalRead && !task.delegation?.toolNames.includes('atlas_'+name))))
       throw new Error('Child agent capability denied');
     const key=task.id+':'+callId;
     const digest=createHash('sha256').update(JSON.stringify({name,args})).digest('hex');
@@ -83,19 +88,19 @@ export class Gateway {
       signal.throwIfAborted();
       if(name.startsWith('workspace_')) {
         if(!fields.workspaceId)throw new Error('A checkout ID is required');
-        const workspace=payload(await this.invoke(task,callId+':workspace','get_workspace',{checkoutId:fields.workspaceId},signal));
+        const workspace=payload(await this.invoke(task,callId+':workspace','get_workspace',{checkoutId:fields.workspaceId},signal,true));
         const nodeId=uuid(workspace.nodeId);
         if(!nodeId || workspace.status!=='active')throw new Error('Active checkout placement unavailable');
         fields.selectedNodeId=nodeId;
-        const node=payload(await this.invoke(task,callId+':node','get_node',{nodeId},signal));
+        const node=payload(await this.invoke(task,callId+':node','get_node',{nodeId},signal,true));
         const capability=name.startsWith('workspace_git_')?'workspace.git':name.includes('dev_task')?'workspace.dev':'workspace.files';
         // Atlas get_node contracts may nest the Node. Never infer capability from OS.
         const details=(node.node && typeof node.node==='object'?node.node:node) as Record<string,unknown>;
         if(details.status!=='online' || !Array.isArray(details.capabilities) || !details.capabilities.includes(capability))throw new Error('Node does not advertise required capability');
         if(name==='workspace_run_dev_task') {
           await this.approve(task,id,name,{...args,selectedNodeId:nodeId},signal);
-          const placement=payload(await this.invoke(task,callId+':placement-check','get_workspace',{checkoutId:fields.workspaceId},signal));
-          const fresh=payload(await this.invoke(task,callId+':capability-check','get_node',{nodeId},signal));
+          const placement=payload(await this.invoke(task,callId+':placement-check','get_workspace',{checkoutId:fields.workspaceId},signal,true));
+          const fresh=payload(await this.invoke(task,callId+':capability-check','get_node',{nodeId},signal,true));
           if(placement.nodeId!==nodeId || placement.status!=='active' || fresh.status!=='online' || !Array.isArray(fresh.capabilities) || !fresh.capabilities.includes(capability))throw new Error('Placement or capability changed during approval');
         }
       }

@@ -58,17 +58,37 @@ export function used(usage:readonly Usage[]) {
     usd:usage.reduce((n,u)=>n+(u.costUsd??0),0),
     unknown:usage.some(u=>u.input===null||u.output===null||u.costUsd===null)};
 }
-export function ancestryRoot(task:Task, byId:Map<string,Task>):string {
+// Resolve the billing family of a task, including internal synthesis runs.
+// Other root turns in the same conversation share the same session budget.
+// Parent/continuation chains are persisted, and missing ancestors fail closed.
+export function originatingConversation(task:Task, byId:Map<string,Task>):string {
   const seen=new Set<string>();
-  let cursor=task;
-  while(cursor.parentId) {
-    if(seen.has(cursor.id))throw new Error('Invalid task ancestry');
-    seen.add(cursor.id);
-    const parent=byId.get(cursor.parentId);
-    if(!parent)throw new Error('Missing task parent');
-    cursor=parent;
+  let current=task;
+  while(current.parentId || current.continuationOf) {
+    if(seen.has(current.id))throw new Error('Invalid task ancestry');
+    seen.add(current.id);
+    const ancestor=byId.get(current.parentId??current.continuationOf!);
+    if(!ancestor)throw new Error('Missing task parent');
+    current=ancestor;
   }
-  return cursor.id;
+  return current.conversationId;
+}
+export interface DependencyReceipt {
+  taskId:string;
+  result:string;
+}
+
+// Retry receipts are immutable snapshots from completed dependencies.
+// They are data, never a substitute for tool receipts, and must be bounded.
+export function completedDependencyReceipts(task:Task, byId:Map<string,Task>):DependencyReceipt[] {
+  if(task.retryDependencyResults)return task.retryDependencyResults;
+  if(task.dependencies.length>8)throw new Error('Invalid retry dependencies');
+  return task.dependencies.map(id=>{
+    const source=byId.get(id);
+    if(!source || source.state!=='completed')
+      throw new Error('Retry dependencies are incomplete or unavailable; reconcile before retrying');
+    return {taskId:id,result:source.result.slice(0,12000)};
+  });
 }
 export function handoffPrompt(parent:Task,children:Task[]):string {
   // Output is untrusted. No child text is ever treated as a tool receipt.

@@ -157,3 +157,122 @@ test('new runs retain logical identity across explicit retries; legacy tasks are
     assert.equal(store.events(c.id).at(-1)?.schemaVersion,2);
   }finally{await engine.stop();store.close();}
 });
+
+test('deleting completed child chats cannot discard pending parent handoffs',async()=>{
+  const store=new Store(':memory:');
+  let releaseSecond!:()=>void;
+  const secondGate=new Promise<void>(resolve=>{releaseSecond=resolve;});
+  const harness=fixture(async request=>{
+    if(request.task.prompt==='root'){
+      await delegate(request,'first child');
+      await delegate(request,'second child');
+      return 'started';
+    }
+    if(request.task.prompt==='second child')await secondGate;
+    if(request.task.kind==='join'){
+      assert.match(request.task.prompt,/first result/);
+      assert.match(request.task.prompt,/second result/);
+      return 'combined';
+    }
+    return request.task.prompt==='first child'?'first result':'second result';
+  });
+  harness.deleteConversationSessions=async()=>{};
+  const engine=new Engine(store,harness,limits);
+  try{
+    const conversation=engine.conversation(),parent=engine.enqueue(conversation.id,'root','child-delete-001');
+    await until(()=>engine.tasks().some(t=>t.parentId===parent.id&&t.prompt==='first child'&&t.state==='completed')
+      && engine.tasks().some(t=>t.parentId===parent.id&&t.prompt==='second child'&&t.state==='running')
+      && engine.store.get<Task>('tasks',parent.id)?.state==='waiting_children');
+    const first=engine.tasks().find(t=>t.parentId===parent.id&&t.prompt==='first child')!;
+    await assert.rejects(engine.deleteConversation(first.conversationId),/Child results are still needed/);
+    assert.ok(store.get<Task>('tasks',first.id));
+    releaseSecond();
+    await until(()=>store.get<Task>('tasks',parent.id)?.state==='completed');
+    assert.match(store.get<Task>('tasks',parent.id)!.result,/combined/);
+  }finally{releaseSecond();await engine.stop();store.close();}
+});
+
+test('a lone completed child cannot be deleted before its pending join',async()=>{
+  const store=new Store(':memory:');
+  const harness=fixture(async()=> 'done');harness.deleteConversationSessions=async()=>{};
+  const engine=new Engine(store,harness,limits);
+  try{
+    const main=engine.conversation(),childChat=engine.conversation();
+    const parent:Task={id:crypto.randomUUID(),conversationId:main.id,requestId:'parent-fixture',prompt:'parent',
+      state:'waiting_children',createdAt:new Date().toISOString(),parentId:null,dependencies:[],
+      attemptOf:null,result:'',error:null,usage:[]};
+    const child:Task={...parent,id:crypto.randomUUID(),conversationId:childChat.id,requestId:'child-fixture',
+      parentId:parent.id,prompt:'child',state:'completed',result:'important research'};
+    store.save('tasks',parent);store.save('tasks',child);
+    await assert.rejects(engine.deleteConversation(childChat.id),/Child results are still needed/);
+    assert.equal(store.get<Task>('tasks',child.id)?.result,'important research');
+    engine.start();
+    await until(()=>store.get<Task>('tasks',parent.id)?.state==='completed');
+  }finally{await engine.stop();store.close();}
+});
+
+test('reconciled dependent root retry carries a bounded fulfilled snapshot into its new chat',async()=>{
+  const store=new Store(':memory:');let fail=true;const prompts:string[]=[];
+  const engine=new Engine(store,fixture(async request=>{
+    prompts.push(request.task.prompt);
+    if(request.task.prompt.startsWith('dependent')){
+      if(fail){fail=false;throw new Error('expected test failure');}
+      assert.match(request.task.prompt,/previous dependency result/);
+      return 'retry succeeded';
+    }
+    return 'previous dependency result';
+  }),limits);
+  try{
+    const c=engine.conversation(),first=engine.enqueue(c.id,'source','retry-dependent-001');
+    const dependent=engine.enqueue(c.id,'dependent','retry-dependent-002',[first.id]);
+    await until(()=>store.get<Task>('tasks',dependent.id)?.state==='failed');
+    const retry=engine.retry(dependent.id,true);
+    assert.notEqual(retry.conversationId,c.id);
+    assert.deepEqual(retry.dependencies,[]);
+    assert.deepEqual(retry.retryDependencyResults,[{taskId:first.id,result:'previous dependency result'}]);
+    await until(()=>store.get<Task>('tasks',retry.id)?.state==='completed');
+    assert.equal(store.get<Task>('tasks',retry.id)?.result,'retry succeeded');
+    assert.deepEqual(store.get<Task>('tasks',dependent.id)?.dependencies,[first.id]);
+  }finally{await engine.stop();store.close();}
+});
+
+test('family caps include earlier root turns, child joins, and per-family reservations',async()=>{
+  const store=new Store(':memory:');
+  const usage=(input:number,costUsd:number)=>({input,output:0,cacheRead:0,cacheWrite:0,costUsd,costKind:'estimated' as const});
+  const engine=new Engine(store,fixture(async request=>{
+    if(request.task.prompt==='later parent'){
+      await delegate(request,'budgeted child');
+      return 'started';
+    }
+    if(request.task.prompt==='budgeted child'){
+      request.onUsage(usage(4,0.4));
+      request.signal.throwIfAborted();
+      return 'should abort';
+    }
+    if(request.task.kind==='join')return 'join';
+    request.onUsage(usage(7,0.7));return 'earlier response';
+  }),{...limits,sessionTokens:10,sessionUsd:1});
+  try{
+    const c=engine.conversation(),old=engine.enqueue(c.id,'prior root','budget-prior-001');
+    await until(()=>store.get<Task>('tasks',old.id)?.state==='completed');
+    const parent=engine.enqueue(c.id,'later parent','budget-parent-001');
+    await until(()=>engine.tasks().some(t=>t.parentId===parent.id&&t.state==='cancelled'));
+    assert.equal(engine.tasks().find(t=>t.parentId===parent.id)?.state,'cancelled');
+    assert.equal(store.get<Task>('tasks',parent.id)?.state,'failed');
+    const otherStore=new Store(':memory:');
+    const other=new Engine(otherStore,fixture(async()=> 'done'),{...limits,sessionTokens:10});
+    try{
+      const rootConversation=other.conversation(),childConversation=other.conversation();
+      const root=other.enqueue(rootConversation.id,'first','nested-budget-001');
+      await until(()=>otherStore.get<Task>('tasks',root.id)?.state==='completed');
+      const earlier={...root,usage:[usage(3,0.1)]};
+      otherStore.save('tasks',earlier);
+      const child:Task={...earlier,id:crypto.randomUUID(),requestId:'nested-child',conversationId:childConversation.id,
+        parentId:root.id,usage:[usage(3,0.1)]};
+      const join:Task={...earlier,id:crypto.randomUUID(),requestId:'nested-join',conversationId:childConversation.id,
+        parentId:null,continuationOf:child.id,kind:'join',usage:[usage(5,0.1)]};
+      otherStore.save('tasks',child);otherStore.save('tasks',join);
+      assert.throws(()=>other.enqueue(rootConversation.id,'next','nested-budget-002'),/budget/);
+    }finally{await other.stop();otherStore.close();}
+  }finally{await engine.stop();store.close();}
+});

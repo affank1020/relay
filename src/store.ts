@@ -10,6 +10,8 @@ export interface Task { id: string; conversationId: string; requestId: string; p
   agentId?: string; agentRunId?: string; modelKey?: string;
   delegation?: import('./orchestration.js').DelegationSnapshot;
   kind?: 'agent' | 'join'; continuationOf?: string; joinTaskId?: string;
+  /** Snapshot retained when a failed dependent task is retried in a new conversation. */
+  retryDependencyResults?: import('./orchestration.js').DependencyReceipt[];
 }
 export interface ExecutionEvent {
   schemaVersion: 1 | 2; id: string; sequence: number; timestamp: string; conversationId: string;
