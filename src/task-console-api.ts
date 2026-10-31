@@ -42,6 +42,22 @@ export function taskConsolePage(engine:Engine,url:URL) {
   };
 }
 
+// Read-only, bounded state reconciliation for cached task rows displaced from
+// a filtered page. Unlike task detail, this never sends result/error/arguments.
+export function taskConsoleStates(engine:Engine,url:URL) {
+  const raw=url.searchParams.get('ids');
+  const ids=raw?.split(',')??[];
+  if(!ids.length||ids.length>50||ids.some(id=>!conversationId.test(id))||new Set(ids).size!==ids.length)
+    throw new Error('Invalid task state IDs');
+  const placeholders=ids.map(()=>'?').join(',');
+  const rows=engine.store.db.prepare('SELECT id, data FROM tasks WHERE id IN ('+placeholders+')')
+    .all(...ids) as {id:string;data:string}[];
+  return {states:Object.fromEntries(rows.map(row=>{
+    const task=JSON.parse(row.data) as Task;
+    return [row.id,{state:task.state,conversationId:task.conversationId}];
+  }))};
+}
+
 // Approvals can contain tool arguments. Display only an allowlisted, bounded,
 // recursively redacted preview, never arbitrary headers or authentication material.
 function safeArgs(value:unknown,depth=0):unknown {
