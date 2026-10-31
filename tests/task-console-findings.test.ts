@@ -197,3 +197,103 @@ test('activity polling advances past 2000 unrelated events to discover late task
     globalThis.clearTimeout=previousClear;
   }
 });
+
+
+test('new tasks cannot strand a displaced first-page row beyond the saved pagination cursor',async()=>{
+  const numbered=(id:number)=>({
+    ...task(String(id).padStart(8,'0')+'-1111-1111-1111-111111111111',A,'running'),
+    prompt:'Number '+id,
+    createdAt:new Date(Date.parse(when)+id*1000).toISOString(),
+    rowid:id
+  });
+  const persisted=Array.from({length:60},(_,i)=>numbered(i+1));
+  let scheduled:(()=>void)|undefined;
+  const originalSetTimeout=globalThis.setTimeout,originalClearTimeout=globalThis.clearTimeout;
+  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
+  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
+  try {
+    await fixture(async(get,_ui,calls)=>{
+      assert.equal(get('taskRows').children.length,50);
+      const displaced=persisted[10]; // rowid 11, original exclusive cursor
+      const target=get('taskRows').children.find(row=>row.children[0]?.textContent==='Number 11');
+      assert.ok(target);
+      target.onclick?.();
+      await flush();
+      assert.ok(get('taskDetail').querySelector('.task-actions'),'the older selection should be actionable');
+      persisted.push(numbered(61));
+      assert.ok(scheduled);
+      scheduled();await flush();
+      // New rowid 61 pushes 11 from the first page. Rowid 11 must remain
+      // present although the next pagination request is only for rowids <11.
+      assert.equal(get('taskRows').children.length,51);
+      assert.ok(get('taskRows').children.some(row=>row.children[0]?.textContent==='Number 11'));
+      assert.ok(get('taskDetail').querySelector('.task-actions'),'displacement alone must not clear a selected older task');
+      assert.ok(calls.some(url=>url.startsWith('/task-console/tasks?')));
+      get('taskMore').onclick?.();await flush();
+      const titles=get('taskRows').children.map(row=>row.children[0]?.textContent);
+      assert.equal(titles.length,61,'the complete 60→61 history remains reachable');
+      assert.equal(new Set(titles).size,61,'no task appears twice');
+      for(let i=1;i<=61;i++)assert.ok(titles.includes('Number '+i),'missing rowid '+i);
+      assert.ok(calls.some(url=>url.includes('cursor=11')),'pagination uses the original cursor');
+      assert.equal(displaced.rowid,11);
+    },async url=>{
+      if(url==='/sessions')return response({sessions:[sessions[0]]});
+      if(url.startsWith('/task-console/tasks?')){
+        const query=new URL(url,'http://relay.local').searchParams;
+        const cursor=query.get('cursor'),limit=Number(query.get('limit')??50);
+        const eligible=persisted.filter(item=>cursor===null||item.rowid<Number(cursor)).sort((a,b)=>b.rowid-a.rowid);
+        const page=eligible.slice(0,limit);
+        return response({tasks:page,counts:{running:persisted.length},
+          nextCursor:eligible.length>limit?String(page.at(-1)?.rowid):null,hasMore:eligible.length>limit});
+      }
+      const id=url.split('/task-console/tasks/')[1];
+      const found=persisted.find(item=>item.id===id);
+      if(found)return response({task:found,conversation:sessions[0],children:[],approvals:[]});
+      if(url.includes('/events?'))return response({events:[],nextCursor:0,hasMore:false});
+      throw Error('Unexpected URL '+url);
+    });
+  } finally {
+    globalThis.setTimeout=originalSetTimeout;
+    globalThis.clearTimeout=originalClearTimeout;
+  }
+});
+
+test('running filter automatically clears completed selection after a foreground poll',async()=>{
+  let persisted=task(one,A,'running');
+  let scheduled:(()=>void)|undefined;
+  const originalSetTimeout=globalThis.setTimeout,originalClearTimeout=globalThis.clearTimeout;
+  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
+  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
+  try {
+    await fixture(async(get,_ui,calls)=>{
+      const running=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Running');
+      assert.ok(running);running.onclick?.();await flush();
+      get('taskRows').children[0].onclick?.();await flush();
+      assert.ok(get('taskDetail').querySelector('.task-actions')?.children.some(b=>b.textContent==='Cancel task'));
+      persisted=task(one,A,'completed','Done');
+      assert.ok(scheduled);
+      scheduled();await flush();
+      assert.equal(get('taskRows').children.filter(row=>row.className.includes('task-row')).length,0,
+        'completed task disappears from running list');
+      assert.equal(get('taskDetail').querySelector('.task-actions'),null,
+        'the stale cancel action is no longer rendered');
+      assert.ok(get('taskDetail').textContent.includes('') || get('taskDetail').children[0]?.textContent.includes('Select a task'),
+        'detail returns to empty selected state');
+      assert.ok(calls.some(url=>url==='/task-console/tasks/'+one),
+        'selection is reconciled against authoritative detail after task leaves page');
+    },async url=>{
+      if(url==='/sessions')return response({sessions:[sessions[0]]});
+      if(url.startsWith('/task-console/tasks?')){
+        const state=new URL(url,'http://relay.local').searchParams.get('state');
+        const tasks=state&&persisted.state!==state?[]:[persisted];
+        return response({tasks,counts:{[persisted.state]:1},nextCursor:null,hasMore:false});
+      }
+      if(url==='/task-console/tasks/'+one)return response({task:persisted,conversation:sessions[0],children:[],approvals:[]});
+      if(url.includes('/events?'))return response({events:[],nextCursor:0,hasMore:false});
+      throw Error('Unexpected URL '+url);
+    });
+  } finally {
+    globalThis.setTimeout=originalSetTimeout;
+    globalThis.clearTimeout=originalClearTimeout;
+  }
+});
