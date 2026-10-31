@@ -591,7 +591,7 @@ test('completion between replay and snapshot cannot leave live chat stuck runnin
       if(url.startsWith('/api/sessions/c1/stream?after=')){
         streamAfter=new URL(url,'http://localhost').searchParams.get('after');
         return new Response(new ReadableStream<Uint8Array>({
-          start(controller){controller.enqueue(new TextEncoder().encode(': connected\\n\\n'));}
+          start(controller){controller.enqueue(new TextEncoder().encode(': connected\n\n'));}
         }),{headers:{'Content-Type':'text/event-stream'}});
       }
       throw Error('Unexpected '+url);
