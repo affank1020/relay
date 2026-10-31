@@ -277,11 +277,12 @@ export class Engine {
   // A delegated budget applies to the whole descendant agent tree, not just
   // the agent's own Pi inference. Nested children and inference-only joins
   // cannot evade the ceiling by spending in separate internal conversations.
-  private delegatedTreeExhausted(taskId:string|null,additionalUsd=0):boolean {
+  private delegatedTreeExhausted(taskId:string|null,additionalUsd=0,abortActiveDescendants=false):boolean {
     if(!taskId)return false;
     const tasks=this.tasks(),byId=new Map(tasks.map(task=>[task.id,task]));
     let current=byId.get(taskId);
     const ancestors=new Set<string>();
+    let exhausted=false;
     while(current) {
       if(ancestors.has(current.id))return true;
       ancestors.add(current.id);
@@ -306,13 +307,22 @@ export class Engine {
         const reservations=descendants.filter(task=>this.active.has(task.id)).length*this.limits.reserveUsd;
         if((policy.maxTokens!==null&&(total.unknown||total.tokens>=policy.maxTokens))||
            (policy.maxCostUsd!==null&&(total.unknown||
-             total.usd+reservations+additionalUsd>policy.maxCostUsd)))
-          return true;
+             total.usd>=policy.maxCostUsd ||
+             total.usd+reservations+additionalUsd>policy.maxCostUsd))) {
+          exhausted=true;
+          if(!abortActiveDescendants)return true;
+          // A shared budget can be exhausted by one sibling while others
+          // have no new usage receipt. Abort *every* live descendant of
+          // each exhausted ancestor, including pending joins. Never abort
+          // unrelated roots or ancestors that own the depleted branch.
+          for(const child of descendants)
+            this.active.get(child.id)?.abort(new Error('Delegated family budget exhausted'));
+        }
       }
       current=parent?byId.get(parent):undefined;
       if(parent&&!current)return true; // missing ancestry fails closed
     }
-    return false;
+    return exhausted;
   }
   private budget(conversationId:string,parentId:string|null=null,delegation?:DelegationSnapshot) {
     const family=this.familyUsage(conversationId,parentId),global=this.usage();
@@ -599,12 +609,16 @@ export class Engine {
             agentId:task.agentId??null,agentRunId:task.agentRunId??null,type:'usage',state:'recorded'});
           const own=used(task.usage),global=this.usage();
           const family=this.familyUsage(task.conversationId,task.parentId??task.continuationOf??null);
+          // Always evaluate the shared subtree, even when this run's own
+          // limit is exhausted. Short-circuiting on the per-run limit would
+          // leave concurrently running siblings alive without new receipts.
+          const treeExhausted=this.delegatedTreeExhausted(task.id,0,true);
           if((task.delegation?.maxTokens!=null&&(own.unknown||own.tokens>=task.delegation.maxTokens))||
             (task.delegation?.maxCostUsd!=null&&(own.unknown||own.usd>=task.delegation.maxCostUsd))||
             (this.limits.sessionTokens>0&&(family.unknown||family.tokens>=this.limits.sessionTokens))||
             (this.limits.sessionUsd>0&&(family.unknown||family.costUsd>=this.limits.sessionUsd))||
             (this.limits.globalUsd>0&&(global.unknown||global.costUsd>=this.limits.globalUsd))||
-            this.delegatedTreeExhausted(task.id))
+            treeExhausted)
             controller.abort(new Error('Budget limit reached'));
         }});
       task.result=result.slice(0,200000);

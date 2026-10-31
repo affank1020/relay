@@ -89,8 +89,13 @@ reported by one child reduces the entire subtree's remaining allowance. Before
 admission or dispatch, the scheduler includes measured/estimated usage and
 active per-run USD reservations, and fails closed on unknown usage or missing
 ancestry. Live usage callbacks cancel the active run when the aggregate limit
-is reached. A coordinator cannot bypass its limit by spawning independent
-child conversations. This is best-effort containment around provider usage
+is reached. Exactly spent USD is exhausted even with a zero reservation.
+When a shared delegated ceiling is exhausted by a live receipt, Relay
+immediately aborts **all active descendants** of every exhausted ancestor,
+including concurrently running siblings with no fresh usage yet. Unrelated
+root tasks remain unaffected. A coordinator cannot bypass its limit by
+spawning independent child conversations. This is best-effort containment
+around provider usage
 receipts, **not a prepaid hard cap**: a provider may incur in-flight cost before
 reporting tokens or price, so real billing can exceed these ceilings.
 
@@ -99,7 +104,9 @@ reporting tokens or price, so real billing can exceed these ceilings.
 - Automated: non-Atlas two-worker fan-out/fan-in, dependency handling,
   structured and plain-text handoff, persisted IDs, restart interruption,
   cancellation propagation, capability isolation, usage ledgers, nested
-  aggregate token/cost exhaustion, and rendering of child state after reload.
+  aggregate token/cost exhaustion (including exact USD equality and concurrent
+  sibling cancellation without a second receipt), and rendering of child state
+  after reload.
 - Automated with actual Pi SDK **without inference credentials**: restrictive
   session initialization and cancellation. These tests verify the adapter
   contract but do not demonstrate a provider completing an AI response.

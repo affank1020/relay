@@ -677,3 +677,100 @@ test('delegated cost ceiling aggregates sibling spending while preserving run re
       'a parent continuation must not spend after the family ceiling is exhausted');
   }finally{await engine.stop();store.close();}
 });
+
+test('exactly spent delegated USD cap blocks queued sibling and nested join with zero reservations',async()=>{
+  const store=new Store(':memory:');
+  const dispatched:string[]=[];
+  const run=(usd:number)=>({input:1,output:0,cacheRead:0,cacheWrite:0,
+    costUsd:usd,costKind:'estimated' as const});
+  const engine=new Engine(store,fixture(async request=>{
+    dispatched.push(request.task.prompt);
+    if(request.task.prompt==='root-exact'){
+      await delegate(request,'coordinator-exact',{maxCostUsd:0.4});
+      return 'Root delegated';
+    }
+    if(request.task.prompt==='coordinator-exact'){
+      await delegate(request,'exact-A',{maxCostUsd:0.4});
+      await delegate(request,'exact-B',{maxCostUsd:0.4});
+      return 'Coordinator delegated';
+    }
+    if(request.task.prompt==='exact-A'){
+      request.onUsage(run(0.4));
+      request.signal.throwIfAborted();
+      return 'Exceeded shared budget';
+    }
+    if(request.task.prompt==='exact-B')return 'ERROR: spent sibling was dispatched';
+    return 'Root partial synthesis';
+  }),{...limits,concurrency:1,reserveUsd:0});
+  try{
+    const c=engine.conversation(),root=engine.enqueue(c.id,'root-exact','exact-budget-001');
+    await until(()=>store.get<Task>('tasks',root.id)?.state==='completed');
+    const coordinator=engine.tasks().find(t=>t.prompt==='coordinator-exact')!;
+    const a=engine.tasks().find(t=>t.prompt==='exact-A')!;
+    const b=engine.tasks().find(t=>t.prompt==='exact-B')!;
+    assert.equal(a.state,'cancelled','a child that spends exactly the cap must be stopped');
+    assert.equal(b.state,'failed','queued sibling is not admitted with zero remaining allowance');
+    assert.ok(!dispatched.includes('exact-B'),'no fresh Pi inference may start at the equality boundary');
+    assert.equal(coordinator.state,'failed','nested synthesis must not start after cap is spent');
+    assert.ok(!engine.tasks().some(t=>t.continuationOf===coordinator.id));
+    assert.ok(engine.tasks().some(t=>t.continuationOf===root.id&&t.state==='completed'),
+      'unbudgeted root can still report the partial failure');
+  }finally{await engine.stop();store.close();}
+});
+
+test('overspent coordinator immediately aborts concurrent sibling but not unrelated root inference',async()=>{
+  const store=new Store(':memory:');
+  let notifySiblingStarted!:()=>void;
+  const siblingStarted=new Promise<void>(resolve=>{notifySiblingStarted=resolve;});
+  let finishUnrelated!:()=>void;
+  const unrelatedHeld=new Promise<void>(resolve=>{finishUnrelated=resolve;});
+  let unrelatedSignal:AbortSignal|undefined;
+  const run=(usd:number)=>({input:1,output:0,cacheRead:0,cacheWrite:0,
+    costUsd:usd,costKind:'estimated' as const});
+  const engine=new Engine(store,fixture(async request=>{
+    if(request.task.prompt==='root-concurrent'){
+      await delegate(request,'coordinator-concurrent',{maxCostUsd:0.4});
+      return 'Delegated';
+    }
+    if(request.task.prompt==='coordinator-concurrent'){
+      await delegate(request,'overspending-A',{maxCostUsd:0.4});
+      await delegate(request,'silent-B',{maxCostUsd:0.4});
+      return 'Both children started';
+    }
+    if(request.task.prompt==='overspending-A'){
+      await siblingStarted;
+      request.onUsage(run(0.45));
+      request.signal.throwIfAborted();
+      return 'Should be cancelled';
+    }
+    if(request.task.prompt==='silent-B'){
+      notifySiblingStarted();
+      await delay(3000,undefined,{signal:request.signal});
+      return 'Should have been aborted before any receipt';
+    }
+    if(request.task.prompt==='independent-task'){
+      unrelatedSignal=request.signal;
+      await unrelatedHeld;
+      request.signal.throwIfAborted();
+      return 'Unaffected';
+    }
+    return 'Partial result from failed coordinator';
+  }),{...limits,concurrency:3,reserveUsd:0});
+  try{
+    const c=engine.conversation(),other=engine.conversation();
+    const root=engine.enqueue(c.id,'root-concurrent','concurrent-budget-001');
+    const independent=engine.enqueue(other.id,'independent-task','independent-run-001');
+    await until(()=>{
+      const children=engine.tasks().filter(t=>['overspending-A','silent-B'].includes(t.prompt));
+      return children.length===2 && children.every(t=>t.state==='cancelled');
+    });
+    const children=engine.tasks().filter(t=>['overspending-A','silent-B'].includes(t.prompt));
+    assert.equal(children[1].usage.length,0,'quiet sibling was aborted without waiting for its receipt');
+    assert.equal(store.get<Task>('tasks',independent.id)?.state,'running');
+    assert.equal(unrelatedSignal?.aborted,false,'unrelated root must not be cancelled by shared child budget');
+    finishUnrelated();
+    await until(()=>store.get<Task>('tasks',independent.id)?.state==='completed'&&
+      store.get<Task>('tasks',root.id)?.state==='completed');
+    assert.equal(store.get<Task>('tasks',independent.id)?.result,'Unaffected');
+  }finally{finishUnrelated();await engine.stop();store.close();}
+});
