@@ -9,8 +9,10 @@ test('local model configuration supports private Tailscale and loopback but reje
   const local=loadRelayModels({RELAY_OLLAMA_URL:'https://mac.example-tailnet.ts.net/v1',RELAY_OLLAMA_MODELS:'qwen3:4b,qwen3:8b'});
   assert.deepEqual(local.models.map(m=>m.key),[cloud.defaultKey,'ollama/qwen3:4b','ollama/qwen3:8b']);
   assert.equal(local.ollama?.baseUrl,'https://mac.example-tailnet.ts.net/v1');
+  const alternate=loadRelayModels({RELAY_OLLAMA_URL:'https://affans-macbook-pro.tail8f0f1e.ts.net:10000/v1',RELAY_OLLAMA_MODELS:'qwen3:4b'});
+  assert.equal(alternate.ollama?.baseUrl,'https://affans-macbook-pro.tail8f0f1e.ts.net:10000/v1');
   assert.equal(loadRelayModels({RELAY_OLLAMA_URL:'http://127.0.0.1:11434/v1',RELAY_OLLAMA_MODELS:'qwen3:4b'}).models.length,2);
-  for(const endpoint of ['https://example.com/v1','http://192.168.1.10:11434/v1','https://mac.ts.net/v1?token=oops','https://mac.ts.net:8443/v1','https://mac.ts.net@attacker.example/v1']){
+  for(const endpoint of ['https://example.com/v1','http://192.168.1.10:11434/v1','https://mac.ts.net/v1?token=oops','https://mac.ts.net:9999/v1','https://mac.ts.net@attacker.example/v1']){
     assert.throws(()=>loadRelayModels({RELAY_OLLAMA_URL:endpoint,RELAY_OLLAMA_MODELS:'qwen3:4b'}),/Tailscale/);
   }
   assert.throws(()=>loadRelayModels({RELAY_OLLAMA_MODELS:'qwen3:4b'}),/configured together/);
