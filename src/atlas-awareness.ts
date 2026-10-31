@@ -3,6 +3,8 @@
  * known, structured MCP result, never from model output or raw text content.
  * This is additive to Relay's provider-neutral invocation event stream.
  */
+import type { AtlasDetail } from './atlas-awareness-details.js';
+
 export type AtlasResourceType =
   'project'|'logical_workspace'|'checkout'|'worktree'|'node'|'repository'|
   'branch'|'pull_request'|'store'|'record'|'application'|'file'|'finding';
@@ -27,6 +29,8 @@ export interface AtlasResourceObservation {
   node?:AtlasNodeFact;
   git?:AtlasGitFact;
   worktrees?:AtlasWorktreeFact[];
+  /** Reviewed IDs and aggregate metrics only; never raw record or finding data. */
+  detail?:AtlasDetail;
 }
 export interface AtlasAwarenessEvent {
   id:string; sequence:number; timestamp:string; conversationId:string;
