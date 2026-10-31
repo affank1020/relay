@@ -404,14 +404,16 @@ export class Engine {
         try { tools=await this.gateway.tools(task,controller.signal);atlasAvailable=true; }
         catch { controller.signal.throwIfAborted();atlasAvailable=false;tools=[]; }
       }
+      const registryReadNames=new Set<string>();
       if(!joining && this.capabilities) {
-        // The manager returns only read-only tools, and for children filters
-        // against their persisted delegated admission snapshot. It also
-        // enforces the same admission at actual invocation time.
+        // An MCP tool is read-authorized because the server-side registry
+        // admitted it, NOT because a tool name happens to start with mcp_.
+        // Children receive only their exact delegated read-only subset.
         const discovered=await this.capabilities.tools(task,this.store,controller.signal);
+        for(const tool of discovered)registryReadNames.add(tool.name);
         tools.push(...discovered);
       }
-      const admitted=tools.filter(tool=>tool.name.startsWith('mcp_') ||
+      const admitted=tools.filter(tool=>registryReadNames.has(tool.name) ||
         READ_TOOLS.has(tool.name.replace(/^atlas_/,''))).map(tool=>tool.name);
       if(task.parentId || task.delegation) {
         // Detached child retries are still children of the *capability*
