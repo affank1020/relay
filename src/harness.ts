@@ -7,7 +7,7 @@ import type { CapabilityRegistry } from './capabilities.js';
 import { formatAtlasContext, type AtlasContext } from './atlas-context.js';
 
 export type HarnessPhase = 'preparing_directories' | 'loading_model' | 'checking_local_provider' | 'loading_resources' | 'opening_session' | 'creating_session' | 'running_inference' | 'finalizing_response';
-export interface HarnessRequest { version:1; task:Task; modelKey?:string; atlasContext?:AtlasContext|null; atlasAvailable?:boolean; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; onSkills?:(names:string[])=>void; }
+export interface HarnessRequest { version:1; task:Task; modelKey?:string; atlasContext?:AtlasContext|null; atlasAvailable?:boolean; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; onSkills?:(names:string[])=>void; onSkippedSkills?:(names:string[])=>void; }
 export interface Harness {
   readonly version:1;
   readonly capabilities: { persistence:boolean; cancellation:boolean; tools:boolean };
@@ -16,6 +16,14 @@ export interface Harness {
   deleteConversationSessions?(conversationId:string):Promise<void>;
 }
 const count=(n:unknown)=>typeof n==='number' && Number.isFinite(n) && n>=0?n:null;
+// Count worst-case UTF-8 bytes, not estimated average tokens. Reserve model
+// output and enough prompt/history capacity for ordinary conversations.
+export function skillInstructionBudget(contextWindow:number,maxOutputTokens:number):number {
+  if(!Number.isFinite(contextWindow)||!Number.isFinite(maxOutputTokens)||
+    contextWindow<=0||maxOutputTokens<0)return 0;
+  return Math.max(0,Math.floor(Math.min(16_384,contextWindow/4,
+    (contextWindow-maxOutputTokens-2048)/2)));
+}
 export const isPiRateLimited=(detail:unknown):boolean=>typeof detail==='string' && /\b429\b|\brate[\s_-]?limit(?:ed|ing)?\b/i.test(detail);
 export class ProviderRateLimitError extends Error { constructor(){super('OpenRouter rate limit');this.name='ProviderRateLimitError';} }
 export class LocalProviderUnavailableError extends Error { constructor(readonly reason:'offline'|'missing_model'){super(reason);this.name='LocalProviderUnavailableError';} }
@@ -41,7 +49,7 @@ export class PiHarness implements Harness {
     }
     await rm(directory,{recursive:true,force:true,maxRetries:2,retryDelay:100});
   }
-  async run({task,modelKey,atlasContext,atlasAvailable,signal,tools,onText,onUsage,onPhase,onSkills}:HarnessRequest):Promise<string> {
+  async run({task,modelKey,atlasContext,atlasAvailable,signal,tools,onText,onUsage,onPhase,onSkills,onSkippedSkills}:HarnessRequest):Promise<string> {
     onPhase?.('preparing_directories');
     const cwd=join(this.root,'isolated'); const agentDir=join(this.root,'agent');
     const sessionDir=join(this.root,'sessions',task.conversationId);
@@ -89,7 +97,12 @@ export class PiHarness implements Harness {
     const settingsManager=SettingsManager.inMemory();
     // Collect admitted paths and trusted instructions in one validated
     // snapshot; a mid-load settings update cannot split these decisions.
-    const skillSnapshot=await this.capabilityRegistry?.skills.snapshot()??{paths:[],instructions:''};
+    const skillBudget=skillInstructionBudget(model.contextWindow,model.maxTokens);
+    const skillSnapshot=await this.capabilityRegistry?.skills.snapshot(skillBudget)??
+      {paths:[],instructions:'',skipped:[]};
+    // Excluded Skills must be visible in execution receipts, never described
+    // as loaded; they grant no instructions or tools in this inference.
+    if(skillSnapshot.skipped.length)onSkippedSkills?.(skillSnapshot.skipped);
     const trusted=skillSnapshot.paths;
     // Pi normally advertises Skills only when an authorised read/bash tool can
     // open them. Relay grants neither, so include just validated trusted Skill

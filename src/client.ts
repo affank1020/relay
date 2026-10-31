@@ -753,14 +753,30 @@ $<HTMLButtonElement>('openCapabilities').onclick=()=>{
   void get<CapabilitySnapshot>('/capabilities').then(drawCapabilities).catch(e=>{$('capabilitiesError').textContent=text(e);});
   closeSidebar();
 };
-$<HTMLButtonElement>('closeCapabilities').onclick=()=>$<HTMLDialogElement>('capabilitiesDialog').close();
+$<HTMLButtonElement>('closeCapabilities').onclick=()=>{
+  $<HTMLDialogElement>('capabilitiesDialog').close();
+  // Invalidate a pending preview when the user leaves the manager.
+  if(typeof clearGitSkillReview==='function')clearGitSkillReview();
+};
 
 type GitSkillPreview={
   previewId:string;source:{owner:string;repo:string;commit:string;path:string};
   name:string;description:string;version:string;sha256:string;content:string;
 };
 let stagedGitSkill:GitSkillPreview|null=null;
+let gitSkillPreviewGeneration=0;
+function gitSkillFormSource(){
+  return {
+    owner:$<HTMLInputElement>('gitSkillOwner').value.trim(),
+    repo:$<HTMLInputElement>('gitSkillRepo').value.trim(),
+    commit:$<HTMLInputElement>('gitSkillCommit').value.trim().toLowerCase(),
+    path:$<HTMLInputElement>('gitSkillPath').value.trim()
+  };
+}
 function clearGitSkillReview(){
+  // Increment even when the preview is still being fetched; no prior
+  // promise may reinstate its staged contents after an input edit.
+  gitSkillPreviewGeneration++;
   stagedGitSkill=null;
   $('gitSkillReview').hidden=true;
   $('gitSkillReviewText').textContent='';
@@ -777,16 +793,16 @@ $<HTMLFormElement>('gitSkillPreviewForm').onsubmit=event=>{
   event.preventDefault();clearGitSkillReview();
   const button=$<HTMLButtonElement>('gitSkillPreviewButton');button.disabled=true;
   $('capabilitiesError').textContent='';
+  const payload=gitSkillFormSource();
+  const generation=gitSkillPreviewGeneration;
   void (async()=>{
     try{
-      const payload={
-        owner:$<HTMLInputElement>('gitSkillOwner').value.trim(),
-        repo:$<HTMLInputElement>('gitSkillRepo').value.trim(),
-        commit:$<HTMLInputElement>('gitSkillCommit').value.trim().toLowerCase(),
-        path:$<HTMLInputElement>('gitSkillPath').value.trim()
-      };
       const response=await api('/skills/git/preview',{method:'POST',body:JSON.stringify(payload)});
       const snapshot=await response.json() as GitSkillPreview;
+      // Drop stale results even if the form was edited and changed back,
+      // or a later request succeeded first.
+      if(generation!==gitSkillPreviewGeneration ||
+        JSON.stringify(payload)!==JSON.stringify(gitSkillFormSource()))return;
       stagedGitSkill=snapshot;
       $('gitSkillReviewName').textContent=snapshot.name+' · '+snapshot.version;
       $('gitSkillReviewSource').textContent=
@@ -795,7 +811,10 @@ $<HTMLFormElement>('gitSkillPreviewForm').onsubmit=event=>{
       // Untrusted preview is rendered ONLY as text, never as HTML.
       $('gitSkillReviewText').textContent=snapshot.content;
       $('gitSkillReview').hidden=false;
-    }catch(e){$('capabilitiesError').textContent=text(e);}
+    }catch(e){
+      if(generation===gitSkillPreviewGeneration)
+        $('capabilitiesError').textContent=text(e);
+    }
     finally{button.disabled=false;}
   })();
 };
