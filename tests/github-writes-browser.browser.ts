@@ -43,6 +43,16 @@ test('real browser shows exact GitHub write details and waits for explicit appro
   const token='x'.repeat(32);
   const server=createPlatform(engine,token,join(process.cwd(),'dist/public'),
     'cohere/north-mini-code:free',undefined,registry);
+  // Start a known persisted session before browser login. This verifies that
+  // a pending mutation is discoverable after reconnect, not merely a
+  // transient view created during a chat send.
+  const chat=engine.conversation();
+  const job=engine.enqueue(chat.id,'Post the exact GitHub issue comment','browser-write');
+  const until=Date.now()+5000;
+  while(!store.all<Approval>('approvals').some(a=>a.taskId===job.id&&a.state==='pending')){
+    if(Date.now()>until)throw new Error('GitHub approval was never requested');
+    await new Promise(resolve=>setTimeout(resolve,15));
+  }
   const browser=await chromium.launch({headless:true});
   try{
     server.listen(0,'127.0.0.1');
@@ -52,10 +62,8 @@ test('real browser shows exact GitHub write details and waits for explicit appro
     await page.goto('http://127.0.0.1:'+address.port+'/');
     await page.locator('#token').fill(token);
     await page.locator('#loginForm button').click();
-    await page.locator('#prompt').fill('Post the exact comment to the approved GitHub repository.');
-    await page.locator('#send').click();
     const panel=page.locator('#approvals .approval');
-    await panel.waitFor({state:'visible'});
+    await panel.waitFor({state:'visible',timeout:10000});
     assert.equal(calls,0);
     assert.match(await panel.textContent()??'',/GitHub write: review the exact repository/);
     assert.match(await panel.locator('pre').textContent()??'',/"issue_number": 123/);
