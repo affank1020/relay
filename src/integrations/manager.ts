@@ -6,13 +6,16 @@ import { supportedSchema, validRemoteArguments } from './schema.js';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { Store, Task, ExecutionEvent } from '../store.js';
 import { toolDisplayName, type ToolInvocationEnvelopeV1, type ToolInvocationState } from './contracts.js';
+import { approvedGitHubWriteArgs, githubWriteRepositories, isGitHubWrite } from './github-writes.js';
 
 export interface ProviderConfig {
   id:string; label:string; url:string; token:string; readTools:readonly string[];
+  writeRepositories?:readonly string[];
 }
 export interface IntegrationStatus {
   id:string; label:string; enabled:boolean; configured:boolean;
   state:'disabled'|'unconfigured'|'unchecked'|'ready'|'offline'; availableTools:string[];
+  availableWriteTools:string[];
 }
 const GITHUB_READ=[
   'get_me','get_file_contents','get_commit','get_latest_release','get_release_by_tag',
@@ -26,7 +29,8 @@ const validTool=(id:string)=>/^[a-z][a-z0-9_]{0,63}$/.test(id);
 const genericRead=(id:string)=>/^(get|list|read|search|fetch|lookup|query)_[a-z0-9_]+$/.test(id);
 export function configuredProviders(env:NodeJS.ProcessEnv):ProviderConfig[] {
   const providers:ProviderConfig[]=[{id:'github',label:'GitHub',url:'https://api.githubcopilot.com/mcp/',
-    token:env.RELAY_GITHUB_TOKEN??'',readTools:GITHUB_READ}];
+    token:env.RELAY_GITHUB_TOKEN??'',readTools:GITHUB_READ,
+    writeRepositories:githubWriteRepositories(env.RELAY_GITHUB_WRITE_REPOS)}];
   const raw=env.RELAY_MCP_PROVIDERS || '[]';
   let configs:unknown;
   try {configs=JSON.parse(raw);}catch {throw new Error('Invalid RELAY_MCP_PROVIDERS');}
@@ -144,10 +148,12 @@ const safeSchema=(schema:Record<string,unknown>):boolean=>{
     return serialized.length<=16_384&&schema.type==='object'&&supportedSchema(schema);
   }catch{return false;}
 };
+export type WriteApproval=(task:Task,invocationId:string,tool:string,args:Record<string,unknown>,signal:AbortSignal)=>Promise<void>;
 export class ConnectionManager {
   private readonly transports=new Map<string,ProviderTransport>();
   private readonly states=new Map<string,'ready'|'offline'>();
   private readonly inventory=new Map<string,string[]>();
+  private readonly writeInventory=new Map<string,string[]>();
   constructor(private readonly configs:ProviderConfig[],private readonly enabled:(id:string)=>boolean,
     private readonly makeTransport:(config:ProviderConfig)=>ProviderTransport=c=>new HttpProviderTransport(c)) {}
   contains(id:string):boolean{return this.configs.some(p=>p.id===id);}
@@ -155,7 +161,8 @@ export class ConnectionManager {
     return this.configs.map(p=>({
       id:p.id,label:p.label,enabled:this.enabled(p.id),configured:!!p.token,
       state:!this.enabled(p.id)?'disabled':!p.token?'unconfigured':this.states.get(p.id)??'unchecked',
-      availableTools:this.inventory.get(p.id)??[]
+      availableTools:this.inventory.get(p.id)??[],
+      availableWriteTools:this.writeInventory.get(p.id)??[]
     }));
   }
   private transport(config:ProviderConfig):ProviderTransport {
@@ -163,7 +170,7 @@ export class ConnectionManager {
     if(!existing){existing=this.makeTransport(config);this.transports.set(config.id,existing);}
     return existing;
   }
-  async tools(task:Task,store:Store,signal:AbortSignal):Promise<ToolDefinition[]> {
+  async tools(task:Task,store:Store,signal:AbortSignal,approve?:WriteApproval):Promise<ToolDefinition[]> {
     const result:ToolDefinition[]=[];
     for(const config of this.configs){
       if(!this.enabled(config.id)||!config.token)continue;
@@ -171,9 +178,12 @@ export class ConnectionManager {
         const available=await this.transport(config).list(signal);
         signal.throwIfAborted();
         this.states.set(config.id,'ready');
-        const admitted=available.filter(t=>config.readTools.includes(t.name) && validTool(t.name) && safeSchema(t.inputSchema))
-          .slice(0,32);
-        this.inventory.set(config.id,admitted.map(t=>t.name));
+        const admitted=available.filter(t=>
+          (config.readTools.includes(t.name) ||
+            (config.id==='github'&&!!approve&&!!config.writeRepositories?.length&&isGitHubWrite(t.name))) &&
+          validTool(t.name) && safeSchema(t.inputSchema)).slice(0,32);
+        this.inventory.set(config.id,admitted.filter(t=>config.readTools.includes(t.name)).map(t=>t.name));
+        this.writeInventory.set(config.id,admitted.filter(t=>isGitHubWrite(t.name)).map(t=>t.name));
         for(const tool of admitted){
           const name='mcp_'+config.id+'_'+tool.name;
           result.push({
@@ -181,7 +191,7 @@ export class ConnectionManager {
             parameters:Type.Unsafe<Record<string,unknown>>(tool.inputSchema),
             execute:async (callId,argumentsValue)=>{
               const data=argumentsValue as Record<string,unknown>;
-              const output=await this.invoke(config,tool,task,store,callId,data,signal);
+              const output=await this.invoke(config,tool,task,store,callId,data,signal,approve);
               return {content:[{type:'text' as const,text:JSON.stringify(output)}],details:{}};
             }
           });
@@ -189,18 +199,22 @@ export class ConnectionManager {
       }catch{
         signal.throwIfAborted();
         this.states.set(config.id,'offline');this.inventory.delete(config.id);
+        this.writeInventory.delete(config.id);
       }
     }
     return result;
   }
   async invoke(config:ProviderConfig,tool:ListedTool,task:Task,store:Store,callId:string,
-    args:Record<string,unknown>,signal:AbortSignal):Promise<unknown>{
+    args:Record<string,unknown>,signal:AbortSignal,approve?:WriteApproval):Promise<unknown>{
+    if(config.id==='github'&&isGitHubWrite(tool.name))
+      return this.invokeGitHubWrite(config,tool,task,store,callId,args,signal,approve);
     const invocationId=randomUUID(),label=toolDisplayName(config.id,tool.name);
-    const fields:Partial<ExecutionEvent>={taskId:task.id,agentRunId:task.id,invocationId,
+    const fields:Partial<ExecutionEvent>={taskId:task.id,agentId:task.agentId??null,
+      agentRunId:task.agentRunId??null,invocationId,
       tool:label,type:'tool'};
     const emit=(state:ToolInvocationState)=>{
       const envelope:ToolInvocationEnvelopeV1={schemaVersion:1,providerId:config.id,
-        toolName:tool.name,taskId:task.id,agentRunId:task.id,invocationId,
+        toolName:tool.name,taskId:task.id,agentRunId:task.agentRunId??undefined,invocationId,
         state,timestamp:new Date().toISOString()};
       // Preserve schema-v1 event compatibility until orchestration owns run schema.
       store.event(task.conversationId,{...fields,state,...{providerId:envelope.providerId}});
@@ -245,6 +259,62 @@ export class ConnectionManager {
       throw new Error(dispatched&&!receivedResponse
         ?'MCP read outcome is uncertain; do not replay without reconciliation'
         :'MCP read failed; verify provider state before retrying');
+    }
+  }
+  // Only two exact GitHub mutations are legal; each server-known repository
+  // and full argument set is explicitly approved for this one invocation.
+  // Writes never inherit the read-only MCP retry/reconciliation semantics.
+  private async invokeGitHubWrite(config:ProviderConfig,tool:ListedTool,task:Task,store:Store,
+    callId:string,args:Record<string,unknown>,signal:AbortSignal,approve?:WriteApproval):Promise<unknown> {
+    const invocationId=randomUUID(),label=toolDisplayName(config.id,tool.name);
+    const fields:Partial<ExecutionEvent>={taskId:task.id,agentId:task.agentId??null,
+      agentRunId:task.agentRunId??null,parentTaskId:task.parentId??null,
+      invocationId,tool:label,type:'tool'};
+    const emit=(state:ToolInvocationState)=>store.event(task.conversationId,{...fields,state});
+    const allowed=()=>config.id==='github'&&!!config.token&&this.enabled(config.id)&&
+      !task.parentId&&!task.delegation && !!approve && !!config.writeRepositories?.length;
+    const safe=approvedGitHubWriteArgs(tool.name,args,config.writeRepositories??[]);
+    if(!allowed()||!safe||!safeSchema(tool.inputSchema)||!validRemoteArguments(tool.inputSchema,safe)){
+      emit('denied');throw new Error('GitHub write not permitted for this repository and operation');
+    }
+    const key=task.id+':'+callId;
+    if(store.get('invocations',key)){emit('denied');throw new Error('MCP invocation already recorded');}
+    const digest=createHash('sha256').update(JSON.stringify({
+      provider:'github',operation:tool.name,args:safe})).digest('hex');
+    const record={id:key,digest,kind:'mcp_write' as const,providerId:'github',toolName:label,invocationId};
+    store.save('invocations',{...record,state:'validating'});
+    emit('validating');
+    try{
+      signal.throwIfAborted();
+      await approve!(task,invocationId,label,safe,signal);
+      // Admission is checked *again* after a potentially long approval wait.
+      // The original validated args are frozen as the only dispatch payload.
+      signal.throwIfAborted();
+      if(!allowed()||!approvedGitHubWriteArgs(tool.name,safe,config.writeRepositories??[]))
+        throw new Error('GitHub write scope revoked during approval');
+    }catch{
+      // Rejected/cancelled requests never entered the remote transport.
+      // Preserve a durable, non-ambiguous denial receipt.
+      store.save('invocations',{...record,state:'denied_before_dispatch'});
+      emit('denied');
+      throw new Error('GitHub write was not approved or was cancelled before dispatch');
+    }
+    store.save('invocations',{...record,state:'dispatched'});
+    emit('started');
+    try {
+      // No retry, including after timeout, cancellation, SDK error or an
+      // isError response. The external mutation may already have happened.
+      const result=await this.transport(config).call(tool.name,safe,signal);
+      if(JSON.stringify(result).length>100_000 ||
+        (result && typeof result==='object'&&'isError' in result&&result.isError))
+        throw new Error('Unconfirmed GitHub mutation result');
+      store.save('invocations',{...record,state:'completed'});
+      emit('completed');
+      return result;
+    }catch{
+      store.save('invocations',{...record,state:'uncertain'});
+      emit(signal.aborted?'cancelled':'failed');
+      throw new Error('GitHub write outcome is uncertain. Inspect the issue on GitHub before any retry.');
     }
   }
   async close():Promise<void>{await Promise.all([...this.transports.values()].map(t=>t.close()));}
