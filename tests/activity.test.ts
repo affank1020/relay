@@ -457,3 +457,53 @@ test('conversation actions restore keyboard focus on Escape and refresh without 
   assert.strictEqual(focusedElement,element('menuRename'),
     'never focus a stale/detached invoker');
 });
+
+test('streaming updates preserve turn nodes and progress follows real events',async()=>{
+  const nodes=new Map<string,Element>();
+  const element=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id)!;};
+  const task={id:'t1',conversationId:'c1',prompt:'Check Atlas',result:'',state:'running',error:null,usage:[]};
+  const phases:Array<{sequence:number;[key:string]:unknown}>=[{...event('phase-1',1),type:'phase',taskId:'t1',state:'opening_session'}];
+  let nextPoll:(()=>void)|undefined;
+  const context={
+    window:{location:{protocol:'https:'},sessionStorage:{getItem:()=>null,setItem:()=>{}}},
+    document:{getElementById:element,createElement:(tag:string)=>new Element(tag)},
+    Headers,Response,URL,
+    setTimeout:(fn:()=>void)=>{nextPoll=fn;return 1;},
+    clearTimeout:()=>{nextPoll=undefined;},
+    fetch:async(url:string)=>{
+      if(url==='/api/status')return new Response(JSON.stringify({provider:'OpenRouter',model:'free',atlas:'configured'}));
+      if(url==='/api/sessions')return new Response(JSON.stringify({sessions:[{id:'c1',title:'Atlas'}]}));
+      if(url==='/api/sessions/c1')return new Response(JSON.stringify({session:{id:'c1',title:'Atlas',busy:task.state==='running',costUsd:0,usage:{costKind:'estimated',tokens:0,unknown:false}},tasks:[task],approvals:[]}));
+      if(url.startsWith('/api/sessions/c1/events?after=')){
+        const after=Number(url.split('=')[1]);const unseen=phases.filter(e=>e.sequence>after);
+        return new Response(JSON.stringify({events:unseen,nextCursor:unseen.at(-1)?.sequence??after,hasMore:false}));
+      }
+      throw Error('Unexpected '+url);
+    }
+  };
+  runInNewContext(source,context,{filename:'dist/public/app.js'});
+  await flush();
+  const messages=element('messages');
+  assert.equal(messages.children.length,2);
+  const user=messages.children[0],assistant=messages.children[1];
+  assert.match(assistant.children.find(c=>c.className.startsWith('status-line'))!.textContent,/Preparing session/);
+  task.result='First bit';
+  nextPoll?.();await flush();
+  assert.strictEqual(messages.children[0],user,'user message must not remount');
+  assert.strictEqual(messages.children[1],assistant,'assistant node must not remount');
+  const stream=assistant.children.find(c=>c.className==='streaming-text')!;
+  assert.equal(stream.textContent,'First bit');
+  task.result='First bit and another chunk';
+  phases.push({...event('tool-2',2),type:'tool',state:'started',taskId:'t1',invocationId:'inv-1',tool:'get_atlas_status'});
+  nextPoll?.();await flush();
+  assert.strictEqual(assistant.children.find(c=>c.className==='streaming-text'),stream,'streamed text must update in place');
+  assert.equal(stream.textContent,'First bit and another chunk');
+  assert.ok(assistant.children.find(c=>c.className==='inline-tools')!.children.length===1);
+  assert.match(assistant.children.find(c=>c.className.startsWith('status-line'))!.textContent,/Using Get Atlas Status/);
+  task.state='completed';task.result='**Done**';
+  phases.push({...event('tool-3',3),type:'tool',state:'completed',taskId:'t1',invocationId:'inv-1',tool:'get_atlas_status'});
+  nextPoll?.();await flush();
+  assert.strictEqual(messages.children[1],assistant,'completion must not remount the assistant turn');
+  assert.ok(assistant.children.some(c=>c.className==='markdown'),'final output gets safe Markdown formatting');
+  assert.ok(assistant.children.find(c=>c.className.startsWith('status-line'))!.hidden,'completed task has no thinking indicator');
+});
