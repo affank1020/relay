@@ -65,8 +65,10 @@ a PAT or permit the agent to install a Skill itself.
 The built-in GitHub provider uses the official Streamable HTTP endpoint:
 https://api.githubcopilot.com/mcp/
 
-Set RELAY_GITHUB_TOKEN to a read-scoped personal access token **on the server**
-only, then enable GitHub through Skills & integrations. No credential is returned
+Set RELAY_GITHUB_TOKEN to a minimally scoped token **on the server** only,
+then enable GitHub through Skills & integrations. For read-only use, grant only
+read privileges; GitHub mutations additionally require operator write-repository
+scope and separate per-operation approval (documented below). No credential is returned
 by the API, browser, tool receipt or log. Keep token scope as narrow as possible,
 and grant private repository access only if you intend the model to see it.
 
@@ -83,10 +85,11 @@ tool inventory are bounded. Extra providers must use recognised read verbs.
 External servers and schema metadata remain untrusted: an operator must
 review each provider's actual side-effect behaviour before allowing it.
 
-At runtime, Relay admits only exact configured read tools from live discovery;
-schema checks and revocation are enforced again on invocation. No automatic
-MCP write or new Skill installation is implemented. GitHub mutation will require
-a separate explicit user approval and auditable policy in a later slice.
+At runtime, Relay admits only exact configured read tools and, when explicitly
+operator-enabled, the narrow GitHub issue write operations from live discovery;
+schema checks and revocation are enforced again on invocation. All generic MCP
+providers remain read-only. No model-driven installation or broad MCP mutation
+policy exists.
 
 Receipts use provider, invocation, task and current run identity, lifecycle and
 safe timestamps. Generic event payloads do not include arguments, results or
@@ -103,7 +106,7 @@ offline providers and redaction. GitHub CI verifies the production container.
 A live credentialed GitHub MCP smoke needs an operator-owned token and a
 user-selected read-only repository; fixtures alone do not establish that.
 
-Current omissions: private Git Skill imports, explicit write approval,
+Current omissions: private Git Skill imports, broader GitHub mutation permissions,
 per-agent scoped grants beyond global opt-in, live remote credential validation,
 MCP provider reconnect/health beyond discovery status and conversation memory.
 
@@ -114,7 +117,7 @@ MCP provider reconnect/health beyond discovery status and conversation memory.
 | Normal chat, persisted sessions, rename/delete | Implemented | Resume/reconnect robustness tracked in #25 |
 | Hosted/local model choices | Implemented baseline | More model policies and provider resilience |
 | Skills | Bundled opt-in text Skills + reviewed immutable public GitHub snapshots | Private/internal sources, granular scope grants |
-| MCP | Restricted server-side read adapters in this slice | Explicit GitHub write approval |
+| MCP | Restricted read adapters plus exact-repository approved GitHub issue writes | More mutation types with independent policies |
 | Memory/preferences | Missing | Separate, source-attributed user-controlled store |
 | Attachments and file handling | Missing | Upload/storage, content validation and deletion |
 | Multimodal input | Missing | Image/audio paths with clear retention |

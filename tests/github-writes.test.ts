@@ -79,12 +79,16 @@ test('writes are absent without operator allowlist/approval and never reach chil
     assert.deepEqual(noScope.map(t=>t.name),['mcp_github_issue_read']);
     const noApproval=await comment(manager,task,store,new AbortController().signal);
     assert.deepEqual(noApproval.map(t=>t.name),['mcp_github_issue_read']);
+    const admitted=await comment(manager,task,store,new AbortController().signal,async()=>{});
+    assert.deepEqual(admitted.map(t=>t.name),['mcp_github_issue_read',
+      'mcp_github_add_issue_comment','mcp_github_create_issue']);
+    assert.deepEqual(manager.list()[0].availableWriteTools,['add_issue_comment','create_issue']);
     const child=await comment(manager,{...task,parentId:randomUUID()},store,new AbortController().signal,async()=>{});
     // Child agents never even see the mutation tool. A retained wrapper is
     // still denied independently at invocation.
     assert.deepEqual(child.map(t=>t.name),['mcp_github_issue_read']);
     assert.equal(calls,0);
-    assert.deepEqual(manager.list()[0].availableWriteTools,['add_issue_comment','create_issue']);
+    assert.deepEqual(manager.list()[0].availableWriteTools,[]);
   }finally{await manager.close();await ro.close();store.close();}
 });
 
