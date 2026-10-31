@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mountTaskConsole } from '../src/task-console.js';
+import type { Task } from '../src/store.js';
 
 class Element {
   readonly children:Element[]=[];
@@ -97,8 +98,8 @@ async function fixture(run:(get:(id:string)=>Element,ui:ReturnType<typeof mountT
 }
 
 
-const numbered=(id:number,state='running',conversationId=A)=>({
-  ...task(String(id).padStart(8,'0')+'-1111-1111-1111-111111111111',conversationId,state),
+const numbered=(id:number,state:Task['state']='running',conversationId=A):Task & {rowid:number}=>({
+  ...task(String(id).padStart(8,'0')+'-1111-1111-1111-111111111111',conversationId,state),state,
   prompt:'Task '+id,createdAt:new Date(Date.parse(when)+id*1000).toISOString(),rowid:id
 });
 type Item=ReturnType<typeof numbered>;
