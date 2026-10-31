@@ -66,9 +66,9 @@ export class AtlasContextService {
     if(all.some(w=>!isAtlasId(w.id)||!isAtlasId(w.projectId)||!name(w.name)||!name(w.status)||
       (w.logicalWorkspaceId!=null&&!isAtlasId(w.logicalWorkspaceId))||(w.nodeId!=null&&!isAtlasId(w.nodeId))))
       throw new AtlasContextError(503,'Atlas returned an unsupported response');
-    // An inconsistent project association must never be surfaced to the user.
-    if(all.some(w=>w.projectId!==projectId))throw new AtlasContextError(503,'Atlas returned inconsistent project membership');
-    return all.filter(w=>w.status==='active').map(w=>({checkoutId:w.id as string,name:name(w.name)!,projectId,
+    // One logical Workspace may contain checkouts from several projects.
+    // Filter by the checkout's authoritative projectId, never its logicalWorkspaceId.
+    return all.filter(w=>w.projectId===projectId&&w.status==='active').map(w=>({checkoutId:w.id as string,name:name(w.name)!,projectId:w.projectId as string,
       logicalWorkspaceId:typeof w.logicalWorkspaceId==='string'?w.logicalWorkspaceId:null,
       nodeId:typeof w.nodeId==='string'?w.nodeId:null}))
       .sort((a,b)=>a.name.localeCompare(b.name)||a.checkoutId.localeCompare(b.checkoutId));
