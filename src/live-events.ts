@@ -39,6 +39,7 @@ export function streamConversationEvents(
   }
   function flush(){
     if(closed||blocked||sending){queued=true;return;}
+    if(!store.get('conversations',conversationId)){close();return;}
     sending=true;
     try {
       // Send bounded batches; stop immediately on backpressure. We never keep
