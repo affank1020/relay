@@ -393,6 +393,9 @@ test('conversation actions restore keyboard focus on Escape and refresh without 
       if(type==='pointerdown')handlers.pointerdown.push(cb);
     }
   };
+  // The tiny DOM fixture does not parse index.html, so wire menu children
+  // explicitly for the browser's menu.contains(activeElement) behaviour.
+  element('sessionMenu').append(element('menuRename'),element('menuDelete'));
   const context={
     window:{location:{protocol:'https:'},innerWidth:1000,innerHeight:600,sessionStorage:{getItem:()=>null,setItem:()=>{}}},
     document,Headers,Response,URL,
