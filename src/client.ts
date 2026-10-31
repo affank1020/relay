@@ -8,8 +8,10 @@ import { projectAtlasDetails } from './atlas-awareness-details.js';
 import { renderAtlasAwarenessRow,refreshAtlasAwarenessRows } from './atlas-awareness-render.js';
 import { parseAtlasWebOrigin } from './atlas-navigation.js';
 import { readLiveChatEvents } from './live-chat.js';
+import { renderInlineAgents } from './agent-progress-ui.js';
+import type { AgentProgress } from './agent-progress.js';
 interface Summary { id:string; title:string; modelKey?:string; atlasContext?:AtlasContext|null; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
-interface Snapshot { session:Summary; tasks:Task[]; approvals:Approval[]; }
+interface Snapshot { session:Summary; tasks:Task[]; approvals:Approval[]; agents?:Record<string,AgentProgress[]>; }
 function $<T extends HTMLElement=HTMLElement>(id:string):T { const n=document.getElementById(id);if(!n)throw new Error('Missing element '+id);return n as T; }
 const hosted=window.location.protocol==='https:';
 let token='',current:string|null=null,busy=false,polling=false,timer:ReturnType<typeof setTimeout>|undefined,cursor=0,epoch=0,lastView='',submitting=false;
@@ -45,6 +47,10 @@ interface MessageRow {
 const messageRows=new Map<string,MessageRow>();
 const taskPhases=new Map<string,string>();
 const delegatedStates=new Map<string,Map<string,string>>();
+// Child events live in separate authenticated sessions. While children run,
+// refresh the parent projection at a bounded cadence even if its SSE stream
+// has no new parent events; no child credentials or raw events are forwarded.
+let hasActiveAgents=false;
 function indexDelegation(event:ExecutionEvent) {
   if(event.type!=='delegation'||!event.taskId||!event.childTaskId)return;
   let children=delegatedStates.get(event.taskId);
@@ -59,7 +65,7 @@ function indexAtlasObservation(event:ExecutionEvent){
   if(atlasObservations.size>3000)atlasObservations.delete(atlasObservations.keys().next().value!);
 }
 function resetConversationView(){
-  messageRows.clear();taskPhases.clear();delegatedStates.clear();lastView='';
+  messageRows.clear();taskPhases.clear();delegatedStates.clear();hasActiveAgents=false;lastView='';
 }
 function indexToolReceipt(event:ExecutionEvent){
   if(event.type!=='tool'||!event.invocationId||!event.taskId)return;
@@ -262,6 +268,8 @@ async function refresh(){
   return list.sessions;
 }
 function render(data:Snapshot){
+  hasActiveAgents=Object.values(data.agents??{}).some(children=>children.some(
+    child=>['queued','running','awaiting_approval','waiting_children'].includes(child.state)));
   // Enqueue retitles the first message server-side. Keep the searchable
   // sidebar in sync with the authoritative snapshot, not only /sessions.
   const known=knownSessions.find(s=>s.id===data.session.id);
@@ -316,18 +324,25 @@ function render(data:Snapshot){
         row.receiptKey=receiptKey;
       }
       renderAtlasAwarenessRow(row,task.id,observedViews,observedDetails,atlasWebOrigin);
-      const children=delegatedStates.get(task.id)??new Map<string,string>();
-      const delegationKey=[...children].map(([id,state])=>id+':'+state).join('|');
-      if(row.delegationKey!==delegationKey){
-        row.delegationKey=delegationKey;
-        const statuses=[...children.values()];
-        const running=statuses.filter(state=>['running','queued','awaiting_approval','waiting_children'].includes(state)).length;
-        row.delegations.querySelector('summary')!.textContent=
-          children.size+' subagent'+(children.size===1?'':'s')+(running?' · '+running+' active':' · finished');
-        const body=row.delegations.querySelector('.inline-agent-children')!;
-        body.replaceChildren(...[...children].map(([id,state])=>el('span','inline-agent',id.slice(0,8)+' · '+state.replace(/_/g,' '))));
+      if(data.agents){
+        // A snapshot is authoritative. Stream events only schedule revalidation,
+        // so out-of-order/replayed delegation events cannot invent agent states.
+        renderInlineAgents(row.delegations,data.agents[task.id]??[],showTaskConsole);
+      }else{
+        // Compatibility with an older server during a rolling deployment.
+        const children=delegatedStates.get(task.id)??new Map<string,string>();
+        const delegationKey=[...children].map(([id,state])=>id+':'+state).join('|');
+        if(row.delegationKey!==delegationKey){
+          row.delegationKey=delegationKey;
+          const statuses=[...children.values()];
+          const running=statuses.filter(state=>['running','queued','awaiting_approval','waiting_children'].includes(state)).length;
+          row.delegations.querySelector('summary')!.textContent=
+            children.size+' subagent'+(children.size===1?'':'s')+(running?' · '+running+' active':' · finished');
+          const body=row.delegations.querySelector('.inline-agent-children')!;
+          body.replaceChildren(...[...children].map(([id,state])=>el('span','inline-agent',id.slice(0,8)+' · '+state.replace(/_/g,' '))));
+        }
+        row.delegations.hidden=children.size===0;
       }
-      row.delegations.hidden=children.size===0;
       const terminal=['completed','failed','interrupted','cancelled'].includes(task.state);
       // During generation, reuse a single text node instead of reparsing and
       // remounting all Markdown on every poll. Format once at completion.
@@ -459,7 +474,8 @@ async function poll(){
   finally{
     polling=false;
     if(timer)clearTimeout(timer);
-    if(current&&generation===epoch&&!liveConnected)timer=setTimeout(()=>{void poll();},busy?250:850);
+    if(current&&generation===epoch&&(!liveConnected||hasActiveAgents))
+      timer=setTimeout(()=>{void poll();},liveConnected?1800:busy?250:850);
   }
 }
 function scheduleSnapshot(){
@@ -537,6 +553,13 @@ async function connectStream(id:string,generation:number){
     liveConnected=true;streamRetries=0;
     if(timer)clearTimeout(timer);
     timer=undefined;
+    // A connected parent SSE stream carries only parent-conversation events.
+    // Child state changes happen in separate sessions and do not wake it.
+    // Re-arm bounded snapshot polling after the stream takes ownership:
+    // otherwise the timer created by poll() is cancelled here forever.
+    if(hasActiveAgents)timer=setTimeout(()=>{
+      if(generation===epoch&&current===id&&liveConnected)void poll();
+    },1800);
     await readLiveChatEvents(response,events=>{
       if(generation===epoch&&!controller.signal.aborted)applyLiveBatch(events);
     });
@@ -613,8 +636,12 @@ function closeTaskConsole(){
   $('openTaskConsole').setAttribute('aria-pressed','false');
   renderSessions();
 }
-$('openTaskConsole').onclick=()=>{
-  if(taskConsole.visible){closeTaskConsole();return;}
+function showTaskConsole(taskId?:string){
+  if(taskConsole.visible){
+    if(taskId)void taskConsole.inspectTask(taskId).catch(notify);
+    else closeTaskConsole();
+    return;
+  }
   for(const id of ['messages','approvals','notice'])$(id).hidden=true;
   document.querySelector('.composer')?.setAttribute('hidden','');
   $('inspector').hidden=true;
@@ -624,8 +651,12 @@ $('openTaskConsole').onclick=()=>{
   $('openTaskConsole').setAttribute('aria-pressed','true');
   closeSidebar();
   renderSessions();
-  void taskConsole.show().catch(notify);
-};
+  void (async()=>{
+    await taskConsole.show();
+    if(taskId)await taskConsole.inspectTask(taskId);
+  })().catch(notify);
+}
+$('openTaskConsole').onclick=()=>showTaskConsole();
 $<HTMLFormElement>('loginForm').onsubmit=async event=>{
   event.preventDefault();if(hosted)return;
   token=$<HTMLInputElement>('token').value;

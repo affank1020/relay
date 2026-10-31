@@ -576,5 +576,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       await reset();
     })();
   };
-  return {show,hide,get visible(){return visible;}};
+  // Direct task navigation works even when its row is outside the current
+  // paginated listing, and it uses the same authenticated detail endpoint.
+  return {show,hide,inspectTask:inspect,get visible(){return visible;}};
 }

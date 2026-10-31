@@ -57,6 +57,30 @@ their earlier preliminary reply. These fields are explicitly
 treats their assertions as tool receipts. Nested children populate the
 handoff after their own synthesis completes. Existing tasks remain readable.
 
+## B3: Inline subagent progress (chat-first)
+
+Normal chat snapshots include a bounded `agents` projection keyed by visible
+root task ID. It is derived solely from persisted parent/child task relationships:
+role, run ID, state, dependencies, model allocation when known, usage and the
+latest persisted tool status. Child conversations, full transcripts, tool
+arguments, private model context and approval arguments are not included.
+The projection never relies on the model describing an action as completed.
+
+Each reply has a compact expandable agent summary; opening it reveals the child
+tree, genuine queued/running/waiting/terminal states, limited task descriptions
+and clearly marked *agent-reported, unverified* handoff summaries. A Details
+action opens that exact task in the existing Tasks & Agents console (including
+its complete trace, controls and approval decisions). No project picker or
+new task dashboard is required.
+
+The expansion uses stable keyed DOM rows and survives streaming and snapshot
+updates; a server snapshot is authoritative and missing/replayed lifecycle
+events cannot invent workers. Persisted tasks reconstruct the tree after reload
+or restart. Legacy servers without the projection fall back to the earlier
+event-only disclosure during a rolling deployment. Unbounded child logs and
+raw internal transcripts remain available only through authenticated task
+inspection, not the inline chat snapshot.
+
 ## What remains
 
 Further slices should add user-editable/Skill-backed profile manifests, explicit per-child Skill admission, robust aggregate cost reservations, external side-effect receipts across additional connectors, approval slot release, richer retry/recovery controls and browser/device QA. This first slice does **not** claim those are delivered. CI fixture tests are not a credentialed multi-agent production smoke.
