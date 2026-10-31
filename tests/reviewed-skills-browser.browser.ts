@@ -53,9 +53,10 @@ test('real browser previews, explicitly installs, enables and revokes a pinned G
     const installed=(await registry.list()).skills.find(s=>s.name==='browser-skill');
     assert.ok(installed);
     assert.equal(installed.enabled,false,'approval never enables Skill by itself');
+    const enabledResponse=page.waitForResponse(response=>
+      response.request().method()==='PATCH'&&response.url().endsWith('/api/capabilities/skills/'+installed.id));
     await page.getByRole('checkbox',{name:'Enable browser-skill'}).check();
-    await page.waitForFunction(async()=>true); // Wait for the server update below, not a time-based sleep.
-    await page.getByRole('checkbox',{name:'Enable browser-skill'}).waitFor();
+    assert.equal((await enabledResponse).status(),200);
     assert.equal((await registry.list()).skills.find(s=>s.id===installed.id)?.enabled,true);
     await page.getByRole('button',{name:'Remove reviewed Skill browser-skill'}).click();
     await page.getByText('browser-skill',{exact:true}).waitFor({state:'detached'});
