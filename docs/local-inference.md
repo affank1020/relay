@@ -48,9 +48,11 @@ The server persists all chat prompts/outputs on the VPS even for local inference
       "https://<mac-name>.<tailnet-name>.ts.net:10000/v1/models"
    ```
 
-   Ollama rejects non-loopback Host headers with HTTP 403. Relay deliberately
-   sends `Host: localhost:11434` for both Pi inference and model discovery;
-   this doesn't change HTTPS certificate validation or Tailscale routing.
+   Ollama rejects non-loopback Host headers with HTTP 403. Node fetch does
+   not honour a custom Host header, so Relay uses a loopback-only reverse
+   proxy to apply `Host: localhost:11434` to both Pi inference and model
+   discovery. This preserves TLS validation against the `.ts.net` hostname
+   and does not publish another Docker or VPS port.
    If the container cannot reach MagicDNS, inspect the VPS DNS and Tailscale
    routing from Docker rather than making Ollama public.
 
