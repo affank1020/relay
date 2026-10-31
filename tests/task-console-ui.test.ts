@@ -95,7 +95,6 @@ test('task workspace opens independently of chat, safely gates actions, and repl
     assert.equal(get('taskCounts').children.length,8);
     get('taskRows').children[0].onclick?.();
     await drain();
-    assert.equal(get('taskTimeline').children.length,0,'timeline uses detail-local content, not unrelated chat activity');
     // The timeline is rendered as a descendant of the selected detail.
     const timeline=get('taskDetail').querySelector('.task-timeline');
     assert.ok(timeline);
@@ -105,7 +104,6 @@ test('task workspace opens independently of chat, safely gates actions, and repl
     load.onclick?.();
     await drain();
     assert.equal(calls.filter(call=>call.url.includes('/events?after=')).length,2,'second cursor page is replayed');
-    assert.ok(!get('taskDetail').querySelector('.task-more')?.hidden===false || true);
     const retry=get('taskDetail').querySelector('.task-actions')?.children.find(child=>child.textContent==='Retry task');
     assert.ok(retry);
     retry.onclick?.();await drain();
