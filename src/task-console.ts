@@ -163,23 +163,32 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       const response=await read<Page>(taskUrl(status as State,conversation));
       if(generation!==listEpoch||!visible)return;
       const incoming=new Set(response.tasks.map(task=>task.id));
-      // Keep displaced first-page rows. The exclusive pagination cursor still
-      // points below the ORIGINAL page boundary, so dropping a displaced row
-      // makes it unreachable when new tasks arrive while the list is open.
-      for(const id of newestIds)if(!incoming.has(id))olderIds.add(id);
-      const selectionNeedsChecking=selected!==null&&status!=='all'&&
-        newestIds.has(selected)&&!incoming.has(selected);
+      if(!response.hasMore) {
+        // When every match fits the first page, absence is authoritative:
+        // previously loaded rows that left the filter must not remain visible.
+        for(const id of tasks.keys())if(!incoming.has(id))tasks.delete(id);
+        olderIds.clear();
+        if(selected&&!incoming.has(selected))clearSelection();
+        cursor=null;hasMore=false;
+      } else {
+        // Keep displaced first-page rows. The exclusive pagination cursor still
+        // points below the ORIGINAL page boundary, so dropping a displaced row
+        // makes it unreachable when new tasks arrive while the list is open.
+        for(const id of newestIds)if(!incoming.has(id))olderIds.add(id);
+        const selectionNeedsChecking=selected!==null&&status!=='all'&&
+          newestIds.has(selected)&&!incoming.has(selected);
+        if(selectionNeedsChecking) {
+          // Displacement and a state transition look identical in a filtered
+          // page. Keep selection, but remove unverified actions until the
+          // authoritative task detail is fetched.
+          selectedFingerprint='';
+          detail.replaceChildren(node('p','task-feedback','Checking task state…'));
+          eventList=null;eventMoreButton=null;
+        }
+        if(cursor===null) {cursor=response.nextCursor;hasMore=response.hasMore;}
+      }
       newestIds=incoming;
       for(const task of response.tasks)tasks.set(task.id,task);
-      if(selectionNeedsChecking) {
-        // Displacement and a state transition look identical to a filtered page.
-        // Preserve the selected task until its detail can be checked, but remove
-        // unverified actions immediately so a stale approval/cancel can't fire.
-        selectedFingerprint='';
-        detail.replaceChildren(node('p','task-feedback','Checking task state…'));
-        eventList=null;eventMoreButton=null;
-      }
-      if(cursor===null) {cursor=response.nextCursor;hasMore=response.hasMore;}
       // An idle refresh updates the newest rows without discarding older pages.
       countView(response.counts);
       message('');
