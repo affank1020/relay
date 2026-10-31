@@ -65,13 +65,23 @@ function render(data:Snapshot){
   }
 }
 function renderActivity(){
-  $('activity').replaceChildren();
-  for(const e of activity.slice(-100).reverse()){
-    const details=el('details','activity','');
-    details.append(el('summary','',(e.tool||e.type)+' · '+e.state));
-    const fields={timestamp:e.timestamp,task:e.taskId,agentRun:e.agentRunId,invocation:e.invocationId,atlasOperation:e.atlasOperationId,project:e.projectId,checkout:e.workspaceId,selectedNode:e.selectedNodeId,executingNode:e.executingNodeId??'Unknown'};
-    details.append(el('pre','',JSON.stringify(fields,null,2)));$('activity').append(details);
+  // Polling must not replace existing <details> nodes: that closes expanded
+  // entries and drops keyboard focus every 600ms.
+  const parent=$('activity');
+  const events=activity.slice(-100).reverse();
+  const existing=new Map(Array.from(parent.children).map(child=>[(child as HTMLElement).dataset.eventId,child as HTMLElement]));
+  for(const [index,e] of events.entries()){
+    let details=existing.get(e.id);
+    if(!details){
+      details=el('details','activity','');
+      details.dataset.eventId=e.id;
+      details.append(el('summary','',(e.tool||e.type)+' · '+e.state));
+      const fields={timestamp:e.timestamp,task:e.taskId,agentRun:e.agentRunId,invocation:e.invocationId,atlasOperation:e.atlasOperationId,project:e.projectId,checkout:e.workspaceId,selectedNode:e.selectedNodeId,executingNode:e.executingNodeId??'Unknown'};
+      details.append(el('pre','',JSON.stringify(fields,null,2)));
+    }
+    if(parent.children[index]!==details)parent.insertBefore(details,parent.children[index]??null);
   }
+  while(parent.children.length>events.length)parent.lastElementChild?.remove();
 }
 async function poll(){
   if(!current||polling)return;
@@ -89,7 +99,7 @@ async function poll(){
   finally{polling=false;if(timer)clearTimeout(timer);timer=setTimeout(()=>{void poll();},600);}
 }
 async function select(id:string){
-  epoch++;current=id;cursor=0;lastView='';activity.length=0;remember('relay.conversation',id);
+  epoch++;current=id;cursor=0;lastView='';activity.length=0;$('activity').replaceChildren();remember('relay.conversation',id);
   const generation=epoch;const data=await get<Snapshot>('/sessions/'+id);
   if(generation!==epoch)return;
   render(data);await refresh();void poll();
