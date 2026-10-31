@@ -666,3 +666,6 @@ dialog #deleteName { color: var(--text); overflow-wrap: anywhere; }
 .capability-description {font-size:11px;color:var(--text-muted);margin-top:4px;}
 .capability-state {font-size:11px;color:var(--text-muted);white-space:nowrap;}
 .capability-row .capability-name {font-size:13px;}
+
+.atlas-observed-link { color: var(--accent); width: fit-content; font-size: 11px; text-decoration: none; }
+.atlas-observed-link:hover { text-decoration: underline; }

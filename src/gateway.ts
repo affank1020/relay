@@ -5,8 +5,10 @@ import { Type } from '@sinclair/typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Store, type Task, type ExecutionEvent } from './store.js';
 import { observeAtlasResult, type AtlasCheckoutFact } from './atlas-awareness.js';
+import { observeAtlasDetailResult } from './atlas-awareness-details.js';
 
-export const READ_TOOLS = new Set(['get_atlas_status','list_projects','get_project','list_nodes','get_node','list_workspaces','get_workspace','list_logical_workspaces','list_project_workspaces','list_applications','get_application','list_stores','get_store','list_records','get_record','list_views','get_view','workspace_list_files','workspace_read_file','workspace_search_files','workspace_git_status','workspace_git_diff','workspace_git_list_worktrees','workspace_list_dev_tasks']);
+export const READ_TOOLS = new Set(['get_atlas_status','list_projects','get_project','list_nodes','get_node','list_workspaces','get_workspace','list_logical_workspaces','list_project_workspaces','list_applications','get_application','list_stores','get_store','list_records','get_record','list_views','get_view','workspace_list_files','workspace_read_file','workspace_search_files','workspace_git_status','workspace_git_diff','workspace_git_list_worktrees','workspace_list_dev_tasks',
+  'code_reviews_overview','code_reviews_pr_summary','code_reviews_list_findings']);
 export interface AtlasTransport { list(): Promise<Array<{name:string;description?:string;inputSchema:Record<string,unknown>}>>; call(name:string,args:Record<string,unknown>,signal?:AbortSignal): Promise<unknown>; close(): Promise<void>; }
 export class McpTransport implements AtlasTransport {
   private connection?: Promise<Client>;
@@ -118,7 +120,8 @@ export class Gateway {
       const failed=!!(result && typeof result==='object' && 'isError' in result && result.isError) || raw.success===false;
       // Only an execution receipt with matching checkout and task establishes actual execution.
       const actual=name==='workspace_run_dev_task' && raw.workspaceId===fields.workspaceId && raw.task===args.task ? uuid(raw.nodeId):null;
-      const observation=failed?null:observeAtlasResult(name,args,raw,resolvedCheckout);
+      const observation=failed?null:(observeAtlasResult(name,args,raw,resolvedCheckout)??
+        observeAtlasDetailResult(name,args,raw));
       // A completed invocation and its safe observation are one durable receipt.
       // Replaying an existing call ID returns the saved result without re-emitting.
       this.store.transaction(()=>{
