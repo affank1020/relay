@@ -72,7 +72,7 @@ function emptyConversation(){
     ['Atlas health','Check infrastructure and service status','Use Atlas MCP to get the current Atlas status.'],
     ['My projects','Explore projects in Atlas','Use Atlas MCP to list my projects.'],
     ['Workspaces','Find available development workspaces','Use Atlas MCP to list my workspaces and their associated Nodes.'],
-    ['Recent tasks','Inspect agent activity','Show me what work Relay can coordinate with Atlas right now.']
+    ['Atlas Nodes','Inspect connected devices and capabilities','Use Atlas MCP to list my Nodes and their available capabilities.']
   ]){
     const button=el('button','prompt-chip','') as HTMLButtonElement;
     button.type='button';
