@@ -75,6 +75,10 @@ export class CapabilityRegistry {
     if(typeof enabled!=='boolean'||!(kind==='skills'?this.skills.contains(id):this.connections.contains(id)))
       throw new SkillPackageError('Unknown capability',404);
     await this.enqueue(async()=>{
+      // Recheck after the queued mutations. An uninstall must not leave a
+      // stale enable/disable flag for a now-unknown Skill ID.
+      if(!(kind==='skills'?this.skills.contains(id):this.connections.contains(id)))
+        throw new SkillPackageError('Unknown capability',404);
       if(kind==='skills'&&enabled){
         const status=(await this.skills.list()).find(s=>s.id===id);
         if(!status?.installed)throw new SkillPackageError('Skill package is missing or modified',409);
@@ -118,23 +122,23 @@ export class CapabilityRegistry {
         description:candidate.description,version:candidate.version,
         sha256:candidate.sha256,installedAt:new Date().toISOString()};
       const folder=join(this.installedDirectory,id);
-      let installed=false;
+      let created=false;
       try{
         await mkdir(this.installedDirectory,{recursive:true,mode:0o700});
         const stat=await lstat(this.installedDirectory);
         if(!stat.isDirectory()||stat.isSymbolicLink())throw new Error('Unsafe Skill directory');
         await mkdir(folder,{mode:0o700});
+        created=true;
         await writeFile(join(folder,'SKILL.md'),candidate.content,{mode:0o600,flag:'wx'});
-        installed=true;
         await this.persist({...this.settings,
           skills:{...this.settings.skills,[id]:false},
           reviewedSkills:{...this.settings.reviewedSkills,[id]:record}});
       }catch(error){
-        await rm(folder,{recursive:true,force:true}).catch(()=>{});
+        // Do not remove a pre-existing colliding directory we did not create.
+        if(created)await rm(folder,{recursive:true,force:true}).catch(()=>{});
         if(error instanceof SkillPackageError)throw error;
         throw new SkillPackageError('Could not store reviewed Skill',503);
       }
-      if(!installed)throw new SkillPackageError('Could not store reviewed Skill',503);
       return record;
     });
   }
@@ -148,7 +152,11 @@ export class CapabilityRegistry {
       delete skills[id];
       // First remove authority from persistent settings, then clean up bytes.
       await this.persist({...this.settings,reviewedSkills:reviewed,skills});
-      await rm(join(this.installedDirectory,id),{recursive:true,force:true}).catch(()=>{});
+      // A malformed local root must never turn cleanup into deletion outside
+      // Relay's own persisted Skill directory.
+      const rootStat=await lstat(this.installedDirectory).catch(()=>null);
+      if(rootStat?.isDirectory()&&!rootStat.isSymbolicLink())
+        await rm(join(this.installedDirectory,id),{recursive:true,force:true}).catch(()=>{});
     });
   }
   async close(){await this.writes;await this.connections.close();this.previews.clear();}

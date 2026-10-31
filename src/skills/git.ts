@@ -74,7 +74,10 @@ async function limitedJson(response:Response):Promise<unknown> {
       const next=await reader.read();
       if(next.done)break;
       bytes+=next.value.length;
-      if(bytes>64_000)throw new SkillPackageError('GitHub Skill response too large',502);
+      if(bytes>64_000){
+        await reader.cancel().catch(()=>{});
+        throw new SkillPackageError('GitHub Skill response too large',502);
+      }
       chunks.push(next.value);
     }
   }finally{reader.releaseLock();}
