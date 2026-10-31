@@ -16,10 +16,11 @@ test('authenticated chat snapshot reconstructs child agents without exposing hid
   store.save('conversations',{...hiddenConversation,internalParentConversationId:rootConversation.id});
   const root:Task={id:crypto.randomUUID(),conversationId:rootConversation.id,requestId:'root',
     prompt:'Summarise research',createdAt:'2026-10-31T12:00:00Z',state:'completed',
-    parentId:null,dependencies:[],attemptOf:null,result:'Parent answer',error:null,usage:[]};
+    parentId:null,dependencies:[],attemptOf:null,result:'Parent delegated; awaiting child',error:null,usage:[]};
+  root.state='waiting_children';
   const child:Task={...root,id:crypto.randomUUID(),conversationId:hiddenConversation.id,
     requestId:'child',parentId:root.id,prompt:'Find documented issues',
-    result:'PRIVATE_INTERNAL_CHILD_TRANSCRIPT',agentRunId:crypto.randomUUID(),
+    state:'running',result:'PRIVATE_INTERNAL_CHILD_TRANSCRIPT',agentRunId:crypto.randomUUID(),
     delegation:{schemaVersion:1,profile:'researcher',toolNames:[],modelKey:null,
       context:'PRIVATE_DELEGATED_CONTEXT',maxTokens:null,maxCostUsd:null}};
   store.save('tasks',root);store.save('tasks',child);
