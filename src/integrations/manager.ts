@@ -165,8 +165,14 @@ export class ConnectionManager {
   }
   async tools(task:Task,store:Store,signal:AbortSignal):Promise<ToolDefinition[]> {
     const result:ToolDefinition[]=[];
+    const delegated=!!task.parentId||!!task.delegation;
+    const admittedNames=task.delegation?.toolNames??[];
+    // No delegated MCP permission means no remote discovery. A child with
+    // only Atlas access should not contact unrelated configured providers.
+    if(delegated&&!admittedNames.some(name=>name.startsWith('mcp_')))return result;
     for(const config of this.configs){
-      if(!this.enabled(config.id)||!config.token)continue;
+      if(!this.enabled(config.id)||!config.token||
+         (delegated&&!admittedNames.some(name=>name.startsWith('mcp_'+config.id+'_'))))continue;
       try{
         const available=await this.transport(config).list(signal);
         signal.throwIfAborted();
@@ -176,6 +182,9 @@ export class ConnectionManager {
         this.inventory.set(config.id,admitted.map(t=>t.name));
         for(const tool of admitted){
           const name='mcp_'+config.id+'_'+tool.name;
+          // Delegated agents may discover ONLY their explicit parent-admitted
+          // read tools. Root registry policy is never inherited wholesale.
+          if((task.parentId||task.delegation)&&!task.delegation?.toolNames.includes(name))continue;
           result.push({
             name,label:config.label+' · '+tool.name,description:(tool.description??tool.name).slice(0,2000),
             parameters:Type.Unsafe<Record<string,unknown>>(tool.inputSchema),
@@ -196,17 +205,26 @@ export class ConnectionManager {
   async invoke(config:ProviderConfig,tool:ListedTool,task:Task,store:Store,callId:string,
     args:Record<string,unknown>,signal:AbortSignal):Promise<unknown>{
     const invocationId=randomUUID(),label=toolDisplayName(config.id,tool.name);
-    const fields:Partial<ExecutionEvent>={taskId:task.id,agentRunId:task.id,invocationId,
+    const fields:Partial<ExecutionEvent>={taskId:task.id,agentRunId:task.agentRunId??task.id,invocationId,
       tool:label,type:'tool'};
     const emit=(state:ToolInvocationState)=>{
       const envelope:ToolInvocationEnvelopeV1={schemaVersion:1,providerId:config.id,
-        toolName:tool.name,taskId:task.id,agentRunId:task.id,invocationId,
+        toolName:tool.name,taskId:task.id,agentRunId:task.agentRunId??task.id,invocationId,
         state,timestamp:new Date().toISOString()};
       // Preserve schema-v1 event compatibility until orchestration owns run schema.
       store.event(task.conversationId,{...fields,state,...{providerId:envelope.providerId}});
     };
-    // Check CURRENT server policy at invocation, not only at model discovery.
-    if(!this.enabled(config.id)||!config.readTools.includes(tool.name)||!config.token) {
+    // Check current server and per-agent delegated policy again at invocation.
+    // Revocation, a mutated task record, or a changed execution identity
+    // cannot turn a stale previously discovered tool into an allowed call.
+    const scoped=!!task.parentId||!!task.delegation;
+    const current=scoped?store.get<Task>('tasks',task.id):undefined;
+    const allowedName='mcp_'+config.id+'_'+tool.name;
+    if(!this.enabled(config.id)||!config.readTools.includes(tool.name)||!config.token ||
+      (scoped && (!task.delegation?.toolNames.includes(allowedName) ||
+        !current?.delegation?.toolNames.includes(allowedName) ||
+        current.agentRunId!==task.agentRunId || current.parentId!==task.parentId ||
+        !['running','awaiting_approval'].includes(current.state)))) {
       emit('denied');throw new Error('MCP tool is not permitted');
     }
     const key=task.id+':'+callId;

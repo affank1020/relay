@@ -98,7 +98,13 @@ export class PiHarness implements Harness {
     // Collect admitted paths and trusted instructions in one validated
     // snapshot; a mid-load settings update cannot split these decisions.
     const skillBudget=skillInstructionBudget(model.contextWindow,model.maxTokens);
-    const skillSnapshot=await this.capabilityRegistry?.skills.snapshot(skillBudget)??
+    // Root Skills are opt-in. A child never inherits globally enabled Skills,
+    // even when the profile is researcher/reviewer/implementer. Explicitly
+    // scoped child Skill admission is a separate future security contract.
+    const rootSkillScope=!task.parentId&&!task.delegation;
+    const skillSnapshot=rootSkillScope?
+      (await this.capabilityRegistry?.skills.snapshot(skillBudget)??
+        {paths:[],instructions:'',skipped:[]}):
       {paths:[],instructions:'',skipped:[]};
     // Excluded Skills must be visible in execution receipts, never described
     // as loaded; they grant no instructions or tools in this inference.
