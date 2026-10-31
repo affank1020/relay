@@ -382,7 +382,7 @@ export class Engine {
           if(parent) {parent.result+=text;this.store.save('tasks',parent);}
           this.store.event(target.conversationId,{taskId:target.id,
             agentId:target.agentId??null,agentRunId:target.agentRunId??null,
-            type:'delta',state:target.state,text});
+            type:'delta',state:target.state,text,textOffset:target.result.length});
         },
         onUsage:usage=>{
           task.usage.push(usage);this.store.save('tasks',task);

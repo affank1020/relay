@@ -8,6 +8,7 @@ import { terminal } from './store.js';
 import { taskConsolePage, taskConsoleDetail } from './task-console-api.js';
 import { refreshOllamaModels, type RelayModels } from './models.js';
 import { AtlasContextError } from './atlas-context.js';
+import { streamConversationEvents } from './live-events.js';
 
 export function createPlatform(engine:Engine, token:string, staticDir:string, model:string, modelRegistry?:RelayModels) {
   if(token.length<24)throw new Error('RELAY_ACCESS_TOKEN must be 24+ characters');
@@ -67,7 +68,7 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         return detail?send(res,200,detail):send(res,404,{error:'Task not found'});
       }
       if(path==='/api/tasks'&&req.method==='GET')return send(res,200,{tasks:engine.tasks().slice(-200).reverse()});
-      const conversation=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/messages|\/events|\/abort|\/context)?$/);
+      const conversation=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/messages|\/events|\/stream|\/abort|\/context)?$/);
       if(conversation) {
         const c=engine.store.get<Conversation>('conversations',conversation[1]);if(!c)return send(res,404,{error:'Conversation not found'});
         if(!conversation[2]&&req.method==='PATCH') {
@@ -110,6 +111,11 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         if(conversation[2]==='/events'&&req.method==='GET'){
           const after=Number(url.searchParams.get('after')||0);if(!Number.isSafeInteger(after)||after<0)throw new Error('Invalid event cursor');
           const events=engine.store.events(c.id,after);return send(res,200,{events,nextCursor:events.at(-1)?.sequence??after,hasMore:events.length===500});
+        }
+        if(conversation[2]==='/stream'&&req.method==='GET'){
+          const after=Number(url.searchParams.get('after')||0);
+          if(!Number.isSafeInteger(after)||after<0)throw new Error('Invalid event cursor');
+          return streamConversationEvents(req,res,engine.store,c.id,after);
         }
         if(conversation[2]==='/messages'&&req.method==='POST'){
           const data=await body(req);
