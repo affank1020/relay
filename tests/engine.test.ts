@@ -9,6 +9,7 @@ import { Store, type Task } from '../src/store.js';
 import type { Harness, HarnessRequest } from '../src/harness.js';
 import { PiHarness } from '../src/harness.js';
 import { Type } from '@sinclair/typebox';
+import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 
 export const limits:Limits={concurrency:2,queue:64,sessionUsd:0,globalUsd:0,sessionTokens:0,reserveUsd:0,maxRunMs:5000};
 export function fixtureHarness(run:(r:HarnessRequest)=>Promise<string>):Harness { return {version:1,capabilities:{persistence:true,cancellation:true,tools:true},run}; }
@@ -109,7 +110,7 @@ test('failed task identifies the safe execution stage without disclosing excepti
 test('real Pi session accepts all 23 Atlas tools and relay_delegate before cancellation', {timeout:65000},async()=>{
   const root=await mkdtemp(join(tmpdir(),'relay-pi-tool-startup-'));
   const controller=new AbortController();controller.abort(new Error('cancel-before-prompt'));
-  const tools=Array.from({length:23},(_,i)=>({
+  const tools:ToolDefinition[]=Array.from({length:23},(_,i)=>({
     name:'atlas_diagnostic_'+i,label:'Atlas diagnostic '+i,description:'Read-only fixture',
     parameters:Type.Unsafe<Record<string,unknown>>({type:'object',properties:{id:{type:'string'}},additionalProperties:false}),
     execute:async()=>({content:[{type:'text' as const,text:'never executed'}],details:{}}),
