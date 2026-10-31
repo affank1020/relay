@@ -90,3 +90,9 @@ MCP provider reconnect/health beyond discovery status and conversation memory.
 | Atlas Awareness | Separate track #30 | Evidence-backed contextual observations |
 
 No claim is made that this slice alone reaches full ChatGPT parity.
+
+Because Relay intentionally exposes no general filesystem reader to Pi, the
+validated instructions of each enabled Skill are included in the trusted
+agent prompt, while the Pi resource loader still verifies the Skill metadata.
+The `loaded` event means instructions were made available, **not** that a
+particular Skill was used or that any underlying action succeeded.
