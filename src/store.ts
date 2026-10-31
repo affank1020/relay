@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 
 export type State = 'queued' | 'running' | 'awaiting_approval' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
-export interface Conversation { id: string; title: string; createdAt: string; }
+export interface Conversation { id: string; title: string; createdAt: string; modelKey?: string; }
 export interface Usage { input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; costUsd: number | null; costKind: 'estimated' | 'measured' | 'unknown'; }
 export interface Task { id: string; conversationId: string; requestId: string; prompt: string; state: State; createdAt: string; parentId: string | null; dependencies: string[]; attemptOf: string | null; result: string; error: string | null; usage: Usage[]; }
 export interface ExecutionEvent {
