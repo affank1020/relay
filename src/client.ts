@@ -226,7 +226,7 @@ async function select(id:string){
   if(generation!==epoch)return;
   render(data);await refresh();void poll();
 }
-async function create(){const modelKey=$<HTMLSelectElement>('modelPicker').value;const result=await (await api('/sessions',{method:'POST',body:JSON.stringify(modelKey?{modelKey}:{})})).json() as {session:Summary};await select(result.session.id);$<HTMLTextAreaElement>('prompt').focus();}
+async function create(){const picker=$<HTMLSelectElement>('modelPicker');if(picker.selectedOptions[0]?.disabled)throw new Error('Local model offline. Start Ollama or choose another model.');const modelKey=picker.value;const result=await (await api('/sessions',{method:'POST',body:JSON.stringify(modelKey?{modelKey}:{})})).json() as {session:Summary};await select(result.session.id);$<HTMLTextAreaElement>('prompt').focus();}
 async function submit(event:Event){
   event.preventDefault();if(busy||submitting)return;
   const prompt=$<HTMLTextAreaElement>('prompt');const value=prompt.value.trim();if(!value&&!pending)return;
