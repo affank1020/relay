@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
-import type { Engine } from './engine.js';
+import { ConversationConflictError, ConversationNotFoundError, SessionCleanupError, type Engine } from './engine.js';
 import type { Conversation, Task, Approval } from './store.js';
 import { terminal } from './store.js';
 import { refreshOllamaModels, type RelayModels } from './models.js';
@@ -52,6 +52,30 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
       const conversation=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/messages|\/events|\/abort)?$/);
       if(conversation) {
         const c=engine.store.get<Conversation>('conversations',conversation[1]);if(!c)return send(res,404,{error:'Conversation not found'});
+        if(!conversation[2]&&req.method==='PATCH') {
+          const data=await body(req);
+          if(Object.keys(data).length!==1 || typeof data.title!=='string')
+            return send(res,400,{error:'Title must be 1–120 characters'});
+          try {
+            const renamed=engine.renameConversation(c.id,data.title);
+            return send(res,200,{session:summary(renamed)});
+          } catch(error) {
+            if(error instanceof ConversationNotFoundError)return send(res,404,{error:'Conversation not found'});
+            if(error instanceof Error && error.message.startsWith('Title must'))return send(res,400,{error:error.message});
+            throw error;
+          }
+        }
+        if(!conversation[2]&&req.method==='DELETE') {
+          try {
+            await engine.deleteConversation(c.id);
+            res.writeHead(204);res.end();return;
+          } catch(error) {
+            if(error instanceof ConversationNotFoundError)return send(res,404,{error:'Conversation not found'});
+            if(error instanceof ConversationConflictError)return send(res,409,{error:error.message});
+            if(error instanceof SessionCleanupError)return send(res,503,{error:error.message});
+            throw error;
+          }
+        }
         if(!conversation[2]&&req.method==='GET') {
           const tasks=engine.tasks(c.id);
           const turns=tasks.flatMap(t=>[{role:'user',text:t.prompt},...(t.result?[{role:'assistant',text:t.result}]:[])]);

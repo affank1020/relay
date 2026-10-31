@@ -7,6 +7,9 @@ import type { RelayModels } from './models.js';
 import { Gateway, type AtlasTransport } from './gateway.js';
 
 export interface Limits { concurrency:number; queue:number; sessionUsd:number; globalUsd:number; sessionTokens:number; reserveUsd:number; maxRunMs:number; }
+export class ConversationConflictError extends Error {}
+export class ConversationNotFoundError extends Error {}
+export class SessionCleanupError extends Error {}
 export class Engine {
   private active=new Map<string,AbortController>();
   private scheduled=false;
@@ -26,7 +29,69 @@ export class Engine {
       for(const approval of store.all<Approval>('approvals'))if(approval.state==='pending') { approval.state='rejected';store.save('approvals',approval); }
     });
   }
-  start() { this.kick(); }
+  start() {
+    // A previous process can crash after DB purge but before Pi cleanup.
+    // Retry only durable tombstones; failure never makes a chat visible again.
+    void this.cleanupPendingSessions().catch(()=>console.error('Relay session cleanup pending; retry on next startup'));
+    this.kick();
+  }
+  private async cleanupPendingSessions() {
+    if(!this.harness.deleteConversationSessions)throw new SessionCleanupError('Session cleanup unavailable');
+    for(const id of this.store.pendingSessionDeletions()) {
+      try {
+        // After a crash or failed checkpoint, historical WAL frames may
+        // still contain transcript data. Never clear the tombstone first.
+        this.store.checkpointDeletedHistory();
+        await this.harness.deleteConversationSessions(id);
+        this.store.sessionDeletionComplete(id);
+      } catch {
+        // Keep the tombstone. Never log the filesystem exception or contents.
+        console.error('Relay session cleanup pending', {conversationId:id});
+      }
+    }
+  }
+  renameConversation(id:string,title:unknown):Conversation {
+    const c=this.store.get<Conversation>('conversations',id);
+    if(!c)throw new ConversationNotFoundError('Conversation not found');
+    if(typeof title!=='string')throw new Error('Title must be 1–120 characters');
+    const trimmed=title.trim();
+    if(!trimmed || [...trimmed].length>120 || /[\u0000-\u001f\u007f-\u009f]/u.test(trimmed))
+      throw new Error('Title must be 1–120 characters without control characters');
+    // Preserve modelKey and any future optional conversation metadata.
+    const renamed={...c,title:trimmed,manualTitle:true};
+    this.store.save('conversations',renamed);
+    return renamed;
+  }
+  async deleteConversation(id:string):Promise<void> {
+    if(!this.harness.deleteConversationSessions)throw new SessionCleanupError('Session cleanup unavailable');
+    if(!this.store.get<Conversation>('conversations',id))throw new ConversationNotFoundError('Conversation not found');
+    const all=this.tasks();
+    const owned=all.filter(t=>t.conversationId===id);
+    const removed=new Set(owned.map(t=>t.id));
+    if(owned.some(t=>['queued','running','awaiting_approval','interrupted'].includes(t.state) || this.active.has(t.id)))
+      throw new ConversationConflictError('Conversation has active or uncertain tasks');
+    if(all.some(t=>t.conversationId!==id && (removed.has(t.parentId??'')||removed.has(t.attemptOf??'')||t.dependencies.some(dep=>removed.has(dep)))))
+      throw new ConversationConflictError('Other conversations depend on this conversation');
+    if(this.store.all<Approval>('approvals').some(a=>removed.has(a.taskId)&&a.state==='pending'))
+      throw new ConversationConflictError('Conversation has pending approvals');
+    if(owned.some(t=>this.store.invocationStates(t.id).some(state=>state!=='completed')))
+      throw new ConversationConflictError('Conversation has uncertain tool invocations');
+    // Checks, ledger retirement, record purge and tombstone creation are all
+    // synchronous with no event-loop yield. No task can be scheduled between
+    // validation and the transaction.
+    this.store.purgeConversation(id,owned);
+    try {
+      // A committed SQLite purge alone can leave old message bytes in the
+      // live WAL. Verify TRUNCATE before acknowledging a full purge.
+      this.store.checkpointDeletedHistory();
+      await this.harness.deleteConversationSessions(id);
+      this.store.sessionDeletionComplete(id);
+    } catch {
+      // The chat was logically deleted, but checkpoint or Pi cleanup failed.
+      // The durable tombstone makes the remaining work retryable on startup.
+      throw new SessionCleanupError('Conversation deleted; durable cleanup pending');
+    }
+  }
   conversation(modelKey?:string) {
     if(this.store.all('conversations').length>=1000)throw new Error('Conversation limit reached');
     if(modelKey!==undefined && (!this.modelRegistry || !this.modelRegistry.models.some(m=>m.key===modelKey)))throw new Error('Invalid model selection');
@@ -36,8 +101,10 @@ export class Engine {
   tasks(conversationId?:string) { return this.store.all<Task>('tasks').filter(t=>!conversationId||t.conversationId===conversationId); }
   usage(conversationId?:string) {
     const all=this.tasks(conversationId).flatMap(t=>t.usage);
-    return {costUsd:all.reduce((s,u)=>s+(u.costUsd??0),0),tokens:all.reduce((s,u)=>s+(u.input??0)+(u.output??0)+(u.cacheRead??0)+(u.cacheWrite??0),0),
-      unknown:all.some(u=>u.costUsd===null || u.input===null || u.output===null),costKind:all.length && all.every(u=>u.costKind==='measured')?'measured':'estimated'};
+    const retired=conversationId?null:this.store.retiredUsage();
+    return {costUsd:all.reduce((s,u)=>s+(u.costUsd??0),retired?.costUsd??0),tokens:all.reduce((s,u)=>s+(u.input??0)+(u.output??0)+(u.cacheRead??0)+(u.cacheWrite??0),retired?.tokens??0),
+      unknown:(retired?.unknown??false)||all.some(u=>u.costUsd===null || u.input===null || u.output===null),
+      costKind:(all.length+(retired?.count??0)) && all.every(u=>u.costKind==='measured') && (retired?.measured??true)?'measured':'estimated'};
   }
   private budget(conversationId:string) {
     const local=this.usage(conversationId),global=this.usage();
@@ -60,7 +127,7 @@ export class Engine {
     const task:Task={id:randomUUID(),conversationId,requestId,prompt,state:'queued',createdAt:new Date().toISOString(),parentId,dependencies,attemptOf,result:'',error:null,usage:[]};
     this.store.transaction(()=>{
       this.store.save('tasks',task);
-      if(c.title==='New conversation') { c.title=prompt.slice(0,55);this.store.save('conversations',c); }
+      if(!c.manualTitle && c.title==='New conversation') { c.title=prompt.slice(0,55);this.store.save('conversations',c); }
       this.store.event(conversationId,{taskId:task.id,agentRunId:task.id,type:'task',state:'queued'});
     });
     this.kick();return task;
