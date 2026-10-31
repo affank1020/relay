@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import type { AtlasContext } from './atlas-context.js';
+import type { AtlasResourceObservation } from './atlas-awareness.js';
 
 export type State = 'queued' | 'running' | 'awaiting_approval' | 'waiting_children' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export interface Conversation { id: string; title: string; createdAt: string; modelKey?: string; manualTitle?: boolean; atlasContext?: AtlasContext|null;
@@ -22,6 +23,8 @@ export interface ExecutionEvent {
   schemaVersion: 1 | 2; id: string; sequence: number; timestamp: string; conversationId: string;
   taskId: string | null; agentRunId: string | null; invocationId: string | null;
   agentId?: string | null; parentTaskId?: string | null; childTaskId?: string | null;
+  /** Schema-v1, bounded and allowlisted Atlas observation. */
+  atlasResource?: AtlasResourceObservation;
   type: string; state: string; tool: string | null; atlasOperationId: string | null;
   projectId: string | null; workspaceId: string | null; selectedNodeId: string | null;
   executingNodeId: string | null; text?: string; textOffset?: number;
