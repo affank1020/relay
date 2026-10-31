@@ -101,10 +101,8 @@ test('task workspace opens independently of chat, safely gates actions, and repl
     assert.ok(timeline);
     assert.equal(timeline.children.length,120,'event rendering stays bounded');
     const load=get('taskDetail').querySelector('.task-more');
-    assert.ok(load&&!load.hidden);
-    load.onclick?.();
-    await drain();
-    assert.equal(calls.filter(call=>call.url.includes('/events?after=')).length,2,'second cursor page is replayed');
+    assert.ok(load?.hidden,'automatic replay should catch up without manual paging');
+    assert.equal(calls.filter(call=>call.url.includes('/events?after=')).length,2,'second cursor page is replayed automatically');
     const retry=get('taskDetail').querySelector('.task-actions')?.children.find(child=>child.textContent==='Retry task');
     assert.ok(retry);
     retry.onclick?.();await drain();
