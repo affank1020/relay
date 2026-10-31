@@ -51,6 +51,8 @@ export function renderInlineAgents(
     // Keep the stable container but rebuild text only on actual changes.
     const lines=[
       heading,
+      (agent.modelKey?'Model: '+shorten(agent.modelKey,70):''),
+      (agent.tokens!==null&&agent.tokens>0?'Usage: '+agent.tokens+' tokens':''),
       (agent.dependencies.length?'Depends on '+agent.dependencies.length+' task'+(agent.dependencies.length===1?'':'s'):''),
       (agent.lastTool?'Tool: '+shorten(agent.lastTool.name,48)+' · '+title(agent.lastTool.state):''),
       (agent.reportedSummary?'Agent-reported (unverified): '+shorten(agent.reportedSummary,220):''),

@@ -57,7 +57,11 @@ export function projectAgentProgress(
           modelKey:child.modelKey??null,tokens,costUsd,
           reportedSummary:child.state==='completed'&&child.handoff?.summary
             ?child.handoff.summary.slice(0,240):null,
-          lastTool:latestTool(child)
+          // Query tool activity only while work is active. Completed runs
+          // remain fully inspectable in Tasks & Agents; scanning their
+          // entire historical event log on every chat snapshot is wasteful.
+          lastTool:['running','waiting_children','awaiting_approval'].includes(child.state)
+            ?latestTool(child):null
         });
         walk(child.id,depth+1);
       }

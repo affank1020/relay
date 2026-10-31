@@ -143,3 +143,43 @@ test('real Chromium preserves inline subagent disclosure and opens the correct t
     assert.equal(await group.locator('[data-agent-id]').count(),1);
   }finally{await browser.close();}
 });
+
+test('task console can inspect a child agent not present in its paginated list',async()=>{
+  const bundle=await build({entryPoints:['src/task-console.ts'],bundle:true,platform:'browser',
+    format:'iife',globalName:'RelayTaskConsole',write:false,target:'es2022'});
+  assert.ok(bundle.outputFiles?.[0]);
+  const browser=await chromium.launch({headless:true});
+  try{
+    const page=await browser.newPage({viewport:{width:820,height:650}});
+    await page.setContent('<!doctype html><html><body><section id="taskConsole" hidden><div id="taskCounts"></div><select id="taskConversationFilter"></select><input id="taskSearch"><button id="taskRefresh"></button><div id="taskFeedback"></div><div id="taskRows"></div><button id="taskMore"></button><section id="taskDetail"></section></section></body></html>');
+    await page.addScriptTag({content:bundle.outputFiles[0].text});
+    await page.addScriptTag({content:'var __name=(target,name)=>target;'});
+    await page.evaluate(async()=>{
+      const id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const child={id,conversationId:'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+        requestId:id,prompt:'Inspect hidden delegated review',state:'completed',
+        createdAt:'2026-10-31T10:00:00Z',parentId:'parent-id',dependencies:[],
+        attemptOf:null,result:'Verified persisted child result',error:null,usage:[]};
+      const respond=(value:unknown)=>new Response(JSON.stringify(value));
+      const ui=(window as any).RelayTaskConsole.mountTaskConsole(async(path:string)=>{
+        if(path==='/sessions')return respond({sessions:[]});
+        if(path.startsWith('/task-console/tasks?'))return respond({
+          tasks:[],nextCursor:null,hasMore:false,counts:{completed:1}
+        });
+        if(path==='/task-console/tasks/'+id)return respond({
+          task:child,conversation:null,children:[],approvals:[]
+        });
+        if(path.includes('/events?after='))return respond({events:[],nextCursor:0,hasMore:false});
+        throw Error('Unexpected '+path);
+      },async()=>{});
+      (window as any).__ui=ui;
+      await ui.show();
+      await ui.inspectTask(id);
+    });
+    assert.equal(await page.locator('.task-row').count(),0,
+      'target is absent from the paginated list');
+    assert.ok((await page.locator('#taskDetail h2').textContent())?.includes('Inspect hidden delegated review'));
+    assert.ok((await page.locator('.task-result').textContent())?.includes('Verified persisted child result'));
+    await page.evaluate(()=>(window as any).__ui.hide());
+  }finally{await browser.close();}
+});
