@@ -85,7 +85,7 @@ export class AtlasContextPicker {
       this.project.disabled=false;
       this.status.textContent=this.projects.length?'':'No Atlas projects found.';
       await this.loadCheckouts(selected?.checkoutId??null);
-    }catch{
+    }catch(e){
       if(generation!==this.generation)return;
       this.projects=[];this.checkouts=[];
       this.project.replaceChildren();option(this.project,'','No project');
@@ -93,7 +93,7 @@ export class AtlasContextPicker {
       this.project.value=selected?.projectId??'';
       this.project.disabled=false;
       this.checkout.replaceChildren();this.checkoutField.hidden=true;
-      this.status.textContent='Atlas unavailable. Your saved selection has not changed.';
+      this.status.textContent=e instanceof Error&&/denied|permission/i.test(e.message)?'Atlas access denied. Selection unchanged.':'Atlas unavailable. Your saved selection has not changed.';
       this.loading=false;this.updateSave();
     }
   }
@@ -122,11 +122,11 @@ export class AtlasContextPicker {
       this.checkout.value=savedCheckout??'';
       this.checkout.disabled=false;
       this.status.textContent=data.checkouts.length?'':'No checkouts in this project.';
-    }catch{
+    }catch(e){
       if(generation!==this.generation||sessionId!==this.session?.id)return;
       if(savedCheckout)option(this.checkout,savedCheckout,'Previous checkout (unavailable)',true);
       this.checkout.value=savedCheckout??'';
-      this.status.textContent='Atlas checkouts unavailable. Selection unchanged.';
+      this.status.textContent=e instanceof Error&&/denied|permission/i.test(e.message)?'Atlas checkout access denied. Selection unchanged.':'Atlas checkouts unavailable. Selection unchanged.';
     }finally{
       if(generation===this.generation){this.loading=false;this.updateSave();}
     }
