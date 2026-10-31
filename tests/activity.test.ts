@@ -553,3 +553,60 @@ test('live SSE batches append generated text without remounting or duplicating r
   assert.strictEqual(messages.children[1],assistant);
   streamController?.close();
 });
+
+test('completion between replay and snapshot cannot leave live chat stuck running',async()=>{
+  const nodes=new Map<string,Element>();
+  const element=(id:string):Element=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id)!;};
+  let completed=false,streamAfter:string|null=null,snapshotReads=0;
+  const requests:string[]=[];
+  const task=(done:boolean)=>({
+    id:'t1',conversationId:'c1',prompt:'Answer a question',
+    result:done?'**Final answer**':'Draft answer',
+    state:done?'completed':'running',error:null,usage:[]
+  });
+  const getSnapshot=()=>{
+    const done=snapshotReads>1&&completed;
+    return {session:{id:'c1',title:'Answer a question',busy:!done,costUsd:0,usage:{costKind:'estimated',tokens:0,unknown:false}},
+      tasks:[task(done)],approvals:[]};
+  };
+  const context={
+    window:{location:{protocol:'https:'},sessionStorage:{getItem:()=>null,setItem:()=>{}}},
+    document:{getElementById:element,createElement:(tag:string)=>new Element(tag)},
+    Headers,Response,URL,AbortController,TextDecoder,
+    setTimeout:()=>1,clearTimeout:()=>{},
+    fetch:async(url:string)=>{
+      if(url==='/api/status')return new Response(JSON.stringify({provider:'OpenRouter',model:'free',atlas:'configured'}));
+      if(url==='/api/sessions')return new Response(JSON.stringify({sessions:[{id:'c1',title:'Answer a question'}]}));
+      if(url==='/api/sessions/c1'){
+        snapshotReads++;requests.push('snapshot-'+snapshotReads);
+        return new Response(JSON.stringify(getSnapshot()));
+      }
+      if(url==='/api/sessions/c1/events?after=0'){
+        // The completion commits after the initial snapshot and before the
+        // replay response. An old parallel poll would issue its second
+        // snapshot too early, then advance past this completion forever.
+        completed=true;requests.push('replay-completion');
+        return new Response(JSON.stringify({events:[{...event('done',1),taskId:'t1',state:'completed'}],nextCursor:1,hasMore:false}));
+      }
+      if(url.startsWith('/api/sessions/c1/stream?after=')){
+        streamAfter=new URL(url,'http://localhost').searchParams.get('after');
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller){controller.enqueue(new TextEncoder().encode(': connected\\n\\n'));}
+        }),{headers:{'Content-Type':'text/event-stream'}});
+      }
+      throw Error('Unexpected '+url);
+    }
+  };
+  runInNewContext(source,context,{filename:'dist/public/app.js'});
+  await flush();
+  assert.deepEqual(requests.slice(0,3),['snapshot-1','replay-completion','snapshot-2'],
+    'the authoritative snapshot must be fetched after replay');
+  assert.equal(streamAfter,'1','live stream resumes after the consumed completion');
+  assert.equal(element('prompt').disabled,false,'composer must be enabled when the task completes');
+  assert.equal(element('send').disabled,false,'send button must not stay disabled');
+  assert.equal(element('state').hidden,true,'running indicator must clear');
+  const assistant=element('messages').children.find(x=>x.className==='message assistant')!;
+  assert.ok(assistant.children.some(x=>x.className==='markdown'),'final Markdown must be rendered');
+  assert.ok(assistant.children.find(x=>x.className.startsWith('status-line'))!.hidden,
+    'completed message must not keep a thinking status');
+});
