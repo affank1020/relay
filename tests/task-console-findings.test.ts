@@ -395,3 +395,121 @@ test('an older selected task is preserved while in scope and cleared after its s
     globalThis.clearTimeout=oldClear;
   }
 });
+
+
+test('nonexhaustive queued filter evicts an unselected task that starts running',async()=>{
+  const items=Array.from({length:60},(_,i)=>({
+    ...task(String(i+1).padStart(8,'0')+'-3333-3333-3333-333333333333',A,'queued'),
+    prompt:'Queue '+(i+1),createdAt:new Date(Date.parse(when)+(i+1)*1000).toISOString(),rowid:i+1
+  }));
+  const changed=items[39];
+  let scheduled:(()=>void)|undefined;
+  const oldTimeout=globalThis.setTimeout,oldClear=globalThis.clearTimeout;
+  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
+  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
+  try {
+    await fixture(async(get,_,calls)=>{
+      const queued=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Queued');
+      assert.ok(queued);queued.onclick?.();await flush();
+      assert.equal(get('taskRows').children.length,50);
+      changed.state='running';
+      assert.ok(scheduled);scheduled();await flush();
+      const visible=get('taskRows').children.map(row=>row.children[0]?.textContent);
+      assert.equal(visible.length,50);
+      assert.ok(!visible.includes('Queue 40'),'transitioned unselected row is not retained as queued');
+      assert.equal(get('taskCounts').children.find(item=>item.children[0]?.textContent==='Queued')?.children[1]?.textContent,'59');
+      const stateCall=calls.find(url=>url.includes('/task-console/task-states?'));
+      assert.ok(stateCall&&new URL(stateCall,'http://relay.local').searchParams.get('ids')?.split(',').includes(changed.id));
+      get('taskMore').onclick?.();await flush();
+      const all=get('taskRows').children.map(row=>row.children[0]?.textContent);
+      assert.equal(all.length,59,'all and only queued tasks remain after pagination');
+      assert.ok(!all.includes('Queue 40'));
+    },async url=>{
+      if(url==='/sessions')return response({sessions:[sessions[0]]});
+      if(url.startsWith('/task-console/task-states?')){
+        const ids=new URL(url,'http://relay.local').searchParams.get('ids')?.split(',')??[];
+        return response({states:Object.fromEntries(items.filter(item=>ids.includes(item.id))
+          .map(item=>[item.id,{state:item.state,conversationId:item.conversationId}]))});
+      }
+      if(url.startsWith('/task-console/tasks?')){
+        const search=new URL(url,'http://relay.local').searchParams;
+        const eligible=items.filter(item=>item.state===search.get('state')&&
+          (!search.get('cursor')||item.rowid<Number(search.get('cursor')))).sort((a,b)=>b.rowid-a.rowid);
+        const page=eligible.slice(0,50);
+        return response({tasks:page,counts:{queued:items.filter(item=>item.state==='queued').length,running:items.filter(item=>item.state==='running').length},
+          hasMore:eligible.length>50,nextCursor:eligible.length>50?String(page.at(-1)?.rowid):null});
+      }
+      throw Error('Unexpected URL '+url);
+    });
+  } finally {globalThis.setTimeout=oldTimeout;globalThis.clearTimeout=oldClear;}
+});
+
+test('exhausted older-page cursor stays exhausted through repeated foreground polls',async()=>{
+  const items=Array.from({length:60},(_,i)=>({
+    ...task(String(i+1).padStart(8,'0')+'-4444-4444-4444-444444444444',A,'completed'),
+    prompt:'Page '+(i+1),createdAt:new Date(Date.parse(when)+(i+1)*1000).toISOString(),rowid:i+1
+  }));
+  let scheduled:(()=>void)|undefined;
+  const oldTimeout=globalThis.setTimeout,oldClear=globalThis.clearTimeout;
+  globalThis.setTimeout=((fn:()=>void)=>{scheduled=fn;return 1;}) as unknown as typeof setTimeout;
+  globalThis.clearTimeout=(()=>{scheduled=undefined;}) as typeof clearTimeout;
+  try {
+    await fixture(async(get,_,calls)=>{
+      assert.equal(get('taskRows').children.length,50);
+      assert.equal(get('taskMore').hidden,false);
+      get('taskMore').onclick?.();await flush();
+      assert.equal(get('taskRows').children.length,60);
+      assert.equal(get('taskMore').hidden,true);
+      const olderCalls=()=>calls.filter(url=>url.includes('cursor=')).length;
+      assert.equal(olderCalls(),1);
+      assert.ok(scheduled);scheduled();await flush();
+      assert.equal(get('taskMore').hidden,true,'polling must not revive an exhausted cursor');
+      get('taskMore').onclick?.();await flush();
+      assert.equal(olderCalls(),1,'no repeat older-page request after exhaustion');
+      assert.equal(get('taskRows').children.length,60);
+      assert.ok(scheduled);scheduled();await flush();
+      assert.equal(get('taskMore').hidden,true);
+      assert.equal(new Set(get('taskRows').children.map(row=>row.children[0]?.textContent)).size,60);
+    },async url=>{
+      if(url==='/sessions')return response({sessions:[sessions[0]]});
+      if(url.startsWith('/task-console/task-states?')){
+        const ids=new URL(url,'http://relay.local').searchParams.get('ids')?.split(',')??[];
+        return response({states:Object.fromEntries(items.filter(item=>ids.includes(item.id))
+          .map(item=>[item.id,{state:item.state,conversationId:item.conversationId}]))});
+      }
+      if(url.startsWith('/task-console/tasks?')){
+        const search=new URL(url,'http://relay.local').searchParams;
+        const eligible=items.filter(item=>!search.get('cursor')||item.rowid<Number(search.get('cursor'))).sort((a,b)=>b.rowid-a.rowid);
+        const page=eligible.slice(0,50);
+        return response({tasks:page,counts:{completed:60},hasMore:eligible.length>50,
+          nextCursor:eligible.length>50?String(page.at(-1)?.rowid):null});
+      }
+      throw Error('Unexpected URL '+url);
+    });
+  } finally {globalThis.setTimeout=oldTimeout;globalThis.clearTimeout=oldClear;}
+});
+
+test('empty initial page and zero-result state filter both render a visible empty message',async()=>{
+  await fixture(async get=>{
+    assert.equal(get('taskRows').querySelector('.task-rows-empty')?.textContent,'No tasks match this filter.');
+  },async url=>{
+    if(url==='/sessions')return response({sessions:[sessions[0]]});
+    if(url.startsWith('/task-console/tasks?'))return response({tasks:[],counts:{},hasMore:false,nextCursor:null});
+    throw Error('Unexpected URL '+url);
+  });
+  const running=task(one,A,'running');
+  await fixture(async get=>{
+    assert.equal(get('taskRows').querySelector('.task-rows-empty'),null);
+    const completed=get('taskCounts').children.find(item=>item.children[0]?.textContent==='Completed');
+    assert.ok(completed);completed.onclick?.();await flush();
+    assert.equal(get('taskRows').querySelector('.task-rows-empty')?.textContent,'No tasks match this filter.');
+    assert.equal(get('taskRows').children.length,1,'empty placeholder is not duplicated');
+  },async url=>{
+    if(url==='/sessions')return response({sessions:[sessions[0]]});
+    if(url.startsWith('/task-console/tasks?')){
+      const state=new URL(url,'http://relay.local').searchParams.get('state');
+      return response({tasks:state==='completed'?[]:[running],counts:{running:1},hasMore:false,nextCursor:null});
+    }
+    throw Error('Unexpected URL '+url);
+  });
+});
