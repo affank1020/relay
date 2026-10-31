@@ -279,7 +279,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     const known=new Map([...eventList.children].map(child=>[(child as HTMLElement).dataset.eventId,child as HTMLElement]));
     const items=events.slice(-120);
     const shown=new Set(items.map(event=>event.id));
-    for(const [id,row] of known)if(!shown.has(id))row.remove();
+    for(const [id,row] of known)if(!id||!shown.has(id))row.remove();
     for(const [index,event] of items.entries()) {
       let item=known.get(event.id);
       if(!item) {
