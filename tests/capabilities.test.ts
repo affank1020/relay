@@ -110,9 +110,10 @@ test('delegated child cannot inherit enabled root Skills from Pi resource loader
   const controller=new AbortController();
   try{
     await registry.update('skills','prepare-pr',true);
-    const task={id:crypto.randomUUID(),conversationId:crypto.randomUUID(),prompt:'delegated skill check',
-      state:'running',createdAt:new Date().toISOString(),parentId:crypto.randomUUID(),
-      delegation:{schemaVersion:1,toolNames:[],modelKey:null,context:'',maxTokens:null,maxCostUsd:null,profile:'reviewer'}} as Task;
+    const task:Task={id:crypto.randomUUID(),conversationId:crypto.randomUUID(),prompt:'delegated skill check',
+      requestId:'child-skill-check',state:'running',createdAt:new Date().toISOString(),
+      parentId:crypto.randomUUID(),dependencies:[],attemptOf:null,result:'',error:null,usage:[],
+      delegation:{schemaVersion:1,toolNames:[],modelKey:null,context:'',maxTokens:null,maxCostUsd:null,profile:'reviewer'}};
     let observed:string[]|null=null;
     await assert.rejects(new PiHarness(root,'cohere/north-mini-code:free',undefined,registry).run({
       version:1,task,tools:[],signal:controller.signal,onText:()=>assert.fail(),onUsage:()=>assert.fail(),
