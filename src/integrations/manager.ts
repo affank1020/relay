@@ -172,8 +172,14 @@ export class ConnectionManager {
   }
   async tools(task:Task,store:Store,signal:AbortSignal,approve?:WriteApproval):Promise<ToolDefinition[]> {
     const result:ToolDefinition[]=[];
+    const delegated=!!task.parentId||!!task.delegation;
+    const admittedNames=task.delegation?.toolNames??[];
+    // Child MCP discovery occurs only for names explicitly granted by its
+    // parent's immutable delegation policy. This never includes writes.
+    if(delegated&&!admittedNames.some(name=>name.startsWith('mcp_')))return result;
     for(const config of this.configs){
-      if(!this.enabled(config.id)||!config.token)continue;
+      if(!this.enabled(config.id)||!config.token||
+        (delegated&&!admittedNames.some(name=>name.startsWith('mcp_'+config.id+'_'))))continue;
       try{
         const available=await this.transport(config).list(signal);
         signal.throwIfAborted();
@@ -187,6 +193,8 @@ export class ConnectionManager {
         this.writeInventory.set(config.id,admitted.filter(t=>isGitHubWrite(t.name)).map(t=>t.name));
         for(const tool of admitted){
           const name='mcp_'+config.id+'_'+tool.name;
+          // Root-only GitHub writes are never inherited by child agents.
+          if(delegated&&!task.delegation?.toolNames.includes(name))continue;
           result.push({
             name,label:config.label+' · '+tool.name,description:(tool.description??tool.name).slice(0,2000),
             parameters:Type.Unsafe<Record<string,unknown>>(tool.inputSchema),
@@ -220,8 +228,15 @@ export class ConnectionManager {
       // Preserve schema-v1 event compatibility until orchestration owns run schema.
       store.event(task.conversationId,{...fields,state,...{providerId:envelope.providerId}});
     };
-    // Check CURRENT server policy at invocation, not only at model discovery.
-    if(!this.enabled(config.id)||!config.readTools.includes(tool.name)||!config.token) {
+    // Revalidate both global and delegated read-tool scope at invocation.
+    const scoped=!!task.parentId||!!task.delegation;
+    const current=scoped?store.get<Task>('tasks',task.id):undefined;
+    const allowedName='mcp_'+config.id+'_'+tool.name;
+    if(!this.enabled(config.id)||!config.readTools.includes(tool.name)||!config.token ||
+      (scoped&&(!task.delegation?.toolNames.includes(allowedName)||
+        !current?.delegation?.toolNames.includes(allowedName)||
+        current.agentRunId!==task.agentRunId || current.parentId!==task.parentId ||
+        !['running','awaiting_approval'].includes(current.state)))) {
       emit('denied');throw new Error('MCP tool is not permitted');
     }
     const key=task.id+':'+callId;
