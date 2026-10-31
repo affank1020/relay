@@ -307,7 +307,7 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     }
     detail.append(actions);
     if(task.error)detail.append(node('p','task-error',task.error));
-    const resultHeading=node('h3','task-section-heading','Result');
+    const resultHeading=node('h3','task-section-heading task-result-heading','Result');
     resultHeading.hidden=!task.result;
     detail.append(resultHeading);
     // Keep a stable scroll container even before first output arrives.
@@ -525,14 +525,16 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     const task=data.task;
     const structure=detailStructureVersion(data);
     const oldResult=detail.querySelector('.task-result') as HTMLElement|null;
+    const oldHeading=detail.querySelector('.task-result-heading') as HTMLElement|null;
     const oldUsage=detail.querySelector('.task-usage') as HTMLElement|null;
     // Ordinary streaming output and usage receipts must not replace the
     // selected pane: preserve scroll position, focused controls and open
     // approval disclosures by mutating only the changing text nodes.
-    if(selectedData?.task.id===task.id&&selectedStructure===structure&&oldResult&&oldUsage) {
+    if(selectedData?.task.id===task.id&&selectedStructure===structure&&oldResult&&oldHeading&&oldUsage) {
       const scrollTop=oldResult.scrollTop;
       if(oldResult.textContent!==task.result)oldResult.textContent=task.result;
       oldResult.hidden=!task.result;
+      oldHeading.hidden=!task.result;
       oldResult.scrollTop=scrollTop;
       const usage=usageText(task.usage);
       if(oldUsage.textContent!==usage)oldUsage.textContent=usage;
