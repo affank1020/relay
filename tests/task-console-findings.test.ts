@@ -8,6 +8,7 @@ class Element {
   parentElement:Element|null=null;
   dataset:Record<string,string>={};
   className='';textContent='';value='';title='';hidden=false;disabled=false;
+  scrollTop=0;open=false;
   onclick:(()=>void)|null=null;
   onchange:(()=>void)|null=null;
   oninput:(()=>void)|null=null;
@@ -365,5 +366,100 @@ test('late history responses are ignored after a filter reset',async()=>{
     if(url.includes('&cursor='))
       return await new Promise<Response>(resolve=>{complete=resolve;});
     return mock(items,url,opts);
+  });
+});
+
+
+test('usage-only updates refresh live tokens and costs without replacing detail or disclosure',async()=>{
+  await withClock(async tick=>{
+    const item=numbered(1,'running');
+    item.result='Running output';
+    item.usage=[{input:10,output:5,cacheRead:0,cacheWrite:0,costUsd:0.001,costKind:'measured'}];
+    const approvals=[{id:'approval-usage',tool:'atlas_read',state:'pending',args:{projectId:'visible'}}];
+    await fixture(async get=>{
+      get('taskRows').children[0].onclick?.();await flush();
+      const pane=get('taskDetail').querySelector('.task-result');
+      const line=get('taskDetail').querySelector('.task-usage');
+      const disclosure=get('taskDetail').querySelector('.task-approval');
+      assert.ok(pane&&line&&disclosure);
+      disclosure.open=true;
+      assert.match(line.textContent,/15 tokens/);
+      assert.match(line.textContent,/\$0\.0010/);
+      item.usage=[...item.usage,{input:40,output:10,cacheRead:3,cacheWrite:0,costUsd:0.007,costKind:'estimated'}];
+      await tick();
+      assert.equal(get('taskDetail').querySelector('.task-usage'),line,'usage receipt updates existing DOM node');
+      assert.equal(get('taskDetail').querySelector('.task-result'),pane,'result element is not recreated');
+      assert.equal(get('taskDetail').querySelector('.task-approval'),disclosure,'approval disclosure survives usage-only updates');
+      assert.equal(disclosure.open,true);
+      assert.match(line.textContent,/65 tokens/);
+      assert.match(line.textContent,/\$0\.0080 estimated/);
+      item.usage=[{input:null,output:12,cacheRead:null,cacheWrite:null,costUsd:null,costKind:'unknown'}];
+      await tick();
+      assert.match(line.textContent,/incomplete/);
+      assert.match(line.textContent,/cost unavailable/);
+    },async(url,opts)=>{
+      if(url==='/task-console/tasks/'+item.id)
+        return response({task:item,conversation:sessions[0],children:[],approvals});
+      return mock([item],url,opts);
+    });
+  });
+});
+
+test('streaming result updates preserve scrolled output pane and interactive descendants',async()=>{
+  await withClock(async tick=>{
+    const item=numbered(1,'running');
+    item.result='Start '+'x'.repeat(9000);
+    const approvals=[{id:'approval-stream',tool:'atlas_read',state:'pending',args:{key:'public'}}];
+    await fixture(async get=>{
+      get('taskRows').children[0].onclick?.();await flush();
+      const pane=get('taskDetail').querySelector('.task-result');
+      const disclosure=get('taskDetail').querySelector('.task-approval');
+      assert.ok(pane&&disclosure);
+      pane.scrollTop=380;
+      disclosure.open=true;
+      item.result+=' next batch';
+      await tick();
+      assert.equal(get('taskDetail').querySelector('.task-result'),pane,'streaming must not replace the output pane');
+      assert.equal(pane.scrollTop,380);
+      assert.equal(pane.textContent,item.result);
+      assert.equal(get('taskDetail').querySelector('.task-approval'),disclosure);
+      assert.equal(disclosure.open,true);
+      item.result='BEGIN'+item.result.slice(5); // same length, different content
+      await tick();
+      assert.equal(pane.textContent,item.result,'equal-length replacement is still displayed');
+      assert.equal(pane.scrollTop,380);
+      // Structural changes may rebuild actions, but should restore the result scroll.
+      item.state='completed';
+      await tick();
+      assert.equal(get('taskDetail').querySelector('.task-result')?.scrollTop,380);
+      assert.equal(get('taskDetail').querySelector('.task-actions')?.children.some(x=>x.textContent==='Cancel task'),false);
+    },async(url,opts)=>{
+      if(url==='/task-console/tasks/'+item.id)
+        return response({task:item,conversation:sessions[0],children:[],approvals});
+      return mock([item],url,opts);
+    });
+  });
+});
+
+test('first result and first usage receipt become visible in stable detail containers',async()=>{
+  await withClock(async tick=>{
+    const item=numbered(1,'running');
+    await fixture(async get=>{
+      get('taskRows').children[0].onclick?.();await flush();
+      const pane=get('taskDetail').querySelector('.task-result');
+      const heading=get('taskDetail').querySelector('.task-result-heading');
+      const usage=get('taskDetail').querySelector('.task-usage');
+      assert.ok(pane&&heading&&usage);
+      assert.equal(pane.hidden,true);assert.equal(heading.hidden,true);assert.equal(usage.hidden,true);
+      item.result='First streamed text';
+      item.usage=[{input:2,output:4,cacheRead:0,cacheWrite:0,costUsd:0.0002,costKind:'estimated'}];
+      await tick();
+      assert.equal(get('taskDetail').querySelector('.task-result'),pane);
+      assert.equal(get('taskDetail').querySelector('.task-result-heading'),heading);
+      assert.equal(get('taskDetail').querySelector('.task-usage'),usage);
+      assert.equal(pane.hidden,false);assert.equal(heading.hidden,false);assert.equal(usage.hidden,false);
+      assert.equal(pane.textContent,'First streamed text');
+      assert.match(usage.textContent,/6 tokens/);
+    },async(url,opts)=>mock([item],url,opts));
   });
 });
