@@ -8,9 +8,6 @@ export type HarnessPhase = 'preparing_directories' | 'loading_model' | 'checking
 export interface HarnessRequest { version:1; task:Task; modelKey?:string; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; }
 export interface Harness { readonly version:1; readonly capabilities: { persistence:boolean; cancellation:boolean; tools:boolean }; run(request:HarnessRequest):Promise<string>; }
 const count=(n:unknown)=>typeof n==='number' && Number.isFinite(n) && n>=0?n:null;
-/** Ollama requires a loopback Host header behind Tailscale Serve. */
-export const OLLAMA_HOST_HEADERS = Object.freeze({Host:'localhost:11434'});
-
 export const isPiRateLimited=(detail:unknown):boolean=>typeof detail==='string' && /\b429\b|\brate[\s_-]?limit(?:ed|ing)?\b/i.test(detail);
 export class ProviderRateLimitError extends Error { constructor(){super('OpenRouter rate limit');this.name='ProviderRateLimitError';} }
 export class LocalProviderUnavailableError extends Error { constructor(readonly reason:'offline'|'missing_model'){super(reason);this.name='LocalProviderUnavailableError';} }
@@ -30,7 +27,6 @@ export class PiHarness implements Harness {
     this.runtime ??= ModelRuntime.create({allowModelNetwork:true,modelRefreshTimeoutMs:15000,authPath:join(agentDir,'auth.json'),modelsPath:null}).then(runtime=>{
       if(this.registry?.ollama)runtime.registerProvider('ollama',{
         baseUrl:this.registry.ollama.baseUrl,api:'openai-completions',apiKey:'ollama',
-        headers:OLLAMA_HOST_HEADERS,
         models:this.registry.ollama.modelIds.map(id=>({id,name:id,reasoning:false,input:['text' as const],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:8192,maxTokens:4096,compat:{supportsDeveloperRole:false,supportsReasoningEffort:false}}))
       });
       return runtime;
@@ -46,7 +42,7 @@ export class PiHarness implements Harness {
     if(provider==='ollama'){
       onPhase?.('checking_local_provider');
       let response:Response;
-      try { response=await fetch(this.registry!.ollama!.baseUrl+'/models',{headers:OLLAMA_HOST_HEADERS,signal:AbortSignal.any([signal,AbortSignal.timeout(4500)])}); }
+      try { response=await fetch(this.registry!.ollama!.baseUrl+'/models',{signal:AbortSignal.any([signal,AbortSignal.timeout(4500)])}); }
       catch { signal.throwIfAborted();throw new LocalProviderUnavailableError('offline'); }
       if(!response.ok)throw new LocalProviderUnavailableError('offline');
       let listing:unknown;
