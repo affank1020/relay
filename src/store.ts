@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import type { AtlasContext } from './atlas-context.js';
+import type { AtlasResourceObservation } from './atlas-awareness.js';
 
 export type State = 'queued' | 'running' | 'awaiting_approval' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export interface Conversation { id: string; title: string; createdAt: string; modelKey?: string; manualTitle?: boolean; atlasContext?: AtlasContext|null; }
@@ -12,6 +13,8 @@ export interface ExecutionEvent {
   type: string; state: string; tool: string | null; atlasOperationId: string | null;
   projectId: string | null; workspaceId: string | null; selectedNodeId: string | null;
   executingNodeId: string | null; text?: string; textOffset?: number;
+  /** Schema-v1, bounded and allowlisted Atlas observation. */
+  atlasResource?: AtlasResourceObservation;
 }
 export interface Approval { id: string; taskId: string; invocationId: string; tool: string; args: Record<string, unknown>; state: 'pending' | 'approved' | 'rejected'; }
 // Additive invocation metadata; older Atlas records intentionally lack kind.

@@ -644,3 +644,20 @@ dialog #deleteName { color: var(--text); overflow-wrap: anywhere; }
 .capability-description {font-size:11px;color:var(--text-muted);margin-top:4px;}
 .capability-state {font-size:11px;color:var(--text-muted);white-space:nowrap;}
 .capability-row .capability-name {font-size:13px;}
+
+
+/* Atlas context is evidence-driven and appears only beneath an observed tool run. */
+.atlas-awareness { display: grid; gap: 7px; margin: 9px 0 12px; }
+.atlas-awareness[hidden] { display: none; }
+.atlas-observed { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 12px; }
+.atlas-observed summary { list-style: none; cursor: pointer; }
+.atlas-observed summary::-webkit-details-marker { display: none; }
+.atlas-observed-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; }
+.atlas-observed-head:hover { background: var(--surface-hover); }
+.atlas-observed-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-weight: 550; }
+.atlas-observed-status { flex: none; color: var(--text-muted); font-size: 11px; }
+.atlas-observed-body { display: grid; gap: 6px; padding: 0 12px 12px; }
+.atlas-observed-git { color: var(--text); overflow-wrap: anywhere; }
+.atlas-observed-muted { color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
+.atlas-observed-path { color: var(--text-secondary); font: 11px/1.55 ui-monospace, SFMono-Regular, monospace; overflow-wrap: anywhere; }
+.atlas-observed-worktrees { display: grid; gap: 4px; }

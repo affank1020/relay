@@ -3,6 +3,8 @@ import { renderMarkdown } from './markdown.js';
 import { mountTaskConsole } from './task-console.js';
 import { AtlasContextPicker } from './atlas-picker.js';
 import type { AtlasContext } from './atlas-context.js';
+import { projectAtlasCheckouts } from './atlas-awareness.js';
+import { renderAtlasCheckoutViews } from './atlas-awareness-ui.js';
 import { readLiveChatEvents } from './live-chat.js';
 interface Summary { id:string; title:string; modelKey?:string; atlasContext?:AtlasContext|null; busy:boolean; costUsd:number; usage:{costKind:string;tokens:number;unknown:boolean}; }
 interface Snapshot { session:Summary; tasks:Task[]; approvals:Approval[]; }
@@ -28,11 +30,14 @@ const activity:ExecutionEvent[]=[];
 // One latest event per tool invocation is retained for each task, including old
 // turns and paginated history replayed when a conversation is reopened.
 const toolReceipts=new Map<string,Map<string,ExecutionEvent>>();
+// Session-scoped observations are indexed by durable event ID for replay
+// and also consumed by the live stream (one shared ingestion path).
+const atlasObservations=new Map<string,ExecutionEvent>();
 let receiptVersion=0;
 // Keep a stable DOM node for each turn. Stream updates must not remount the
 // conversation, which would lose selection, focus and expanded tool details.
 interface MessageRow {
-  assistant:HTMLElement; tools:HTMLElement; content:HTMLElement|null;
+  assistant:HTMLElement; tools:HTMLElement; awareness:HTMLElement; awarenessKey:string; content:HTMLElement|null;
   status:HTMLElement; error:HTMLElement; retry:HTMLButtonElement;
   result:string; terminal:boolean; receiptKey:string;
 }
@@ -48,6 +53,13 @@ function indexToolReceipt(event:ExecutionEvent){
   if(task.get(event.invocationId)?.id===event.id)return;
   task.set(event.invocationId,event);
   receiptVersion++;
+}
+function indexAtlasObservation(event:ExecutionEvent){
+  if(event.type!=='atlas_resource'&&!(event.type==='tool'&&event.workspaceId&&
+    ['failed','denied','cancelled'].includes(event.state)))return;
+  if(atlasObservations.has(event.id))return;
+  atlasObservations.set(event.id,event);
+  if(atlasObservations.size>3000)atlasObservations.delete(atlasObservations.keys().next().value!);
 }
 let configuredModels:{key:string;label:string}[]=[];
 let knownSessions:Summary[]=[];
@@ -89,7 +101,7 @@ function openSessionMenu(id:string,anchor:HTMLButtonElement){
 }
 function resetSelection(){
   disconnectStream();
-  epoch++;current=null;cursor=0;resetConversationView();activity.length=0;toolReceipts.clear();receiptVersion=0;
+  epoch++;current=null;cursor=0;resetConversationView();activity.length=0;toolReceipts.clear();atlasObservations.clear();receiptVersion=0;
   if(timer)clearTimeout(timer);timer=undefined;
   $('activity').replaceChildren();$('approvals').replaceChildren();$('messages').replaceChildren(emptyConversation());
   $('title').textContent='New chat';$('cost').textContent='0 tokens';
@@ -243,6 +255,7 @@ function render(data:Snapshot){
     renderSessions();
   }
   const messages=$('messages');
+  const observedViews=projectAtlasCheckouts([...atlasObservations.values()]);
   const firstPaint=!lastView;
   const nearBottom=messages.scrollHeight-messages.scrollTop-messages.clientHeight<120;
   if(!data.tasks.length) {
@@ -256,6 +269,7 @@ function render(data:Snapshot){
         const assistant=el('div','message assistant','');
         const tools=el('div','inline-tools','');
         tools.hidden=true;
+        const awareness=el('div','atlas-awareness','');awareness.hidden=true;
         const status=el('p','status-line','');
         const error=el('p','error','');error.hidden=true;
         const retry=el('button','action','Retry in new conversation') as HTMLButtonElement;
@@ -264,9 +278,9 @@ function render(data:Snapshot){
           if(!window.confirm('Confirm you have checked Atlas for any completed or uncertain tool effects. A retry may repeat work.'))return;
           try {const r=await (await api('/tasks/'+task.id+'/retry',{method:'POST',body:'{"reconciled":true}'})).json() as {task:Task};await select(r.task.conversationId);}catch(e){notify(e);}
         };
-        assistant.append(tools,status,error,retry);
+        assistant.append(tools,awareness,status,error,retry);
         messages.append(assistant);
-        row={assistant,tools,content:null,status,error,retry,result:'',terminal:false,receiptKey:''};
+        row={assistant,tools,awareness,awarenessKey:'',content:null,status,error,retry,result:'',terminal:false,receiptKey:''};
         messageRows.set(task.id,row);
       }
       const events=currentToolEvents(task.id);
@@ -280,6 +294,13 @@ function render(data:Snapshot){
         }
         row.tools.hidden=events.length===0;
         row.receiptKey=receiptKey;
+      }
+      const matching=observedViews.filter(view=>view.taskId===task.id);
+      const awarenessKey=JSON.stringify(matching)+'|'+matching.map(view=>
+        view.gitObservedAt&&Date.now()-Date.parse(view.gitObservedAt)>5*60_000?'stale':'recent').join(',');
+      if(row.awarenessKey!==awarenessKey){
+        renderAtlasCheckoutViews(row.awareness,matching);
+        row.awarenessKey=awarenessKey;
       }
       const terminal=['completed','failed','interrupted','cancelled'].includes(task.state);
       // During generation, reuse a single text node instead of reparsing and
@@ -360,7 +381,7 @@ function renderActivity(){
       item.append(el('span','event-sub',new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})));
       summary.append(item,el('span','event-open','⌄'));
       details.append(summary);
-      const fields={state:e.state,timestamp:e.timestamp,task:e.taskId,agentRun:e.agentRunId,invocation:e.invocationId,atlasOperation:e.atlasOperationId,project:e.projectId,workspace:e.workspaceId,selectedNode:e.selectedNodeId,executingNode:e.executingNodeId??'Not confirmed'};
+      const fields={state:e.state,timestamp:e.timestamp,task:e.taskId,agentRun:e.agentRunId,invocation:e.invocationId,atlasOperation:e.atlasOperationId,project:e.projectId,workspace:e.workspaceId,selectedNode:e.selectedNodeId,executingNode:e.executingNodeId??'Not confirmed',resources:e.atlasResource?.resources,evidence:e.atlasResource?.evidenceSource};
       details.append(el('pre','',JSON.stringify(fields,null,2)));
     }
     if(parent.children[index]!==details)parent.insertBefore(details,parent.children[index]??null);
@@ -383,6 +404,7 @@ async function poll(){
     for(const event of replay.events){
       if(event.sequence<=cursor||event.type==='delta')continue;
       indexToolReceipt(event);
+    indexAtlasObservation(event);
       if(event.type==='phase'&&event.taskId)taskPhases.set(event.taskId,event.state);
       activity.push(event);
     }
@@ -462,6 +484,7 @@ function applyLiveBatch(events:ExecutionEvent[]){
       continue;
     }
     indexToolReceipt(event);
+    indexAtlasObservation(event);
     if(event.type==='phase'&&event.taskId)taskPhases.set(event.taskId,event.state);
     activity.push(event);activityChanged=true;
     needsSnapshot=true;
@@ -503,7 +526,7 @@ async function connectStream(id:string,generation:number){
 async function select(id:string){
   closeTaskConsole();
   disconnectStream();
-  epoch++;current=id;cursor=0;resetConversationView();activity.length=0;toolReceipts.clear();receiptVersion=0;$('activity').replaceChildren();remember('relay.conversation',id);
+  epoch++;current=id;cursor=0;resetConversationView();activity.length=0;toolReceipts.clear();atlasObservations.clear();receiptVersion=0;$('activity').replaceChildren();remember('relay.conversation',id);
   const generation=epoch;const data=await get<Snapshot>('/sessions/'+id);
   if(generation!==epoch)return;
   render(data);await refresh();
