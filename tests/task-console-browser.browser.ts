@@ -14,6 +14,9 @@ test('real Chromium preserves task output scrolling through streaming and state 
     const page=await browser.newPage({viewport:{width:1000,height:760}});
     await page.setContent('<!doctype html><html><head><style>.task-result {max-height:90px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;width:360px;font:12px monospace}</style></head><body><section id="taskConsole" hidden><div id="taskCounts"></div><select id="taskConversationFilter"></select><input id="taskSearch"><button id="taskRefresh"></button><div id="taskFeedback"></div><div id="taskRows"></div><button id="taskMore"></button><section id="taskDetail"></section></section></body></html>');
     await page.addScriptTag({content:bundle.outputFiles[0].text});
+    // tsx/esbuild injects a non-runtime __name helper into serialized
+    // page.evaluate callbacks; expose its no-op equivalent in the browser.
+    await page.addScriptTag({content:'var __name=(target,name)=>target;'});
     await page.evaluate(async()=>{
       const app=(window as any).RelayTaskConsole;
       const id='11111111-1111-1111-1111-111111111111';
