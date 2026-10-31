@@ -35,7 +35,7 @@ test('malformed persistent policy cannot enable Skills',async()=>{
 });
 
 test('configured remote endpoints require explicit host allowlists and GitHub is read only',()=>{
-  assert.throws(()=>configuredProviders({RELAY_MCP_PROVIDERS:JSON.stringify([{id:'evil',label:'Evil',url:'http://127.0.0.1:9000',tokenEnv:'RELAY_MCP_TOKEN_EVIL',readTools:['read']}])}),/allowlisted/);
+  assert.throws(()=>configuredProviders({RELAY_MCP_PROVIDERS:JSON.stringify([{id:'evil',label:'Evil',url:'http://127.0.0.1:9000',tokenEnv:'RELAY_MCP_TOKEN_EVIL',readTools:['read_docs']}])}),/allowlisted/);
   const providers=configuredProviders({RELAY_GITHUB_TOKEN:'secret'});
   assert.equal(providers.length,1);
   assert.ok(!providers[0].readTools.includes('create_issue'));
