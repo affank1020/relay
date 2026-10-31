@@ -303,5 +303,5 @@ $('showTasks').onclick=async()=>{
   }catch(e){notify(e);}
 };
 // Refresh local model availability while Relay is visible, without restarting a conversation.
-setInterval(()=>{if(document.visibilityState!=='hidden')void refresh().catch(()=>{});},60_000);
+window.setInterval?.(()=>{if(document.visibilityState!=='hidden')void refresh().catch(()=>{});},60_000);
 void bootstrap();
