@@ -353,3 +353,33 @@ test('one failed MCP RPC does not terminate another agent sharing the client',as
     assert.equal(generations,2,'next discovery gets a fresh connection');
   }finally{await provider.close();}
 });
+
+test('minimal MCP reconciliation audit survives durable conversation deletion and restart',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'relay-retired-reads-'));
+  const dbPath=join(root,'relay.sqlite');
+  const id=crypto.randomUUID(),taskId=crypto.randomUUID();
+  const task={
+    id:taskId,conversationId:id,requestId:'durable-test',prompt:'sensitive prompt',
+    state:'completed',createdAt:new Date().toISOString(),parentId:null,
+    dependencies:[],attemptOf:null,result:'sensitive output',error:null,usage:[]
+  } as Task;
+  let store=new Store(dbPath);
+  try{
+    store.save('conversations',{id,title:'sensitive title',createdAt:new Date().toISOString()});
+    store.save('tasks',task);
+    store.save('invocations',{id:taskId+':read',kind:'mcp_read',state:'reconciled_read',
+      toolName:'mcp_github_issue_read',invocationId:crypto.randomUUID(),reconciledAt:'2026-10-31T21:00:00.000Z'});
+    store.event(id,{taskId,type:'reconciliation',state:'read_reconciled'});
+    store.purgeConversation(id,[task]);
+    store.checkpointDeletedHistory();
+    store.close();
+    store=new Store(dbPath);
+    const receipt=store.db.prepare('SELECT * FROM retired_read_reconciliations WHERE conversation_id=?')
+      .get(id) as {conversation_id:string;read_count:number;acknowledged_at:string}|undefined;
+    assert.deepEqual(receipt,{conversation_id:id,read_count:1,acknowledged_at:'2026-10-31T21:00:00.000Z'});
+    assert.equal(store.get('conversations',id),undefined);
+    assert.deepEqual(store.events(id),[]);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM invocations').get()?.count,0);
+    assert.doesNotMatch(JSON.stringify(receipt),/sensitive|mcp_github_issue_read/);
+  }finally{store.close();await rm(root,{recursive:true,force:true});}
+});
