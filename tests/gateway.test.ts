@@ -97,3 +97,26 @@ test('approval rejection and cancellation never dispatch the mutation',async()=>
     }finally{await engine.stop();store.close();}
   }
 });
+
+test('delegated workspace read uses private placement checks without exposing their capabilities',async()=>{
+  const c=context(),calls:string[]=[];
+  c.task.parentId='parent-task-id';
+  c.task.delegation={schemaVersion:1,toolNames:['atlas_workspace_read_file'],modelKey:null,
+    context:'',maxTokens:null,maxCostUsd:null};
+  const gateway=new Gateway(c.store,transport(async name=>{
+    calls.push(name);
+    if(name==='get_workspace')return result({nodeId:node,status:'active'});
+    if(name==='get_node')return result({status:'online',capabilities:['workspace.files']});
+    return result({path:'README.md',content:'verified'});
+  }),{},async()=>{});
+  try{
+    const response=await gateway.invoke(c.task,'requested-file','workspace_read_file',
+      {checkoutId:checkout,path:'README.md'},c.signal);
+    assert.deepEqual(calls,['get_workspace','get_node','workspace_read_file']);
+    assert.match(JSON.stringify(response),/verified/);
+    await assert.rejects(gateway.invoke(c.task,'direct-node','get_node',{nodeId:node},c.signal),/capability denied/);
+    await assert.rejects(gateway.invoke(c.task,'mutation','workspace_run_dev_task',{},c.signal),/capability denied/);
+    assert.deepEqual(calls,['get_workspace','get_node','workspace_read_file']);
+    assert.equal(c.store.events('conversation').filter(e=>e.tool==='get_node').at(-1)?.state,'completed');
+  }finally{c.store.close();}
+});

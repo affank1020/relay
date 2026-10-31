@@ -230,7 +230,7 @@ test('HTTP contract enforces bearer token, origin, validation, 409 conflict and 
   });
 });
 
-test('V1 -> V2 migration keeps existing data and is safe on repeated open',async()=>{
+test('V1 -> V3 migration keeps existing data and is safe on repeated open',async()=>{
   const root=await mkdtemp(join(tmpdir(),'relay-migrate-'));
   const path=join(root,'old.sqlite');
   try{
@@ -246,7 +246,7 @@ test('V1 -> V2 migration keeps existing data and is safe on repeated open',async
     db.close();
     for(let i=0;i<2;i++){
       const store=new Store(path);
-      assert.equal((store.db.prepare('PRAGMA user_version').get() as {user_version:number}).user_version,2);
+      assert.equal((store.db.prepare('PRAGMA user_version').get() as {user_version:number}).user_version,3);
       assert.equal(store.get<{title:string}>('conversations',c.id)?.title,'Pre-migration');
       assert.equal(store.retiredUsage().count,0);
       store.close();
