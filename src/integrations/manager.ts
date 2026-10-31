@@ -180,7 +180,8 @@ export class ConnectionManager {
         this.states.set(config.id,'ready');
         const admitted=available.filter(t=>
           (config.readTools.includes(t.name) ||
-            (config.id==='github'&&!!approve&&!!config.writeRepositories?.length&&isGitHubWrite(t.name))) &&
+            (config.id==='github'&&!!approve&&!task.parentId&&!task.delegation &&
+              !!config.writeRepositories?.length&&isGitHubWrite(t.name))) &&
           validTool(t.name) && safeSchema(t.inputSchema)).slice(0,32);
         this.inventory.set(config.id,admitted.filter(t=>config.readTools.includes(t.name)).map(t=>t.name));
         this.writeInventory.set(config.id,admitted.filter(t=>isGitHubWrite(t.name)).map(t=>t.name));

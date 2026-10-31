@@ -582,14 +582,26 @@ export class Engine {
     const approval:Approval={id:randomUUID(),taskId:task.id,invocationId,tool,args,state:'pending'};
     this.store.save('approvals',approval);task.state='awaiting_approval';this.store.save('tasks',task);
     this.store.event(task.conversationId,{taskId:task.id,agentRunId:task.agentRunId??null,agentId:task.agentId??null,invocationId,type:'approval',tool,state:'pending'});
-    while(true) {
-      signal.throwIfAborted();
-      const current=this.store.get<Approval>('approvals',approval.id)!;
-      if(current.state!=='pending') {
-        if(current.state==='rejected')throw new Error('Approval rejected');
-        task.state='running';this.store.save('tasks',task);return;
+    try {
+      while(true) {
+        signal.throwIfAborted();
+        const current=this.store.get<Approval>('approvals',approval.id)!;
+        if(current.state!=='pending') {
+          if(current.state==='rejected')throw new Error('Approval rejected');
+          task.state='running';this.store.save('tasks',task);return;
+        }
+        await delay(200,undefined,{signal});
       }
-      await delay(200,undefined,{signal});
+    }catch(error){
+      // Aborted/killed tasks must not leave an actionable approval in the UI.
+      const current=this.store.get<Approval>('approvals',approval.id);
+      if(current?.state==='pending'){
+        current.state='rejected';
+        this.store.save('approvals',current);
+        this.store.event(task.conversationId,{taskId:task.id,agentId:task.agentId??null,
+          agentRunId:task.agentRunId??null,invocationId,tool,type:'approval',state:'rejected'});
+      }
+      throw error;
     }
   }
   decide(id:string,approved:boolean) {

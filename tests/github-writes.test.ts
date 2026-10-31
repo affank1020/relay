@@ -49,7 +49,7 @@ test('GitHub write repositories are operator-only, exact and bounded',()=>{
   assert.deepEqual(githubWriteRepositories(undefined),[]);
   assert.deepEqual(githubWriteRepositories('affank1020/Relay,Demo/repo'),['affank1020/relay','demo/repo']);
   for(const raw of ['owner/*','owner/repo,owner/REPO','../repo','a/repo,a/repo',
-    'https://example.com/repo','owner/repo/path','owner/.','a/repo,',Array(9).fill('a/repo'+Math.random()).join(',')])
+    'https://example.com/repo','owner/repo/path','owner/.','a/repo,',Array.from({length:9},(_,i)=>'owner/repo'+i).join(',')])
     assert.throws(()=>githubWriteRepositories(raw),/Invalid|Duplicate/);
   assert.deepEqual(approvedGitHubWriteArgs('add_issue_comment',argumentsForComment,['affank1020/relay']),
     argumentsForComment);
@@ -80,10 +80,9 @@ test('writes are absent without operator allowlist/approval and never reach chil
     const noApproval=await comment(manager,task,store,new AbortController().signal);
     assert.deepEqual(noApproval.map(t=>t.name),['mcp_github_issue_read']);
     const child=await comment(manager,{...task,parentId:randomUUID()},store,new AbortController().signal,async()=>{});
-    // Child scope is checked at invocation even if a tool wrapper was retained.
-    const childWrite=child.find(t=>t.name==='mcp_github_add_issue_comment');
-    assert.ok(childWrite);
-    await assert.rejects(childWrite.execute('child',argumentsForComment,new AbortController().signal,undefined,{} as never),/not permitted/);
+    // Child agents never even see the mutation tool. A retained wrapper is
+    // still denied independently at invocation.
+    assert.deepEqual(child.map(t=>t.name),['mcp_github_issue_read']);
     assert.equal(calls,0);
     assert.deepEqual(manager.list()[0].availableWriteTools,['add_issue_comment','create_issue']);
   }finally{await manager.close();await ro.close();store.close();}
