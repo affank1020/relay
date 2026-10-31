@@ -15,6 +15,18 @@ const activity:ExecutionEvent[]=[];
 // turns and paginated history replayed when a conversation is reopened.
 const toolReceipts=new Map<string,Map<string,ExecutionEvent>>();
 let receiptVersion=0;
+// Keep a stable DOM node for each turn. Stream updates must not remount the
+// conversation, which would lose selection, focus and expanded tool details.
+interface MessageRow {
+  assistant:HTMLElement; tools:HTMLElement; content:HTMLElement|null;
+  status:HTMLElement; error:HTMLElement; retry:HTMLButtonElement;
+  result:string; terminal:boolean; receiptKey:string;
+}
+const messageRows=new Map<string,MessageRow>();
+const taskPhases=new Map<string,string>();
+function resetConversationView(){
+  messageRows.clear();taskPhases.clear();lastView='';
+}
 function indexToolReceipt(event:ExecutionEvent){
   if(event.type!=='tool'||!event.invocationId||!event.taskId)return;
   let task=toolReceipts.get(event.taskId);
@@ -62,7 +74,7 @@ function openSessionMenu(id:string,anchor:HTMLButtonElement){
   $<HTMLButtonElement>('menuRename').focus();
 }
 function resetSelection(){
-  epoch++;current=null;cursor=0;lastView='';activity.length=0;toolReceipts.clear();receiptVersion=0;
+  epoch++;current=null;cursor=0;resetConversationView();activity.length=0;toolReceipts.clear();receiptVersion=0;
   if(timer)clearTimeout(timer);timer=undefined;
   $('activity').replaceChildren();$('approvals').replaceChildren();$('messages').replaceChildren(emptyConversation());
   $('title').textContent='New chat';$('cost').textContent='0 tokens';
@@ -213,39 +225,80 @@ function render(data:Snapshot){
     known.busy=data.session.busy;
     renderSessions();
   }
-  const serialized=JSON.stringify(data.tasks)+'|'+receiptVersion;
-  if(serialized!==lastView){
-    const messages=$('messages');const nearBottom=messages.scrollHeight-messages.scrollTop-messages.clientHeight<120;
-    messages.replaceChildren();
-    if(!data.tasks.length)messages.append(emptyConversation());
+  const messages=$('messages');
+  const firstPaint=!lastView;
+  const nearBottom=messages.scrollHeight-messages.scrollTop-messages.clientHeight<120;
+  if(!data.tasks.length) {
+    if(lastView!=='empty'){messages.replaceChildren(emptyConversation());lastView='empty';}
+  } else {
+    if(messageRows.size===0)messages.replaceChildren();
     for(const task of data.tasks){
-      const user=el('div','message user',task.prompt);messages.append(user);
-      const assistant=el('div','message assistant','');
-      const events=currentToolEvents(task.id);
-      if(events.length){
+      let row=messageRows.get(task.id);
+      if(!row){
+        messages.append(el('div','message user',task.prompt));
+        const assistant=el('div','message assistant','');
         const tools=el('div','inline-tools','');
-        for(const event of events){
-          const pill=el('div','tool-pill '+event.state,'');
-          pill.append(el('strong','',toolLabel(event.tool)),el('span','tool-state',event.state));
-          tools.append(pill);
-        }
-        assistant.append(tools);
-      }
-      if(task.result)assistant.append(renderMarkdown(task.result));
-      else if(task.error)assistant.append(el('p','error',task.error));
-      else assistant.append(el('p','status-line',task.state==='queued'?'Waiting for available agent…':'Working on your request…'));
-
-      if(task.error&&task.result)assistant.append(el('p','error',task.error));
-      if(['failed','interrupted','cancelled'].includes(task.state)){
+        tools.hidden=true;
+        const status=el('p','status-line','');
+        const error=el('p','error','');error.hidden=true;
         const retry=el('button','action','Retry in new conversation') as HTMLButtonElement;
-        retry.onclick=async()=>{if(!window.confirm('Confirm you have checked Atlas for any completed or uncertain tool effects. A retry may repeat work.'))return;try{const r=await (await api('/tasks/'+task.id+'/retry',{method:'POST',body:'{"reconciled":true}'})).json() as {task:Task};await select(r.task.conversationId);}catch(e){notify(e);}};
-        assistant.append(retry);
+        retry.hidden=true;
+        retry.onclick=async()=>{
+          if(!window.confirm('Confirm you have checked Atlas for any completed or uncertain tool effects. A retry may repeat work.'))return;
+          try {const r=await (await api('/tasks/'+task.id+'/retry',{method:'POST',body:'{"reconciled":true}'})).json() as {task:Task};await select(r.task.conversationId);}catch(e){notify(e);}
+        };
+        assistant.append(tools,status,error,retry);
+        messages.append(assistant);
+        row={assistant,tools,content:null,status,error,retry,result:'',terminal:false,receiptKey:''};
+        messageRows.set(task.id,row);
       }
-      messages.append(assistant);
+      const events=currentToolEvents(task.id);
+      const receiptKey=events.map(event=>event.id+':'+event.state).join('|');
+      if(receiptKey!==row.receiptKey){
+        row.tools.replaceChildren();
+        for(const event of events){
+          const pill=el('span','tool-pill '+event.state,'');
+          pill.append(el('strong','',toolLabel(event.tool)),el('span','tool-state',event.state.replace(/_/g,' ')));
+          row.tools.append(pill);
+        }
+        row.tools.hidden=events.length===0;
+        row.receiptKey=receiptKey;
+      }
+      const terminal=['completed','failed','interrupted','cancelled'].includes(task.state);
+      // During generation, reuse a single text node instead of reparsing and
+      // remounting all Markdown on every poll. Format once at completion.
+      if(task.result!==row.result || terminal!==row.terminal){
+        if(task.result){
+          if(!terminal && row.content?.className==='streaming-text'){
+            row.content.textContent=task.result;
+          }else{
+            const next=terminal?renderMarkdown(task.result):el('div','streaming-text',task.result);
+            row.assistant.insertBefore(next,row.status);
+            row.content?.remove();
+            row.content=next;
+          }
+        }else {row.content?.remove();row.content=null;}
+        row.result=task.result;row.terminal=terminal;
+      }
+      const activeTool=[...events].reverse().find(event=>['started','validating','running','awaiting_approval'].includes(event.state));
+      const phase=taskPhases.get(task.id);
+      const label=task.state==='queued'?'Queued for an agent':
+        task.state==='awaiting_approval'?'Waiting for approval':
+        activeTool?'Using '+toolLabel(activeTool.tool)+'…':
+        task.result?'Responding…':
+        phase==='atlas_tool_discovery'?'Connecting to Atlas…':
+        ['opening_session','creating_session','pi_initialization'].includes(phase??'')?'Preparing session…':
+        phase==='finalizing_response'?'Finishing response…':'Thinking…';
+      row.status.hidden=terminal;
+      row.status.textContent=label;
+      row.status.className='status-line'+(task.state==='queued'?' is-queued':' is-active');
+      row.error.hidden=!task.error;
+      row.error.textContent=task.error??'';
+      row.retry.hidden=!['failed','interrupted','cancelled'].includes(task.state);
     }
-    if(nearBottom||!lastView)messages.scrollTop=messages.scrollHeight;
-    lastView=serialized;
+    lastView='active';
   }
+  if((nearBottom||firstPaint) && lastView!=='empty')messages.scrollTop=messages.scrollHeight;
   if(!taskConsole.visible)$('title').textContent=data.session.title;
   atlasPicker.setSession(data.session);
   const picker=$<HTMLSelectElement>('modelPicker');
@@ -303,6 +356,7 @@ async function poll(){
     for(const event of replay.events){
       if(event.sequence<=cursor||event.type==='delta')continue;
       indexToolReceipt(event);
+      if(event.type==='phase'&&event.taskId)taskPhases.set(event.taskId,event.state);
       activity.push(event);
     }
     cursor=replay.nextCursor;
@@ -326,12 +380,12 @@ async function poll(){
   finally{
     polling=false;
     if(timer)clearTimeout(timer);
-    if(current)timer=setTimeout(()=>{void poll();},600);
+    if(current)timer=setTimeout(()=>{void poll();},busy?250:850);
   }
 }
 async function select(id:string){
   closeTaskConsole();
-  epoch++;current=id;cursor=0;lastView='';activity.length=0;toolReceipts.clear();receiptVersion=0;$('activity').replaceChildren();remember('relay.conversation',id);
+  epoch++;current=id;cursor=0;resetConversationView();activity.length=0;toolReceipts.clear();receiptVersion=0;$('activity').replaceChildren();remember('relay.conversation',id);
   const generation=epoch;const data=await get<Snapshot>('/sessions/'+id);
   if(generation!==epoch)return;
   render(data);await refresh();void poll();
