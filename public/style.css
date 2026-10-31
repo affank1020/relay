@@ -9,3 +9,7 @@ button:focus-visible,textarea:focus-visible,input:focus-visible,summary:focus-vi
 #notice{font-size:12px;color:#d8b0a0;margin:0 24px 10px}.approval{border:1px solid #b9a1f8;border-radius:9px;margin:8px 24px;padding:14px;font-size:13px}.approval button{margin-right:8px}.error{color:#eaa0a0}#showTasks{margin-top:8px}#taskList{max-height:180px}
 @media(max-width:1000px){#inspector{position:fixed;right:0;top:65px;bottom:0;z-index:3;box-shadow:-10px 0 30px #0008}}
 @media(max-width:460px){aside{width:110px}.new,.session,footer{display:block}nav{display:block}.new{padding:8px;font-size:11px}.session{font-size:11px;padding:8px}footer{font-size:10px}.compose-row{gap:8px}}
+
+#modelPicker{max-width:210px;min-width:0;background:#282330;border:1px solid #554662;border-radius:7px;color:#eae8f1;padding:5px 7px;font-size:11px;cursor:pointer}
+#modelPicker:focus-visible{outline:2px solid #c9b3ff;outline-offset:2px}
+.meta{gap:9px;align-items:center;flex-wrap:wrap}.meta label{white-space:nowrap}
