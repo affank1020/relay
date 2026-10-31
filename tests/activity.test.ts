@@ -507,3 +507,49 @@ test('streaming updates preserve turn nodes and progress follows real events',as
   assert.ok(assistant.children.some(c=>c.className==='markdown'),'final output gets safe Markdown formatting');
   assert.ok(assistant.children.find(c=>c.className.startsWith('status-line'))!.hidden,'completed task has no thinking indicator');
 });
+
+test('live SSE batches append generated text without remounting or duplicating replay',async()=>{
+  const nodes=new Map<string,Element>();
+  const element=(id:string)=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id)!;};
+  const task={id:'t1',conversationId:'c1',prompt:'Hello Relay',result:'',state:'running',error:null,usage:[]};
+  let streamController:ReadableStreamDefaultController<Uint8Array>|undefined;
+  const encoder=new TextEncoder();
+  const context={
+    window:{location:{protocol:'https:'},sessionStorage:{getItem:()=>null,setItem:()=>{}}},
+    document:{getElementById:element,createElement:(tag:string)=>new Element(tag)},
+    Headers,Response,URL,AbortController,TextDecoder,
+    setTimeout:(_fn:()=>void)=>1,clearTimeout:()=>{},
+    fetch:async(url:string)=>{
+      if(url==='/api/status')return new Response(JSON.stringify({provider:'OpenRouter',model:'free',atlas:'configured'}));
+      if(url==='/api/sessions')return new Response(JSON.stringify({sessions:[{id:'c1',title:'Live'}]}));
+      if(url==='/api/sessions/c1')return new Response(JSON.stringify({session:{id:'c1',title:'Live',busy:true,costUsd:0,usage:{costKind:'estimated',tokens:0,unknown:false}},tasks:[task],approvals:[]}));
+      if(url.startsWith('/api/sessions/c1/events?after='))return new Response(JSON.stringify({events:[],nextCursor:0,hasMore:false}));
+      if(url.startsWith('/api/sessions/c1/stream?after=')){
+        const stream=new ReadableStream<Uint8Array>({start(controller){streamController=controller;controller.enqueue(encoder.encode(': connected\\n\\n'));}});
+        return new Response(stream,{headers:{'Content-Type':'text/event-stream'}});
+      }
+      throw Error('Unexpected '+url);
+    }
+  };
+  runInNewContext(source,context,{filename:'dist/public/app.js'});
+  await flush();
+  assert.ok(streamController,'stream should open after initial snapshot rehydration');
+  const messages=element('messages');
+  const user=messages.children[0],assistant=messages.children[1];
+  const emit=(sequence:number,text:string,offset:number)=>{
+    const item={...event('delta-'+sequence,sequence),taskId:'t1',type:'delta',state:'running',text,textOffset:offset};
+    streamController!.enqueue(encoder.encode('event: batch\\ndata: '+JSON.stringify({events:[item]})+'\\n\\n'));
+  };
+  emit(1,'Hi',2);await flush();
+  assert.strictEqual(messages.children[0],user);
+  assert.strictEqual(messages.children[1],assistant);
+  let streaming=assistant.children.find(x=>x.className==='streaming-text');
+  assert.ok(streaming);
+  assert.equal(streaming.textContent,'Hi');
+  emit(1,'Hi',2);emit(2,' there',8);await flush();
+  streaming=assistant.children.find(x=>x.className==='streaming-text');
+  assert.ok(streaming);
+  assert.equal(streaming.textContent,'Hi there','replayed event must not append twice');
+  assert.strictEqual(messages.children[1],assistant);
+  streamController?.close();
+});
