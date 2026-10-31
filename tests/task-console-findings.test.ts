@@ -380,7 +380,7 @@ test('usage-only updates refresh live tokens and costs without replacing detail 
       get('taskRows').children[0].onclick?.();await flush();
       const pane=get('taskDetail').querySelector('.task-result');
       const line=get('taskDetail').querySelector('.task-usage');
-      const disclosure=get('taskDetail').querySelector('.task-approval');
+      const disclosure=get('taskDetail').querySelector('.task-approval-disclosure');
       assert.ok(pane&&line&&disclosure);
       disclosure.open=true;
       assert.match(line.textContent,/15 tokens/);
@@ -389,7 +389,7 @@ test('usage-only updates refresh live tokens and costs without replacing detail 
       await tick();
       assert.equal(get('taskDetail').querySelector('.task-usage'),line,'usage receipt updates existing DOM node');
       assert.equal(get('taskDetail').querySelector('.task-result'),pane,'result element is not recreated');
-      assert.equal(get('taskDetail').querySelector('.task-approval'),disclosure,'approval disclosure survives usage-only updates');
+      assert.equal(get('taskDetail').querySelector('.task-approval-disclosure'),disclosure,'approval disclosure survives usage-only updates');
       assert.equal(disclosure.open,true);
       assert.match(line.textContent,/65 tokens/);
       assert.match(line.textContent,/\$0\.0080 estimated/);
@@ -413,7 +413,7 @@ test('streaming result updates preserve scrolled output pane and interactive des
     await fixture(async get=>{
       get('taskRows').children[0].onclick?.();await flush();
       const pane=get('taskDetail').querySelector('.task-result');
-      const disclosure=get('taskDetail').querySelector('.task-approval');
+      const disclosure=get('taskDetail').querySelector('.task-approval-disclosure');
       assert.ok(pane&&disclosure);
       pane.scrollTop=380;
       disclosure.open=true;
@@ -422,7 +422,7 @@ test('streaming result updates preserve scrolled output pane and interactive des
       assert.equal(get('taskDetail').querySelector('.task-result'),pane,'streaming must not replace the output pane');
       assert.equal(pane.scrollTop,380);
       assert.equal(pane.textContent,item.result);
-      assert.equal(get('taskDetail').querySelector('.task-approval'),disclosure);
+      assert.equal(get('taskDetail').querySelector('.task-approval-disclosure'),disclosure);
       assert.equal(disclosure.open,true);
       item.result='BEGIN'+item.result.slice(5); // same length, different content
       await tick();
