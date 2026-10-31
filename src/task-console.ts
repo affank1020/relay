@@ -166,6 +166,9 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       for(const id of newestIds)if(!incoming.has(id)&&!olderIds.has(id))tasks.delete(id);
       newestIds=incoming;
       for(const task of response.tasks)tasks.set(task.id,task);
+      const liveSelection=response.tasks.find(task=>task.id===selected);
+      if(liveSelection && (status!=='all'&&liveSelection.state!==status ||
+          conversation&&liveSelection.conversationId!==conversation))clearSelection();
       if(cursor===null) {cursor=response.nextCursor;hasMore=response.hasMore;}
       // An idle refresh updates the newest rows without discarding older pages.
       countView(response.counts);
@@ -189,8 +192,17 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     } catch(error) {message(errorText(error));}
     finally {more.disabled=false;}
   }
+  function clearSelection() {
+    // Invalidate any pending detail or event request before removing actionable controls.
+    detailEpoch++;
+    selected=null;selectedData=null;selectedFingerprint='';
+    events=[];eventCursor=0;eventMore=false;eventLoading=false;
+    eventList=null;eventMoreButton=null;
+    detail.replaceChildren(node('p','task-feedback','Select a task to inspect its work.'));
+  }
   async function reset() {
     listEpoch++;
+    clearSelection();
     cursor=null;hasMore=false;newestIds.clear();olderIds.clear();tasks.clear();rows.clear();list.replaceChildren();
     message('Loading tasks…');
     if(!visible)return;
@@ -242,7 +254,9 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     if(task.error)detail.append(node('p','task-error',task.error));
     if(task.result) {
       detail.append(node('h3','task-section-heading','Result'));
-      detail.append(node('p','task-result',task.result.length>2000?task.result.slice(0,2000)+'…':task.result));
+      // Full persisted output remains available without navigating away from the task.
+      // The pane itself is scroll-bounded in CSS rather than cutting off the response.
+      detail.append(node('div','task-result',task.result));
     }
     relation('Parent',task.parentId?[task.parentId]:[]);
     relation('Dependencies',task.dependencies);
@@ -310,8 +324,11 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       if(eventList.children[index]!==item)eventList.insertBefore(item,eventList.children[index]??null);
     }
     const placeholder=eventList.querySelector('.task-events-empty');
-    if(!items.length){if(!placeholder)eventList.append(node('p','task-feedback task-events-empty','No recorded events yet.'));}
-    else placeholder?.remove();
+    if(!items.length){
+      const emptyText=eventMore?'Scanning activity history…':'No recorded events yet.';
+      if(!placeholder)eventList.append(node('p','task-feedback task-events-empty',emptyText));
+      else placeholder.textContent=emptyText;
+    } else placeholder?.remove();
     if(eventMoreButton) {
       eventMoreButton.hidden=!eventMore;
       eventMoreButton.disabled=eventLoading;
@@ -320,23 +337,31 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
   async function loadEvents() {
     if(eventLoading||!selected||!selectedData||!visible)return;
     const generation=detailEpoch;
+    const taskId=selected;
     const conversationId=selectedData.task.conversationId;
     eventLoading=true;
     try {
-      const replay=await read<{events:ExecutionEvent[];nextCursor:number;hasMore:boolean}>('/sessions/'+conversationId+'/events?after='+eventCursor);
-      if(!visible||generation!==detailEpoch)return;
       const seen=new Set(events.map(event=>event.id));
-      for(const event of replay.events) {
-        if(event.taskId!==selected||event.type==='delta'||seen.has(event.id))continue;
-        seen.add(event.id);events.push(event);
+      // Existing /sessions/:id/events returns up to 500 events per page across
+      // ALL tasks in that conversation. Walk a bounded number of pages per tick
+      // so activity for a child task is not stranded behind unrelated events.
+      for(let page=0;page<4;page++) {
+        const replay=await read<{events:ExecutionEvent[];nextCursor:number;hasMore:boolean}>('/sessions/'+conversationId+'/events?after='+eventCursor);
+        if(!visible||generation!==detailEpoch||selected!==taskId)return;
+        if(!Number.isSafeInteger(replay.nextCursor)||replay.nextCursor<eventCursor||
+            replay.hasMore&&replay.nextCursor===eventCursor)throw new Error('Invalid activity cursor');
+        for(const event of replay.events) {
+          if(event.taskId!==taskId||event.type==='delta'||seen.has(event.id))continue;
+          seen.add(event.id);events.push(event);
+        }
+        if(events.length>120)events=events.slice(-120);
+        eventCursor=replay.nextCursor;
+        eventMore=replay.hasMore;
+        if(!eventMore)break;
       }
-      if(events.length>120)events=events.slice(-120);
-      eventCursor=replay.nextCursor;
-      eventMore=replay.hasMore;
       renderEvents();
     } catch(error) {
       if(generation===detailEpoch&&eventList)eventList.append(node('p','task-error','Activity unavailable: '+errorText(error)));
-      eventMore=false;
     } finally {
       if(generation===detailEpoch) {
         eventLoading=false;
@@ -362,19 +387,23 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
     }
   }
   async function mutate(path:string,payload:Record<string,unknown>,id:string,retry=false) {
-    if(busyAction||!visible)return;
+    if(busyAction||!visible||selected!==id||selectedData?.task.id!==id)return;
+    const generation=detailEpoch;
     busyAction=true;
     try {
       const response=await read<{task?:Task}>(path,{method:'POST',body:JSON.stringify(payload)});
-      if(!visible)return;
+      if(!visible||generation!==detailEpoch||selected!==id)return;
       await firstPage();
+      if(!visible||generation!==detailEpoch||selected!==id)return;
       if(retry&&response.task) {
         message('Retry queued in a new conversation.');
         await inspect(response.task.id);
       } else await inspect(id);
     } catch(error) {
-      message('Action not confirmed: '+errorText(error));
-      if(selected===id)await inspect(id);
+      if(generation===detailEpoch&&selected===id) {
+        message('Action not confirmed: '+errorText(error));
+        await inspect(id);
+      }
     } finally {busyAction=false;}
   }
   async function refreshSelected() {
@@ -384,7 +413,9 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       const data=await read<Detail>('/task-console/tasks/'+id);
       if(!visible||generation!==detailEpoch)return;
       if(detailVersion(data)!==selectedFingerprint)drawDetail(data);
-      if(!eventMore)await loadEvents();
+      // Continue any partial replay on every visible poll; once caught up,
+      // the same cursor also picks up new task events.
+      await loadEvents();
     } catch(error) {
       message('Task details may be stale: '+errorText(error));
     }
