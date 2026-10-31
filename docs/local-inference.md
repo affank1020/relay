@@ -14,12 +14,14 @@ The server persists all chat prompts/outputs on the VPS even for local inference
    within your private tailnet when prompted, then run:
 
    ```sh
-   tailscale serve --bg 11434
+   tailscale serve --https=10000 --bg 11434
    tailscale serve status
    ```
 
-   Save the HTTPS hostname printed by the command; it looks like
-   `https://<mac-name>.<tailnet-name>.ts.net`. Serve keeps the mapping
+   If ports 443 or 8443 are already serving other Mac applications, this
+   uses an independent HTTPS listener on port 10000 without replacing them.
+   Save the URL printed by the command; it looks like
+   `https://<mac-name>.<tailnet-name>.ts.net:10000`. Serve keeps the mapping
    across Tailscale restarts. **Do not use Tailscale Funnel or publicly bind
    Ollama to 0.0.0.0.** Ollama serves the entire API, including model-management
    operations: restrict tailnet grants/ACLs to the VPS and your own admin
@@ -32,7 +34,7 @@ The server persists all chat prompts/outputs on the VPS even for local inference
 2. On the VPS host:
 
    ```sh
-   curl --fail --max-time 10 https://<mac-name>.<tailnet-name>.ts.net/v1/models
+   curl --fail --max-time 10 https://<mac-name>.<tailnet-name>.ts.net:10000/v1/models
    ```
 
 3. Verify it **also works inside the Relay container**. Host DNS and Docker
@@ -42,7 +44,7 @@ The server persists all chat prompts/outputs on the VPS even for local inference
    cd ~/relay
    docker compose -f compose.yaml -f compose.ingress.yaml exec -T relay \
       node -e "fetch(process.argv[1],{signal:AbortSignal.timeout(10000)}).then(r=>{console.log('HTTP',r.status);if(!r.ok)process.exitCode=1}).catch(e=>{console.error(e.cause?.code||e.name);process.exitCode=1})" \
-      "https://<mac-name>.<tailnet-name>.ts.net/v1/models"
+      "https://<mac-name>.<tailnet-name>.ts.net:10000/v1/models"
    ```
 
    If the container cannot reach MagicDNS, inspect the VPS DNS and Tailscale
@@ -51,14 +53,14 @@ The server persists all chat prompts/outputs on the VPS even for local inference
 4. Add to the VPS-only `~/relay/.env`:
 
    ```dotenv
-   RELAY_OLLAMA_URL=https://<mac-name>.<tailnet-name>.ts.net/v1
+   RELAY_OLLAMA_URL=https://<mac-name>.<tailnet-name>.ts.net:10000/v1
    RELAY_OLLAMA_MODELS=<exact-4b-id-from-ollama-list>
    ```
 
    When larger models finish downloading, append the installed IDs
    comma-separated. Do not commit the private tailnet name or credentials.
-   The URL validator accepts only tailnet HTTPS and loopback HTTP for
-   development. Existing `RELAY_MODEL` and OpenRouter key remain in place.
+   The URL validator accepts tailnet HTTPS on standard port 443 or
+   Tailscale Serve ports 8443 and 10000, and loopback HTTP for development. Existing `RELAY_MODEL` and OpenRouter key remain in place.
 
 5. Merge the reviewed Relay PR; automatic deployment does not change
    `.env`. Recreate Relay after the private env update with
