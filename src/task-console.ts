@@ -89,7 +89,6 @@ export function mountTaskConsole(request:Request,openConversation:(id:string)=>P
       status=state;
       void reset();
     },'task-count');
-    control.dataset.status=state;
     const value=node('strong','','0');
     control.append(node('span','',state==='all'?'All':label(state)),value);
     countsRoot.append(control);
