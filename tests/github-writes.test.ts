@@ -84,11 +84,13 @@ test('writes are absent without operator allowlist/approval and never reach chil
       'mcp_github_add_issue_comment','mcp_github_create_issue']);
     assert.deepEqual(manager.list()[0].availableWriteTools,['add_issue_comment','create_issue']);
     const child=await comment(manager,{...task,parentId:randomUUID()},store,new AbortController().signal,async()=>{});
-    // Child agents never even see the mutation tool. A retained wrapper is
-    // still denied independently at invocation.
-    assert.deepEqual(child.map(t=>t.name),['mcp_github_issue_read']);
+    // New orchestration admission requires explicit read-tool delegation.
+    // An unscoped child has no MCP tools, and never gains the write path.
+    assert.deepEqual(child.map(t=>t.name),[]);
     assert.equal(calls,0);
-    assert.deepEqual(manager.list()[0].availableWriteTools,[]);
+    // Global provider inventory describes the last discovered root scope;
+    // per-agent tool admission is checked separately and never leaked.
+    assert.deepEqual(manager.list()[0].availableWriteTools,['add_issue_comment','create_issue']);
   }finally{await manager.close();await ro.close();store.close();}
 });
 
