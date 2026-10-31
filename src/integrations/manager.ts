@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Type } from '@sinclair/typebox';
-import { Value } from '@sinclair/typebox/value';
+import { supportedSchema, validRemoteArguments } from './schema.js';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { Store, Task, ExecutionEvent } from '../store.js';
 import { toolDisplayName, type ToolInvocationEnvelopeV1, type ToolInvocationState } from './contracts.js';
@@ -92,8 +92,7 @@ export class HttpProviderTransport implements ProviderTransport {
 const safeSchema=(schema:Record<string,unknown>):boolean=>{
   try {
     const serialized=JSON.stringify(schema);
-    return serialized.length<=16_384&&schema.type==='object'&&!serialized.includes('"$ref"')&&
-      !serialized.includes('"$dynamicRef"');
+    return serialized.length<=16_384&&schema.type==='object'&&supportedSchema(schema);
   }catch{return false;}
 };
 export class ConnectionManager {
@@ -165,7 +164,7 @@ export class ConnectionManager {
     const digest=createHash('sha256').update(JSON.stringify({provider:config.id,tool:tool.name,args})).digest('hex');
     if(store.get('invocations',key)){emit('denied');throw new Error('MCP invocation already recorded');}
     if(!args||typeof args!=='object'||Array.isArray(args)||!safeSchema(tool.inputSchema)||
-       !Value.Check(Type.Unsafe(tool.inputSchema),args)) {
+       !validRemoteArguments(tool.inputSchema,args)) {
       emit('denied');throw new Error('MCP arguments failed schema validation');
     }
     store.save('invocations',{id:key,digest,state:'validating'} as {id:string});
