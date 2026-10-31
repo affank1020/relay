@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { Store, type ExecutionEvent } from '../src/store.js';
+import { Store, type Conversation, type ExecutionEvent } from '../src/store.js';
 import { readLiveChatEvents } from '../src/live-chat.js';
 import { streamConversationEvents } from '../src/live-events.js';
 
@@ -34,7 +34,7 @@ test('SSE parser handles chunk boundaries and multiple batches without duplicati
 test('SSE replays durable events then delivers newly committed events until disconnected',async t=>{
   const store=new Store(':memory:');
   const conversationId='sse-conversation';
-  store.save('conversations',{id:conversationId,title:'Live chat',createdAt:new Date().toISOString()});
+  store.save('conversations',{id:conversationId,title:'Live chat',createdAt:new Date().toISOString()} satisfies Conversation);
   store.event(conversationId,{type:'task',taskId:'task-1',state:'queued'});
   const server=createServer((req,res)=>{
     const after=Number(new URL(req.url||'/', 'http://localhost').searchParams.get('after')||0);
