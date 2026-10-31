@@ -48,7 +48,11 @@ A profile asks the child model to return a bounded JSON `relayHandoff` with
 summary, reported evidence URLs, reported artifacts and open questions. Relay
 accepts only bounded strings and HTTPS URLs without embedded credentials, and
 persists an optional `Task.handoff` projection. Invalid/non-JSON answers
-fall back to a truncated plain-text summary. These fields are explicitly
+fall back to a compact 2,000-character task-detail summary, while parent
+synthesis still receives up to 12,000 characters of the plain-text report.
+Reports longer than that carry an explicit truncation flag. For nested
+children, plain-text synthesis is taken from their terminal join run, not
+their earlier preliminary reply. These fields are explicitly
 **agent-reported and unverified**; neither the task console nor synthesis
 treats their assertions as tool receipts. Nested children populate the
 handoff after their own synthesis completes. Existing tasks remain readable.

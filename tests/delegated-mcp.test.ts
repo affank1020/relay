@@ -197,3 +197,72 @@ test('nested child handoff is parsed from final synthesized join output rather t
     assert.match(store.get<Task>('tasks',root.id)!.result,/Root answer includes nested final report/);
   }finally{await engine.stop();store.close();}
 });
+
+test('plain-text general child retains the tail of a normal 5,000-character report for parent synthesis',async()=>{
+  const store=new Store(':memory:');
+  const report='P'.repeat(4800)+' FINAL_FINDING_5000';
+  const engine=new Engine(store,{version:1,capabilities:{persistence:true,cancellation:true,tools:true},
+    run:async request=>{
+      if(request.task.prompt==='root general'){
+        await delegate(request,'report child');
+        return 'Delegated.';
+      }
+      if(request.task.prompt==='report child')return report;
+      if(request.task.kind==='join'){
+        assert.match(request.task.prompt,/FINAL_FINDING_5000/,
+          'the child result must not be reduced to the 2,000-character console fallback');
+        assert.match(request.task.prompt,/"resultTruncated":false/);
+        return 'Joined with end-of-report evidence';
+      }
+      throw Error('Unexpected '+request.task.prompt);
+    }},limits);
+  try{
+    const c=engine.conversation(),root=engine.enqueue(c.id,'root general','plain-general-001');
+    await until(()=>store.get<Task>('tasks',root.id)?.state==='completed');
+    const child=engine.tasks().find(t=>t.parentId===root.id)!;
+    assert.equal(child.handoff?.structured,false);
+    assert.equal(child.handoff?.summary.length,2000,
+      'compact task detail may remain bounded without reducing parent synthesis');
+    assert.match(store.get<Task>('tasks',root.id)!.result,/Joined with end-of-report evidence/);
+  }finally{await engine.stop();store.close();}
+});
+
+test('nested plain-text synthesis uses its final continuation, not pre-join transcript or 2K summary',async()=>{
+  const store=new Store(':memory:');
+  const initial='PRELIMINARY_'.repeat(900);
+  const finalReport='S'.repeat(5100)+' FINAL_NESTED_EVIDENCE';
+  const engine=new Engine(store,{version:1,capabilities:{persistence:true,cancellation:true,tools:true},
+    run:async request=>{
+      if(request.task.prompt==='root nested plain'){
+        await delegate(request,'nested plain child');
+        return 'Root delegated.';
+      }
+      if(request.task.prompt==='nested plain child'){
+        await delegate(request,'leaf');
+        return initial;
+      }
+      if(request.task.prompt==='leaf')return 'Leaf completed.';
+      if(request.task.kind==='join'){
+        const owner=store.get<Task>('tasks',request.task.continuationOf!)!;
+        if(owner.parentId){
+          request.onText(finalReport.slice(0,50));
+          return finalReport;
+        }
+        assert.match(request.task.prompt,/FINAL_NESTED_EVIDENCE/);
+        assert.doesNotMatch(request.task.prompt,/PRELIMINARY_PRELIMINARY_/);
+        assert.match(request.task.prompt,/"resultTruncated":false/);
+        return 'Root has the final nested result';
+      }
+      throw Error('Unexpected '+request.task.prompt);
+    }},limits);
+  try{
+    const c=engine.conversation(),root=engine.enqueue(c.id,'root nested plain','plain-nested-001');
+    await until(()=>store.get<Task>('tasks',root.id)?.state==='completed');
+    const nested=engine.tasks().find(t=>t.parentId===root.id)!;
+    assert.equal(nested.handoff?.structured,false);
+    assert.ok(nested.result.startsWith(initial),'the chat still retains earlier streaming history');
+    const join=engine.tasks().find(t=>t.continuationOf===nested.id)!;
+    assert.equal(join.result,finalReport);
+    assert.match(store.get<Task>('tasks',root.id)!.result,/Root has the final nested result/);
+  }finally{await engine.stop();store.close();}
+});

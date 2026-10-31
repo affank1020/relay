@@ -493,7 +493,7 @@ export class Engine {
         ...(task.retryDependencyResults??[]).map(d=>({id:d.taskId,state:'completed',result:d.result}))
       ];
       const prompt=parent?
-        handoffPrompt(parent,joinedChildren)+
+        handoffPrompt(parent,joinedChildren,this.tasks())+
         (parent.delegation?.profile&&parent.delegation.profile!=='general'
           ?profilePrompt(parent.delegation.profile):''):
 
