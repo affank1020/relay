@@ -6,6 +6,7 @@ import type { Engine } from './engine.js';
 import type { Conversation, Task, Approval } from './store.js';
 import { terminal } from './store.js';
 import { refreshOllamaModels, type RelayModels } from './models.js';
+import { AtlasContextError } from './atlas-context.js';
 
 export function createPlatform(engine:Engine, token:string, staticDir:string, model:string, modelRegistry?:RelayModels) {
   if(token.length<24)throw new Error('RELAY_ACCESS_TOKEN must be 24+ characters');
@@ -48,14 +49,32 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         }
         return send(res,201,{session:summary(engine.conversation(data.modelKey as string|undefined))});
       }
+      if(path==='/api/atlas/context/projects'&&req.method==='GET') {
+        if(!engine.atlasContext)return send(res,503,{error:'Atlas not configured'});
+        return send(res,200,{projects:await engine.atlasContext.projects()});
+      }
+      const atlasCheckouts=path.match(/^\\/api\\/atlas\\/context\\/projects\\/([a-f0-9-]+)\\/checkouts$/);
+      if(atlasCheckouts&&req.method==='GET') {
+        if(!engine.atlasContext)return send(res,503,{error:'Atlas not configured'});
+        await engine.atlasContext.validate(atlasCheckouts[1],null);
+        return send(res,200,{checkouts:await engine.atlasContext.checkouts(atlasCheckouts[1])});
+      }
       if(path==='/api/tasks'&&req.method==='GET')return send(res,200,{tasks:engine.tasks().slice(-200).reverse()});
-      const conversation=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/messages|\/events|\/abort)?$/);
+      const conversation=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/messages|\/events|\/abort|\/context)?$/);
       if(conversation) {
         const c=engine.store.get<Conversation>('conversations',conversation[1]);if(!c)return send(res,404,{error:'Conversation not found'});
         if(!conversation[2]&&req.method==='GET') {
           const tasks=engine.tasks(c.id);
           const turns=tasks.flatMap(t=>[{role:'user',text:t.prompt},...(t.result?[{role:'assistant',text:t.result}]:[])]);
           return send(res,200,{session:summary(c),turns,tasks,approvals:engine.store.all<Approval>('approvals').filter(a=>tasks.some(t=>t.id===a.taskId))});
+        }
+        if(conversation[2]==='/context'&&req.method==='PATCH'){
+          const data=await body(req);
+          if(!Object.hasOwn(data,'projectId')||!Object.hasOwn(data,'checkoutId')||
+            Object.keys(data).some(key=>!['projectId','checkoutId'].includes(key)))
+            throw new AtlasContextError(400,'Invalid Atlas context selection');
+          const updated=await engine.updateContext(c.id,data.projectId,data.checkoutId);
+          return send(res,200,{session:summary(updated)});
         }
         if(conversation[2]==='/events'&&req.method==='GET'){
           const after=Number(url.searchParams.get('after')||0);if(!Number.isSafeInteger(after)||after<0)throw new Error('Invalid event cursor');
@@ -82,9 +101,10 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
       return send(res,404,{error:'Unknown API route'});
     }catch(error){
       // Only deterministic validation errors are exposed. Provider/tool errors are recorded as safe task states.
+      if(error instanceof AtlasContextError)return send(res,error.status,{error:error.message});
       const text=error instanceof Error?error.message:'Request failed';
-      const safe=/^(Local model unavailable|Invalid model selection|Message length|A stable|Conversation|Request identity|Task queue|Invalid depend|Parent task|Inference budget|Task cannot|Explicit reconciliation|Approval is|Task is|approved must|message and|Invalid event|Request too|Expected an)/.test(text)?text:'Request could not be completed';
-      if(!res.headersSent)send(res,400,{error:safe});else res.end();
+      const safe=/^(Atlas not configured|Conversation has an active task|Conversation context changed|Local model unavailable|Invalid model selection|Message length|A stable|Conversation|Request identity|Task queue|Invalid depend|Parent task|Inference budget|Task cannot|Explicit reconciliation|Approval is|Task is|approved must|message and|Invalid event|Request too|Expected an)/.test(text)?text:'Request could not be completed';
+      if(!res.headersSent)send(res,/^(Atlas not configured)/.test(text)?503:/^(Conversation has an active task|Conversation context changed)/.test(text)?409:400,{error:safe});else res.end();
     }
   });
   server.requestTimeout=30000;
