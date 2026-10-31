@@ -34,7 +34,8 @@ test('SSE parser handles chunk boundaries and multiple batches without duplicati
 test('SSE replays durable events then delivers newly committed events until disconnected',async t=>{
   const store=new Store(':memory:');
   const conversationId='sse-conversation';
-  store.save('conversations',{id:conversationId,title:'Live chat',createdAt:new Date().toISOString()} satisfies Conversation);
+  const conversation:Conversation={id:conversationId,title:'Live chat',createdAt:new Date().toISOString()};
+  store.save('conversations',conversation);
   store.event(conversationId,{type:'task',taskId:'task-1',state:'queued'});
   const server=createServer((req,res)=>{
     const after=Number(new URL(req.url||'/', 'http://localhost').searchParams.get('after')||0);
