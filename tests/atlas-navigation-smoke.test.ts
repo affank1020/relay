@@ -53,13 +53,25 @@ test('navigation uses verified Atlas Web routes, never imaginary record or check
   assert.equal(atlasCheckoutLink(origin,{checkoutId:record,projectId:'bad'})?.href,origin+'/#/workspaces');
 });
 
+// Matches the actual Atlas CoreService.status() structured MCP response.
+const atlasStatus=()=>({
+  product:'Atlas',version:'2.0.0',storage:'postgresql',schemaVersion:1,
+  projects:12,stores:45,records:1207,views:5,
+  counts:{
+    projects:{total:16,active:12,archived:4},
+    stores:{total:57,active:45,archived:12},
+    records:{total:1258,active:1207,archived:51},
+    views:{total:5,active:5,archived:0}
+  },
+  subsystems:{views:{status:'available',stage:3}}
+});
 const result=(obj:unknown)=>({structuredContent:{result:obj},
   content:[{type:'text',text:'secret_private_payload'}]});
 function fake(tools:string[],output:Record<string,unknown>,calls:string[]):Pick<AtlasTransport,'list'|'call'> {
   return {list:async()=>tools.map(name=>({name,inputSchema:{}})),
     call:async(name)=>{
       calls.push(name);
-      if(name==='get_atlas_status')return result({name:'Atlas',connected:true,private:'not_exposed'});
+      if(name==='get_atlas_status')return result(output.status??atlasStatus());
       if(name==='get_project')return result(output.project??{id:project,name:'Private project',data:{password:'secret'}});
       if(name==='code_reviews_overview')return result(output.reviews??{
         projectId:project,reviewRuns:8,findingObservations:19,private:'not_exposed'});
@@ -86,6 +98,42 @@ test('absence of Code Reviews permission is not misreported as success',async()=
   const missingProject=await verifyAtlasReadOnlyConnection(
     fake(['get_atlas_status'],{},[]),{projectId:project});
   assert.equal(missingProject.projectRead,'not_advertised');
+});
+
+test('operator smoke requires the real Atlas status contract rather than any nonempty object',async()=>{
+  const valid=await verifyAtlasReadOnlyConnection(fake(['get_atlas_status'],{status:atlasStatus()},[]));
+  assert.equal(valid.coreStatus,'verified');
+  const known=atlasStatus();
+  const invalid=[
+    {success:false,error:'backend unavailable'},
+    {name:'Atlas',connected:true},
+    {...known,product:'unrelated'},
+    {...known,version:'not-semver'},
+    {...known,schemaVersion:0},
+    {...known,projects:-1},
+    {...known,stores:2.5},
+    {...known,counts:{...known.counts,projects:{total:10,active:12,archived:4}}},
+    {...known,counts:{...known.counts,records:{total:1258,active:0,archived:51}}},
+    {...known,counts:undefined}
+  ];
+  for(const status of invalid){
+    await assert.rejects(
+      verifyAtlasReadOnlyConnection(fake(['get_atlas_status'],{status},[])),
+      /Atlas status contract mismatch|Atlas read-only operation failed/,
+      'invalid status must never be reported as verified');
+  }
+});
+
+test('failure flags in MCP response envelopes cannot be bypassed by a valid nested status',async()=>{
+  const catalogue=async()=>[{name:'get_atlas_status',inputSchema:{}}];
+  for(const response of [
+    {success:false,structuredContent:{result:atlasStatus()}},
+    {structuredContent:{success:false,result:atlasStatus()}},
+    {structuredContent:{result:{...atlasStatus(),success:false}}},
+  ]){
+    const transport:Pick<AtlasTransport,'list'|'call'>={list:catalogue,call:async()=>response};
+    await assert.rejects(verifyAtlasReadOnlyConnection(transport),/Atlas read-only operation failed/);
+  }
 });
 
 test('smoke rejects duplicate catalogue entries, malformed identities and denied receipts',async()=>{

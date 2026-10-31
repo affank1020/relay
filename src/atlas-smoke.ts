@@ -5,6 +5,24 @@ import { READ_TOOLS } from './gateway.js';
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const record=(value:unknown):Record<string,unknown>|undefined=>
   value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:undefined;
+const safeCount=(value:unknown):value is number=>
+  typeof value==='number'&&Number.isSafeInteger(value)&&value>=0;
+
+/** Check the actual Atlas CoreService.status() contract, not object truthiness. */
+function validateAtlasStatus(value:Record<string,unknown>):void {
+  if(value.product!=='Atlas'||typeof value.version!=='string'||
+    !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value.version)||
+    !safeCount(value.schemaVersion)||value.schemaVersion<1)
+    throw new Error('Atlas status contract mismatch');
+  const summaries=record(value.counts);
+  for(const key of ['projects','stores','records','views'] as const){
+    const summary=record(summaries?.[key]);
+    if(!summary||!safeCount(value[key])||!safeCount(summary.active)||
+      !safeCount(summary.archived)||!safeCount(summary.total)||
+      summary.active!==value[key]||summary.total!==summary.active+summary.archived)
+      throw new Error('Atlas status contract mismatch');
+  }
+}
 
 export interface AtlasSmokeReport {
   /** Counts and statuses only; no project names, record bodies or MCP payloads. */
@@ -34,13 +52,16 @@ export async function verifyAtlasReadOnlyConnection(
   const read=async(name:string,args:Record<string,unknown>):Promise<Record<string,unknown>>=>{
     if(!READ_TOOLS.has(name)||!names.has(name))throw new Error('Required Atlas read is not admitted');
     const response=record(await transport.call(name,args,AbortSignal.timeout(30000)));
-    if(!response||response.isError===true)throw new Error('Atlas read-only operation failed');
-    const result=record(record(response.structuredContent)?.result);
+    const structured=record(response?.structuredContent);
+    if(!response||response.isError===true||response.success===false||structured?.success===false)
+      throw new Error('Atlas read-only operation failed');
+    const result=record(structured?.result);
     if(!result)throw new Error('Atlas returned no structured read evidence');
+    if(result.success===false)throw new Error('Atlas read-only operation failed');
     return result;
   };
   const status=await read('get_atlas_status',{});
-  if(Object.keys(status).length===0)throw new Error('Atlas status was empty');
+  validateAtlasStatus(status);
   let projectRead:AtlasSmokeReport['projectRead']='not_requested';
   if(options.projectId){
     if(names.has('get_project')){
