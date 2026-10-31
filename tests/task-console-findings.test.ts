@@ -273,7 +273,7 @@ test('running filter automatically clears completed selection after a foreground
       persisted=task(one,A,'completed','Done');
       assert.ok(scheduled);
       scheduled();await flush();
-      assert.equal(get('taskRows').children.filter(row=>row.className.includes('task-row')).length,0,
+      assert.equal(get('taskRows').children.filter(row=>row.className.split(' ').includes('task-row')).length,0,
         'completed task disappears from running list');
       assert.equal(get('taskDetail').querySelector('.task-actions'),null,
         'the stale cancel action is no longer rendered');
