@@ -317,6 +317,12 @@ main { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height:
 /* Tool activity belongs to the reply, not to a stack of separate cards. */
 .inline-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 15px; margin: 0 0 10px; }
 .inline-tools[hidden] { display: none; }
+.inline-agents { margin: 0 0 10px; color: var(--text-secondary); font-size: 12px; }
+.inline-agents[hidden] { display: none; }
+.inline-agents summary { width: fit-content; cursor: pointer; }
+.inline-agent-children { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 7px 0 0 12px; }
+.inline-agent { color: var(--text-secondary); }
+
 .tool-pill {
   display: inline-flex;
   align-items: center;
@@ -630,22 +636,6 @@ dialog #deleteName { color: var(--text); overflow-wrap: anywhere; }
   .task-detail h2 { font-size: 16px; }
 }
 
-/* Compact, opt-in capability settings: ordinary chat remains the default. */
-#capabilitiesDialog { width: min(520px,calc(100vw - 28px)); max-height: 85dvh; background: var(--surface, #16171c); color: var(--text, #f5f5f5); border: 1px solid var(--border, #393939); border-radius: 10px; padding: 0; }
-#capabilitiesDialog::backdrop { background: rgba(0,0,0,.72); }
-.capabilities-panel { padding: 22px; overflow: auto; max-height: 83dvh; }
-.capabilities-header { display:flex;align-items:center;justify-content:space-between;margin-bottom:18px; }
-.capabilities-header h2 { margin:0;font-size:17px;font-weight:600; }
-.capabilities-group { margin-top:18px; }
-.capabilities-group h3 {font-size:13px;margin:0 0 8px;}
-.capability-row {display:flex;justify-content:space-between;gap:18px;align-items:center;padding:12px 0;border-bottom:1px solid var(--border);}
-.capability-row label {display:flex;align-items:center;gap:12px;cursor:pointer;}
-.capability-row input {accent-color:var(--accent);}
-.capability-description {font-size:11px;color:var(--text-muted);margin-top:4px;}
-.capability-state {font-size:11px;color:var(--text-muted);white-space:nowrap;}
-.capability-row .capability-name {font-size:13px;}
-
-
 /* Atlas context is evidence-driven and appears only beneath an observed tool run. */
 .atlas-awareness { display: grid; gap: 7px; margin: 9px 0 12px; }
 .atlas-awareness[hidden] { display: none; }
@@ -661,6 +651,24 @@ dialog #deleteName { color: var(--text); overflow-wrap: anywhere; }
 .atlas-observed-muted { color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
 .atlas-observed-path { color: var(--text-secondary); font: 11px/1.55 ui-monospace, SFMono-Regular, monospace; overflow-wrap: anywhere; }
 .atlas-observed-worktrees { display: grid; gap: 4px; }
+
+/* Compact, opt-in capability settings: ordinary chat remains the default. */
+#capabilitiesDialog { width: min(520px,calc(100vw - 28px)); max-height: 85dvh; background: var(--surface, #16171c); color: var(--text, #f5f5f5); border: 1px solid var(--border, #393939); border-radius: 10px; padding: 0; }
+#capabilitiesDialog::backdrop { background: rgba(0,0,0,.72); }
+.capabilities-panel { padding: 22px; overflow: auto; max-height: 83dvh; }
+.capabilities-header { display:flex;align-items:center;justify-content:space-between;margin-bottom:18px; }
+.capabilities-header h2 { margin:0;font-size:17px;font-weight:600; }
+.capabilities-group { margin-top:18px; }
+.capabilities-group h3 {font-size:13px;margin:0 0 8px;}
+.capability-row {display:flex;justify-content:space-between;gap:18px;align-items:center;padding:12px 0;border-bottom:1px solid var(--border);}
+.capability-row label {display:flex;align-items:center;gap:12px;cursor:pointer;}
+.capability-row input {accent-color:var(--accent);}
+.capability-description {font-size:11px;color:var(--text-muted);margin-top:4px;}
+.capability-state {font-size:11px;color:var(--text-muted);white-space:nowrap;}
+.capability-row .capability-name {font-size:13px;}
+
+.atlas-observed-link { color: var(--accent); width: fit-content; font-size: 11px; text-decoration: none; }
+.atlas-observed-link:hover { text-decoration: underline; }
 
 /* Reviewed Git Skills: preview full untrusted text before granting trusted instruction status. */
 .git-skill-installer { margin-top:20px; border-top:1px solid var(--border); padding-top:14px; font-size:12px; }
