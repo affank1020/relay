@@ -105,6 +105,27 @@ test('multiple checkouts and Nodes remain distinct, replay is deduplicated',asyn
   }finally{rmSync(root,{recursive:true,force:true});}
 });
 
+test('a reassigned checkout cannot inherit Git state from a previous Node',async()=>{
+  const store=new Store(':memory:');store.save('conversations',{id:'conv'});
+  const gateway=new Gateway(store,fixture(),{},async()=>{});
+  try{
+    await gateway.invoke(task(),'git-before-move','workspace_git_status',
+      {checkoutId:checkout},new AbortController().signal);
+    assert.equal(project(store)[0].branch,'atlas/feature');
+    const moved=observeAtlasResult('get_workspace',{checkoutId:checkout},{
+      id:checkout,rootPath:'/srv/new-relay',nodeId:linux,status:'active'});
+    assert.ok(moved);
+    store.event('conv',{taskId:'task',agentRunId:'child-run',invocationId:'move',
+      tool:'get_workspace',type:'atlas_resource',state:'completed',workspaceId:checkout,
+      atlasResource:moved});
+    const view=project(store)[0];
+    assert.equal(view.nodeId,linux);
+    assert.equal(view.branch,undefined);
+    assert.equal(view.gitObservedAt,undefined);
+    assert.equal(view.rootPath,'/srv/new-relay');
+  }finally{store.close();}
+});
+
 test('offline Node blocks Git inspection; placement is not execution',async()=>{
   const store=new Store(':memory:');store.save('conversations',{id:'conv'});
   const gateway=new Gateway(store,fixture('offline'),{},async()=>{});

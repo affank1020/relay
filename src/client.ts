@@ -271,7 +271,8 @@ function render(data:Snapshot){
         row.receiptKey=receiptKey;
       }
       const matching=observedViews.filter(view=>view.taskId===task.id);
-      const awarenessKey=JSON.stringify(matching);
+      const awarenessKey=JSON.stringify(matching)+'|'+matching.map(view=>
+        view.gitObservedAt&&Date.now()-Date.parse(view.gitObservedAt)>5*60_000?'stale':'recent').join(',');
       if(row.awarenessKey!==awarenessKey){
         renderAtlasCheckoutViews(row.awareness,matching);
         row.awarenessKey=awarenessKey;
@@ -352,7 +353,7 @@ function renderActivity(){
       item.append(el('span','event-sub',new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})));
       summary.append(item,el('span','event-open','⌄'));
       details.append(summary);
-      const fields={state:e.state,timestamp:e.timestamp,task:e.taskId,agentRun:e.agentRunId,invocation:e.invocationId,atlasOperation:e.atlasOperationId,project:e.projectId,workspace:e.workspaceId,selectedNode:e.selectedNodeId,executingNode:e.executingNodeId??'Not confirmed'};
+      const fields={state:e.state,timestamp:e.timestamp,task:e.taskId,agentRun:e.agentRunId,invocation:e.invocationId,atlasOperation:e.atlasOperationId,project:e.projectId,workspace:e.workspaceId,selectedNode:e.selectedNodeId,executingNode:e.executingNodeId??'Not confirmed',resources:e.atlasResource?.resources,evidence:e.atlasResource?.evidenceSource};
       details.append(el('pre','',JSON.stringify(fields,null,2)));
     }
     if(parent.children[index]!==details)parent.insertBefore(details,parent.children[index]??null);
@@ -368,10 +369,10 @@ async function poll(){
     for(const event of replay.events){
       if(event.sequence<=cursor||event.type==='delta')continue;
       indexToolReceipt(event);
-       if(event.type==='atlas_resource'||(event.type==='tool'&&event.workspaceId&&['failed','denied','cancelled'].includes(event.state))){
-         atlasObservations.set(event.id,event);
-         if(atlasObservations.size>3000)atlasObservations.delete(atlasObservations.keys().next().value!);
-       }
+      if(event.type==='atlas_resource'||(event.type==='tool'&&event.workspaceId&&['failed','denied','cancelled'].includes(event.state))){
+        atlasObservations.set(event.id,event);
+        if(atlasObservations.size>3000)atlasObservations.delete(atlasObservations.keys().next().value!);
+      }
       if(event.type==='phase'&&event.taskId)taskPhases.set(event.taskId,event.state);
       activity.push(event);
     }

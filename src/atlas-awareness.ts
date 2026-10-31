@@ -139,6 +139,13 @@ export function projectAtlasCheckouts(events:ReadonlyArray<AtlasAwarenessEvent>)
       if(!view){view={checkoutId:id};checkouts.set(id,view);}
       if(fact.checkout){
         const c=fact.checkout;
+        // An old Git receipt belongs to the old physical checkout placement.
+        // Moving Nodes, changing roots or archiving invalidates that snapshot.
+        if((view.nodeId&&view.nodeId!==c.nodeId)||
+           (view.rootPath&&view.rootPath!==c.rootPath)||c.status==='archived'){
+          view.branch=undefined;view.repository=undefined;view.dirty=undefined;
+          view.changedFiles=undefined;view.gitObservedAt=undefined;view.worktrees=undefined;
+        }
         view.name=c.name;view.rootPath=c.rootPath;view.nodeId=c.nodeId;
         view.logicalWorkspaceId=c.logicalWorkspaceId;view.projectId=c.projectId;
         view.placementStatus=c.status;view.placementObservedAt=event.timestamp;
