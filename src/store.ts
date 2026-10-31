@@ -125,6 +125,8 @@ export class Store {
       // crash; start() retries deletion without resurrecting the chat.
       this.db.prepare('INSERT INTO pending_session_deletions(conversation_id) VALUES(?)').run(id);
     });
+    // Tell connected tabs their stream is no longer valid after deletion.
+    queueMicrotask(()=>{for(const listener of this.eventListeners.get(id)??[])listener();});
   }
   close() { this.eventListeners.clear(); this.db.close(); }
 }
