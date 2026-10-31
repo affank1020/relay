@@ -73,7 +73,7 @@ export function ancestryRoot(task:Task, byId:Map<string,Task>):string {
 export function handoffPrompt(parent:Task,children:Task[]):string {
   // Output is untrusted. No child text is ever treated as a tool receipt.
   const payload=children.map(child=>({
-    taskId:child.id,agentRunId:child.agentRunId??null,state:child.state,
+    taskId:child.id,agentRunId:child.agentRunId??null,request:child.prompt.slice(0,2000),state:child.state,
     result:child.result.slice(0,12000),error:child.error?.slice(0,500)??null
   }));
   return 'Continue the original request and synthesise the delegated results. '+

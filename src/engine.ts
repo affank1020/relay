@@ -412,7 +412,7 @@ export class Engine {
         this.finish(task,'failed',e.reason==='missing_model'?'Local Ollama model not installed. Check ollama list and the Relay model configuration. No inference started.':'Local Ollama unavailable. Start Ollama and reconnect Tailscale, then retry the request. No inference started.');
         console.warn('Relay local provider unavailable',{taskId:task.id,phase,reason:e.reason});
       } else if(e instanceof ProviderRateLimitError) {
-        this.finish(task,'failed','OpenRouter rate limit reached (HTTP 429). Free-model quotas may be shared across models. Check OpenRouter usage and retry after the limit resets; reconcile any dispatched operation before retrying.');
+        this.finish(task,'failed','OpenRouter rate limit reached (HTTP 429). Free-model quotas may be shared across models. Check OpenRouter usage and retry after the limit resets; reconcile any dispatched Atlas operation before retrying.');
         console.warn('Relay provider rate limited',{taskId:task.id,phase});
       } else {
         const type=e instanceof Error && ['TypeError','RangeError','SyntaxError','AbortError'].includes(e.name)?e.name:'Error';

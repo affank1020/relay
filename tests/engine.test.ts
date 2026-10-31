@@ -69,7 +69,7 @@ test('delegation has bounded children and returns persistent independent tasks',
     if(!delegated){delegated=true;const tool=r.tools.find(t=>t.name==='relay_delegate')!;await tool.execute('child',{prompt:'independent child'},r.signal,undefined,{} as never);}
     return 'done';
   }),limits);
-  try{const c=engine.conversation();const parent=engine.enqueue(c.id,'delegate','request-001');await until(()=>engine.tasks().length===2&&engine.tasks().every(t=>t.state==='completed'));assert.equal(engine.tasks()[1].parentId,parent.id);}
+  try{const c=engine.conversation();const parent=engine.enqueue(c.id,'delegate','request-001');await until(()=>engine.store.get<Task>('tasks',parent.id)?.state==='completed');assert.equal(engine.tasks().filter(t=>t.parentId===parent.id).length,1);assert.ok(engine.tasks().some(t=>t.continuationOf===parent.id && t.state==='completed'));}
   finally{await engine.stop();store.close();}
 });
 
