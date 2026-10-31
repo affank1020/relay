@@ -37,5 +37,19 @@ export class TrustedSkills {
     const list=await this.list();
     return list.filter(s=>s.enabled).map(s=>({name:s.name,path:join(this.directory,s.id,'SKILL.md')}));
   }
+  async promptContent():Promise<string> {
+    const listed=await this.list();
+    const parts:string[]=[];
+    for(const skill of listed.filter(s=>s.enabled)){
+      const file=join(this.directory,skill.id,'SKILL.md');
+      const content=await readFile(file,'utf8');
+      // Recheck after reading so a package change between discovery and loading
+      // cannot introduce unreviewed instructions.
+      if(createHash('sha256').update(content).digest('hex')!==skill.revision)
+        throw new Error('Trusted Skill changed during loading');
+      parts.push('<trusted_skill name="'+skill.id+'">\n'+content+'\n</trusted_skill>');
+    }
+    return parts.join('\n\n');
+  }
   contains(id:string):boolean {return TRUSTED.some(s=>s.id===id);}
 }
