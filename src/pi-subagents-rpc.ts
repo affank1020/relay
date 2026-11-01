@@ -64,7 +64,9 @@ export class PiSubagentsRpc {
         }catch(error){settle(error as Error);}
       });
       const abort=()=>settle(new Error('Pi subagent request cancelled'));
-      timer=setTimeout(()=>settle(new Error('Pi subagent RPC unavailable or timed out')),this.requestTimeoutMs);
+      timer=setTimeout(()=>settle(new Error(kind==='spawn'
+        ?'Pi subagent spawn outcome uncertain; reconcile before retry'
+        :'Pi subagent RPC unavailable or timed out')),this.requestTimeoutMs);
       signal?.addEventListener('abort',abort,{once:true});
       try{this.bus.emit('subagents:rpc:'+kind,{requestId:id,...body});}
       catch(error){settle(error as Error);}
@@ -121,10 +123,24 @@ export class PiSubagentsRpc {
       this.bus.on('subagents:completed',readEvent('completed')),
       this.bus.on('subagents:failed',readEvent('failed'))
     ];
-    const abort=()=>{if(agentId)void this.stop(agentId).catch(()=>{});
-      if(!settled){settled=true;rejectRun(new Error('Pi subagent cancelled'));}};
-    const timer=setTimeout(()=>{if(agentId)void this.stop(agentId).catch(()=>{});
-      if(!settled){settled=true;rejectRun(new Error('Pi subagent time budget exceeded'));}},maxRunMs);
+    const abort=()=>{
+      if(settled)return;
+      settled=true;
+      if(agentId){
+        options.onTransition?.({agentId,status:'stopped',error:'Cancelled'});
+        void this.stop(agentId).catch(()=>{});
+      }
+      rejectRun(new Error('Pi subagent cancelled'));
+    };
+    const timer=setTimeout(()=>{
+      if(settled)return;
+      settled=true;
+      if(agentId){
+        options.onTransition?.({agentId,status:'stopped',error:'Time budget exceeded'});
+        void this.stop(agentId).catch(()=>{});
+      }
+      rejectRun(new Error('Pi subagent time budget exceeded'));
+    },maxRunMs);
     options.signal.addEventListener('abort',abort,{once:true});
     try{
       // This RPC's isolated flag strips extensions and Skills. An operator
