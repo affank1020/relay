@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chromium } from '@playwright/test';
 import { CapabilityRegistry } from '../src/capabilities.js';
+import { configuredProviders } from '../src/integrations/manager.js';
 import { createPlatform } from '../src/platform.js';
 import { Engine } from '../src/engine.js';
 import { Store } from '../src/store.js';
@@ -25,7 +26,7 @@ test('real browser previews, explicitly installs, enables and revokes a pinned G
       content:Buffer.from(content).toString('base64')
     }));
   }) as typeof fetch;
-  const registry=new CapabilityRegistry(root,join(process.cwd(),'skills'),[],undefined,mockedFetch);
+  const registry=new CapabilityRegistry(root,join(process.cwd(),'skills'),configuredProviders({}),undefined,mockedFetch);
   const store=new Store(':memory:');
   const harness={version:1 as const,capabilities:{persistence:true,cancellation:true,tools:true},run:async()=>''};
   const engine=new Engine(store,harness,{concurrency:1,queue:10,sessionUsd:0,globalUsd:0,
@@ -45,7 +46,9 @@ test('real browser previews, explicitly installs, enables and revokes a pinned G
     await page.locator('#capabilitiesContent .capability-row').first().waitFor({state:'visible'});
     assert.equal(await page.locator('#gitSkillInstaller').isHidden(),true,
       'GitHub installation form stays out of the ordinary settings view');
-    assert.equal(await page.locator('#capabilitiesContent .capability-row').count(),2);
+    assert.equal(await page.locator('#capabilitiesContent .capability-row').count(),3);
+    assert.equal(await page.getByRole('checkbox',{name:'Enable GitHub'}).isDisabled(),true);
+    assert.equal(await page.getByText('Setup required',{exact:true}).isVisible(),true);
     const layout=await page.evaluate(()=>{
       const modal=document.querySelector('#capabilitiesDialog')!.getBoundingClientRect();
       const toggle=document.querySelector('.capability-toggle')!.getBoundingClientRect();
