@@ -484,7 +484,11 @@ export class Engine {
         ?this.capabilities.nativeMcp(task,this.store):undefined;
       const nativeReadNames=nativeMcp?nativeMcpAllowed(nativeMcp):[];
       const registryReadNames=new Set<string>();
-      if(!joining && this.capabilities) {
+      if(!joining && this.capabilities &&
+          (!nativeMcp || !!process.env.RELAY_GITHUB_WRITE_REPOS?.trim())) {
+        // In Pi-native read-only mode skip Relay's legacy MCP transport and
+        // discovery entirely; only invoke it when explicit approved GitHub
+        // write tools were configured.
         // An MCP tool is read-authorized because the server-side registry
         // admitted it, NOT because a tool name happens to start with mcp_.
         // Children receive only their exact delegated read-only subset.
