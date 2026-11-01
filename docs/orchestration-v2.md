@@ -16,6 +16,17 @@ The provider-neutral event model is extended, not replaced. Skills/MCP registrat
 
 `relay_delegate` accepts a prompt, optional sibling dependencies, optional explicit context (at most 2,000 characters), a model key, read-tool names and optional token/cost caps. Four direct children, depth two and the existing global queue/concurrency limits apply. Tool names must be a subset of server-admitted parent read tools. A child defaults to **no external tools**, and the Atlas gateway checks that admission again at invocation. The Pi built-in shell, unrestricted MCP and arbitrary Skills are not enabled by this change.
 
+Children inherit the **parent's selected model** by default, including an Ollama
+Qwen model. The optional `modelKey` override is offered to the Pi tool as an
+enum of exact, currently configured Relay model keys, such as
+`ollama/qwen3-coder:30b`, not arbitrary display names. For compatibility,
+a child may supply the raw Ollama model ID only when it matches the exact
+selected local parent model: it is interpreted as **inheritance**, never as
+a provider switch. Invalid, unknown or unauthorised model requests still fail
+closed, without switching to cloud inference. If the local provider goes
+offline or a model is removed, the harness reports that availability problem
+rather than silently choosing another provider.
+
 Each child has its own persisted **internal** conversation and Pi session, so no private transcript is copied. Internal conversations do not appear in the normal chat sidebar or consume the ordinary 1,000-chat cap. Chat-list discovery uses an indexed single-pass child lookup and a single grouped task scan. They remain accessible through task details and their authenticated, read-only session inspection APIs. Legacy child conversations without provenance are recognised through persisted task parent links. The parent waits in `waiting_children` without occupying an inference worker. Once direct children reach terminal states, Relay persists a single inference-only join task in the parent conversation and supplies bounded child outcomes as untrusted evidence. The visible parent reply is augmented by synthesis; the join is not rendered as a synthetic user message.
 
 No child gets permission to perform writes merely by delegation. Atlas development-task approvals remain centrally enforced where the existing gateway admits them (normal root agents only in this slice). Tool receipts are not inferred from prose. Dependents never consume arbitrary cross-conversation data.

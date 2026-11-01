@@ -39,9 +39,17 @@ export function delegationPolicy(input:unknown, admitted:string[], inheritedMode
     throw new Error('Delegated tools must be admitted read-only capabilities');
   if(args.context!==undefined && (typeof args.context!=='string'||args.context.length>2000))
     throw new Error('Delegation context exceeds the bounded snapshot');
-  const modelKey=args.modelKey??inheritedModel;
+  // The Pi model can mistakenly pass the Ollama model ID without Relay's
+  // provider prefix. Treat this as inheritance ONLY when it identifies the
+  // exact already-selected local parent model. Never resolve arbitrary labels
+  // or silently fall back to another provider on an invalid model request.
+  const inheritedOllamaId=inheritedModel?.startsWith('ollama/')
+    ?inheritedModel.slice('ollama/'.length):null;
+  const selected=args.modelKey;
+  const modelKey=selected===undefined||selected===inheritedOllamaId
+    ?inheritedModel:selected;
   if(modelKey!==null && (typeof modelKey!=='string' || (knownModels && !knownModels.includes(modelKey))))
-    throw new Error('Delegated model is not permitted');
+    throw new Error('Delegated model is not permitted. Omit modelKey to inherit the selected parent model, or use an exact configured Relay model key.');
   if(parent?.modelKey && modelKey!==parent.modelKey)
     throw new Error('Delegated model exceeds parent model scope');
   const maxTokens=args.maxTokens??null;

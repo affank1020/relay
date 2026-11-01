@@ -502,7 +502,7 @@ export class Engine {
       }
       if(!joining)tools.push({
         name:'relay_delegate',label:'Delegate task',
-        description:'Spawn a bounded independent child agent and return its durable task/run IDs. The parent will wait without using a worker slot and automatically synthesise all child outcomes, including failures. Each child has no external tools unless explicitly admitted from read-only parent capabilities.',
+        description:'Spawn a bounded independent child agent and return its durable task/run IDs. By default the child inherits the exact current model, including local Ollama/Qwen; omit modelKey unless changing models deliberately. The parent automatically waits and synthesises child results. External child tools must be explicitly admitted read-only capabilities.',
         parameters:Type.Object({
           prompt:Type.String({minLength:1,maxLength:6000}),
           dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:8})),
@@ -510,7 +510,14 @@ export class Engine {
           context:Type.Optional(Type.String({maxLength:2000})),
           profile:Type.Optional(Type.Union([Type.Literal('general'),Type.Literal('researcher'),
             Type.Literal('reviewer'),Type.Literal('implementer')])),
-          modelKey:Type.Optional(Type.String()),
+          // The default is deliberately inheritance; constrain explicit
+          // overrides to actual provider-qualified keys, not invented labels.
+          ...(this.modelRegistry?.models.length?{
+            modelKey:Type.Optional(Type.Union(
+              this.modelRegistry.models.map(model=>Type.Literal(model.key)),
+              {description:'Optional. Omit to use the parent agent\'s selected model. Override only using an exact Relay model key, e.g. ollama/qwen3-coder:30b; never a display name.'}
+            ))
+          }:{}),
           maxTokens:Type.Optional(Type.Integer({minimum:1,maximum:1000000})),
           maxCostUsd:Type.Optional(Type.Number({exclusiveMinimum:0,maximum:100}))
         }),
