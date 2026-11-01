@@ -51,9 +51,10 @@ export class PiSubagentsRpc {
       const id=randomUUID();
       const replyName='subagents:rpc:'+kind+':reply:'+id;
       let finished=false;
+      let timer:ReturnType<typeof setTimeout>|undefined;
       const settle=(err?:Error,result?:unknown)=>{
         if(finished)return;finished=true;
-        clearTimeout(timer);remove();signal?.removeEventListener('abort',abort);
+        if(timer)clearTimeout(timer);remove();signal?.removeEventListener('abort',abort);
         if(err)reject(err);else resolve(result);
       };
       const remove=this.bus.on(replyName,data=>{
@@ -63,7 +64,7 @@ export class PiSubagentsRpc {
         }catch(error){settle(error as Error);}
       });
       const abort=()=>settle(new Error('Pi subagent request cancelled'));
-      const timer=setTimeout(()=>settle(new Error('Pi subagent RPC unavailable or timed out')),this.requestTimeoutMs);
+      timer=setTimeout(()=>settle(new Error('Pi subagent RPC unavailable or timed out')),this.requestTimeoutMs);
       signal?.addEventListener('abort',abort,{once:true});
       try{this.bus.emit('subagents:rpc:'+kind,{requestId:id,...body});}
       catch(error){settle(error as Error);}
@@ -92,12 +93,19 @@ export class PiSubagentsRpc {
     const completion=new Promise<{agentId:string;result:string}>((resolve,reject)=>{
       resolveRun=resolve;rejectRun=reject;
     });
+    // A provider can reject spawn before we begin awaiting completion.
+    // Mark its failure handled even across cancellation/startup races.
+    void completion.catch(()=>{});
     const finish=(event:SubagentTransition)=>{
       if(settled||!agentId||event.agentId!==agentId)return;
       if(event.status==='started'){options.onTransition?.(event);return;}
       settled=true;options.onTransition?.(event);
-      if(event.status==='completed'&&typeof event.result==='string')
+      if(event.status==='completed'&&typeof event.result==='string'){
+        // Consume synchronously on the completion event to prevent the
+        // extension's second, redundant parent notification/agent turn.
+        this.bus.emit('subagents:rpc:consume',{requestId:randomUUID(),agentId});
         resolveRun({agentId,result:event.result});
+      }
       else rejectRun(new Error(event.error||'Pi subagent failed without verified result'));
     };
     const readEvent=(state:SubagentTransition['status'])=>(raw:unknown)=>{
