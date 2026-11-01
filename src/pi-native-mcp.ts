@@ -21,6 +21,8 @@ export function nativeMcpAllowed(run:NativeMcpRun):string[] {
       .map(name=>nativeName(config.id,name)));
 }
 export function nativeMcpConfig(run:NativeMcpRun):LoadedMcpConfig {
+  const names=run.providers.map(p=>p.config.id.replaceAll('-','_'));
+  if(new Set(names).size!==names.length)throw new Error('Colliding native MCP provider namespaces');
   const allowed=new Set(nativeMcpAllowed(run));
   return {
     errors:[],autoEnableCodemode:false,
@@ -45,15 +47,19 @@ export function nativeMcpConfig(run:NativeMcpRun):LoadedMcpConfig {
 export function nativeMcpCanInvoke(run:NativeMcpRun,name:string):boolean {
   if(!nativeMcpAllowed(run).includes(name))return false;
   const scoped=!!run.task.parentId||!!run.task.delegation;
-  if(!scoped)return true;
   const current=run.store.get<Task>('tasks',run.task.id);
+  // Root sessions must also lose authority on cancellation/retry, not only
+  // child sessions. Never trust a stale task object captured by Pi.
   if(!current||current.agentRunId!==run.task.agentRunId||
       current.parentId!==run.task.parentId||
       !['running','awaiting_approval'].includes(current.state))return false;
-  const parts=/^mcp__([^_]+)__(.+)$/.exec(name);
-  if(!parts)return false;
-  return !!current.delegation?.toolNames.some(tool=>
-    tool===name || tool===legacyName(parts[1],parts[2]));
+  if(!scoped)return true;
+  const provider=run.providers.find(p=>p.config.readTools.some(tool=>
+    nativeName(p.config.id,tool)===name));
+  if(!provider)return false;
+  const original=provider.config.readTools.find(tool=>nativeName(provider.config.id,tool)===name);
+  return !!original && !!current.delegation?.toolNames.some(tool=>
+    tool===name || tool===legacyName(provider.config.id,original));
 }
 
 /** Inline policy hook. Built-in Pi MCP performs the transport, not Relay. */
@@ -63,8 +69,10 @@ export function nativeMcpAuditExtension(run:NativeMcpRun) {
     pi.on('tool_call',event=>{
       if(!event.toolName.startsWith('mcp__'))return;
       const name=event.toolName;
-      const match=/^mcp__([^_]+)__(.+)$/.exec(name);
-      if(!match||!nativeMcpCanInvoke(run,name))return {block:true,reason:'MCP tool not permitted in Relay'};
+      const provider=run.providers.find(p=>p.config.readTools.some(tool=>nativeName(p.config.id,tool)===name));
+      const method=provider?.config.readTools.find(tool=>nativeName(provider.config.id,tool)===name);
+      if(!provider||!method||!nativeMcpCanInvoke(run,name))
+        return {block:true,reason:'MCP tool not permitted in Relay'};
       const key=run.task.id+':'+event.toolCallId;
       if(run.store.get('invocations',key))
         return {block:true,reason:'MCP invocation already recorded; reconcile before retry'};
@@ -72,12 +80,12 @@ export function nativeMcpAuditExtension(run:NativeMcpRun) {
       const args=event.input;
       const digest=createHash('sha256').update(JSON.stringify({name,args})).digest('hex');
       const record:InvocationRecord={id:key,invocationId,kind:'mcp_read',
-        digest,providerId:match[1],toolName:name,state:'dispatched'};
+        digest,providerId:provider.config.id,toolName:name,state:'dispatched'};
       run.store.save('invocations',record);
       run.store.event(run.task.conversationId,{taskId:run.task.id,
         agentId:run.task.agentId??null,agentRunId:run.task.agentRunId??null,
-        invocationId,tool:match[1]+':'+match[2],type:'tool',state:'started'});
-      active.set(event.toolCallId,{id:key,invocationId,providerId:match[1],toolName:match[2]});
+        invocationId,tool:provider.config.id+':'+method,type:'tool',state:'started'});
+      active.set(event.toolCallId,{id:key,invocationId,providerId:provider.config.id,toolName:method});
     });
     pi.on('tool_result',event=>{
       const entry=active.get(event.toolCallId);
