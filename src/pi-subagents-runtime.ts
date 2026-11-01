@@ -98,9 +98,11 @@ export function piSubagentRuntime(signal:AbortSignal,
             }});
           if(requested.length&&(!binding||!(await binding)))
             throw new Error('Child research MCP authorization could not be bound to its Pi session');
+          if(requested.length&&(!broker||broker.verifiedReadCount===0))
+            throw new Error('Child research completed without a successful authorised MCP read; cannot report verified source findings');
           return {content:[{type:'text' as const,text:JSON.stringify({
             agentId:result.agentId,result:result.result,
-            sourceTools:requested,verifiedExternalSources:requested.length>0
+            sourceTools:requested,verifiedExternalSources:!!broker?.verifiedReadCount
           })}],details:{}};
         }finally{broker?.close();}
       }
