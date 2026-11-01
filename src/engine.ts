@@ -500,6 +500,12 @@ export class Engine {
       const nativeMcp=!joining&&process.env.RELAY_PI_NATIVE_MCP==='1'&&this.capabilities
         ?this.capabilities.nativeMcp(task,this.store):undefined;
       const nativeReadNames=nativeMcp?nativeMcpAllowed(nativeMcp):[];
+      // Pi owns ordinary Atlas MCP read discovery in native mode. Retain the
+      // Gateway only for Atlas-specific, approval-backed development tasks and
+      // server-side contextual observation/placement checks, never as a second
+      // model-facing read transport.
+      if(nativeReadNames.some(name=>name.startsWith('mcp__atlas__')))
+        tools=tools.filter(tool=>tool.name==='atlas_workspace_run_dev_task');
       const registryReadNames=new Set<string>();
       if(!joining && this.capabilities &&
           (!nativeMcp || !!process.env.RELAY_GITHUB_WRITE_REPOS?.trim())) {
