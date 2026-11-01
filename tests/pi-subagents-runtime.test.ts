@@ -122,3 +122,38 @@ test('Pi research child policy explicitly grants only the audited read bridge',a
     else process.env.RELAY_PI_CHILD_MCP=prior;
   }
 });
+
+test('parallel Pi delegation usage listeners never count another subagent',async()=>{
+  const listeners=new Map<string,Set<(value:unknown)=>void>>();
+  const bus:SubagentsBus={
+    on(name,cb){
+      const handlers=listeners.get(name)??new Set<(value:unknown)=>void>();
+      handlers.add(cb);listeners.set(name,handlers);
+      return ()=>{handlers.delete(cb);if(!handlers.size)listeners.delete(name);};
+    },
+    emit(name,value){
+      const req=value as {requestId?:string};
+      if(name==='subagents:rpc:ping')
+        bus.emit(name+':reply:'+req.requestId,{success:true,data:{version:2}});
+      if(name==='subagents:rpc:spawn'){
+        bus.emit(name+':reply:'+req.requestId,{success:true,data:{id:'owned-child'}});
+        queueMicrotask(()=>{
+          bus.emit('subagents:started',{id:'owned-child'});
+          const usage={input:4,output:2,cacheRead:0,cacheWrite:0,cost:{total:0.002}};
+          bus.emit('subagents:usage',{id:'different-child',usage});
+          bus.emit('subagents:usage',{id:'owned-child',usage});
+          bus.emit('subagents:completed',{id:'owned-child',result:'Answer'});
+        });
+      }
+      for(const cb of listeners.get(name)??[])cb(value);
+    }
+  };
+  const recorded:string[]=[];
+  const runtime=piSubagentRuntime(new AbortController().signal,undefined,[],
+    undefined,value=>recorded.push(value.agentId));
+  runtime.extensionFactory({events:bus});
+  await runtime.tool.execute('t-usage',{prompt:'Analyze provided text'},
+    new AbortController().signal,undefined,{} as never);
+  assert.deepEqual(recorded,['owned-child']);
+  assert.equal(listeners.size,0);
+});
