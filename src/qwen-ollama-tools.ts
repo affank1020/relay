@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-type ToolSpec={type?:string;function?:{name?:string;parameters?:Record<string,unknown>}};
+export type ToolSpec={type?:string;function?:{name?:string;parameters?:Record<string,unknown>}};
 type Choice={index:number;message?:{role?:string;content?:unknown;tool_calls?:unknown[]};finish_reason?:string|null};
 export interface OpenAICompletion {
   id?:string;created?:number;model?:string;choices?:Choice[];
