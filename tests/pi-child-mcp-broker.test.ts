@@ -44,6 +44,8 @@ test('Unbound or unapproved children cannot invoke native MCP or write tools',as
   const broker=new PiChildMcpBroker(bus,controller.signal,async()=>{calls++;return {};});
   const reg=registry('agent1','session1');
   broker.bind('agent1',['mcp__github__issue_read'],reg);
+  assert.equal(broker.bind('unsafe-github',['mcp__github__create_issue'],
+    registry('unsafe-github','session-write')),false);
   const results:unknown[]=[];
   const listen=(id:string)=>bus.on('relay:child-mcp:reply:'+id,r=>results.push(r));
   const unsubs=[listen('deny1'),listen('deny2')];
@@ -100,4 +102,26 @@ test('Pi child extension exposes only a delegated read proxy and never credentia
   assert.match(response.content[0].text,/Retrieved real source body/);
   assert.equal(broker.verifiedReadCount,1);
   broker.close();
+});
+
+test('Pi child can use placement-checked Atlas reads but never approved Atlas mutations',async()=>{
+  const bus=new Bus(),ctrl=new AbortController();let calls=0;
+  const broker=new PiChildMcpBroker(bus,ctrl.signal,async(name,args)=>{
+    calls++;assert.equal(name,'atlas_workspace_read_file');
+    assert.equal((args as {checkoutId:string}).checkoutId,'safe-checkout');
+    return {content:[{type:'text',text:'verified Atlas data'}]};
+  });
+  const granted=broker.bind('child-atlas',['atlas_workspace_read_file'],
+    registry('child-atlas','session-atlas'));
+  assert.equal(granted,true);
+  assert.equal(broker.bind('unsafe',['atlas_workspace_run_dev_task'],
+    registry('unsafe','other-session')),false);
+  let received:unknown;
+  const off=bus.on('relay:child-mcp:reply:atlas1',x=>received=x);
+  bus.emit('relay:child-mcp:read',{requestId:'atlas1',sessionId:'session-atlas',
+    tool:'atlas_workspace_read_file',args:{checkoutId:'safe-checkout',path:'notes.md'}});
+  await settle();
+  assert.equal(calls,1);
+  assert.deepEqual(received,{success:true,text:'verified Atlas data'});
+  off();broker.close();
 });

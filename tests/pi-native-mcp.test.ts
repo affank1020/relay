@@ -141,3 +141,85 @@ test('opt-in Engine uses Pi native read names for scoped children and omits lega
     else process.env.RELAY_PI_NATIVE_MCP=prior;
   }
 });
+
+test('Atlas becomes a trusted native Pi read provider without exposing mutations or tokens',()=>{
+  const configs=configuredProviders({
+    ATLAS_MCP_URL:'https://atlas.affankhan.dev/mcp',
+    ATLAS_MCP_TOKEN:'private-atlas-token',
+    RELAY_GITHUB_TOKEN:'private-github-token'
+  });
+  const atlas=configs.find(p=>p.id==='atlas');
+  assert.ok(atlas);
+  assert.ok(atlas.readTools.includes('list_nodes'));
+  assert.ok(atlas.readTools.includes('list_workspaces'));
+  assert.ok(!atlas.readTools.includes('workspace_run_dev_task'));
+  const {run,store}=setup();
+  try{
+    run.providers.push({config:atlas,enabled:()=>true});
+    const exposed=nativeMcpAllowed(run);
+    assert.ok(exposed.includes('mcp__atlas__list_nodes'));
+    assert.ok(!exposed.includes('mcp__atlas__workspace_run_dev_task'));
+    const config=nativeMcpConfig(run);
+    const server=config.servers.find(p=>p.name==='atlas');
+    assert.ok(server);
+    assert.equal(server.config.exposure,'hidden');
+    assert.equal(server.config.toolExposure?.list_nodes,'deferred');
+    assert.equal(server.config.toolExposure?.workspace_run_dev_task,undefined);
+    assert.doesNotMatch(JSON.stringify(exposed),/private-atlas-token/);
+    assert.match(JSON.stringify(server.config),/private-atlas-token/);
+  }finally{store.close();}
+});
+
+test('Atlas native endpoint rejects arbitrary cleartext and credentialed URLs',()=>{
+  assert.throws(()=>configuredProviders({ATLAS_MCP_URL:'http://malicious.example/mcp'}),
+    /trusted local endpoint/);
+  assert.throws(()=>configuredProviders({ATLAS_MCP_URL:'https://user:password@atlas.example/mcp'}),
+    /trusted local endpoint/);
+  assert.doesNotThrow(()=>configuredProviders({
+    ATLAS_MCP_URL:'http://atlas:3100/mcp',ATLAS_MCP_TOKEN:''
+  }));
+});
+
+test('Pi native Atlas tool results preserve safe structured resource observations',()=>{
+  const {run,store}=setup();
+  try{
+    const configs=configuredProviders({ATLAS_MCP_URL:'https://atlas.affankhan.dev/mcp',
+      ATLAS_MCP_TOKEN:'private'});
+    run.providers.push({config:configs.find(c=>c.id==='atlas')!,enabled:()=>true});
+    const handlers=new Map<string,(e:any)=>unknown>();
+    nativeMcpAuditExtension(run).factory({on:(name:string,callback:(event:any)=>unknown)=>{
+      handlers.set(name,callback);return ()=>{};
+    }} as never);
+    const start=handlers.get('tool_call')!,end=handlers.get('tool_result')!;
+    assert.equal(start({toolName:'mcp__atlas__list_nodes',toolCallId:'atlas-check',
+      input:{}}),undefined);
+    end({toolName:'mcp__atlas__list_nodes',toolCallId:'atlas-check',
+      input:{},content:[],structuredContent:{result:{nodes:[]}},isError:false});
+    assert.equal((store.get('invocations',run.task.id+':atlas-check') as {state:string}).state,
+      'completed');
+    assert.ok(store.events(run.task.conversationId).some(e=>e.tool==='atlas:list_nodes' &&
+      e.state==='completed'));
+  }finally{store.close();}
+});
+
+test('MCP provider revoked during execution redacts the result and records failure',async()=>{
+  const {run,store,disable}=setup();
+  try{
+    const handlers=new Map<string,(event:any)=>unknown>();
+    nativeMcpAuditExtension(run).factory({on:(event:string,cb:(value:any)=>unknown)=>{
+      handlers.set(event,cb);return ()=>{};
+    }} as never);
+    const started=handlers.get('tool_call')!({toolName:'mcp__github__issue_read',
+      toolCallId:'revoked-read',input:{issue_number:29}});
+    assert.equal(started,undefined);
+    disable();
+    const result=await handlers.get('tool_result')!({toolName:'mcp__github__issue_read',
+      toolCallId:'revoked-read',input:{issue_number:29},
+      isError:false,content:[{type:'text',text:'sensitive data'}]});
+    assert.equal((result as {isError:boolean}).isError,true);
+    assert.doesNotMatch(JSON.stringify(result),/sensitive data/);
+    assert.equal((store.get('invocations',run.task.id+':revoked-read') as {state:string}).state,
+      'failed_read');
+    assert.ok(store.events(run.task.conversationId).some(e=>e.state==='failed'));
+  }finally{store.close();}
+});

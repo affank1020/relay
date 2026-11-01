@@ -36,6 +36,7 @@ jobs:
           test -f dist/server.js
           test -f dist/healthcheck.js
           test -f dist/atlas-smoke.js
+          test -f dist/pi-smoke.js
           test -f dist/public/app.js
           ! git ls-files | grep -E '^(src|tests|public)/.*\.(js|mjs|cjs|jsx)$'
       - name: Check deployment scripts and Compose

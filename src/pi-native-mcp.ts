@@ -3,6 +3,8 @@ import type { LoadedMcpConfig } from '@earendil-works/pi-coding-agent';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { Store, Task, InvocationRecord } from './store.js';
 import type { ProviderConfig } from './integrations/manager.js';
+import { observeAtlasResult } from './atlas-awareness.js';
+import { observeAtlasDetailResult } from './atlas-awareness-details.js';
 
 // Pi's own MCP transport/discovery owns connections and tool definitions.
 // Relay owns just admission and durable event attribution. Never load ambient
@@ -15,7 +17,8 @@ const legacyName=(id:string,name:string)=>'mcp_'+id+'_'+name;
 export function nativeMcpAllowed(run:NativeMcpRun):string[] {
   const child=!!run.task.parentId||!!run.task.delegation;
   const granted=new Set(run.task.delegation?.toolNames??[]);
-  return run.providers.filter(p=>p.enabled()&&!!p.config.token).flatMap(({config})=>
+  return run.providers.filter(p=>p.enabled()&&(!!p.config.token ||
+    (p.config.id==='atlas' && /^http:\/\/(?:localhost|127\.0\.0\.1|atlas)(?:[:/]|$)/.test(p.config.url)))).flatMap(({config})=>
     config.readTools.filter(name=>!child ||
       granted.has(legacyName(config.id,name))||granted.has(nativeName(config.id,name)))
       .map(name=>nativeName(config.id,name)));
@@ -26,14 +29,15 @@ export function nativeMcpConfig(run:NativeMcpRun):LoadedMcpConfig {
   const allowed=new Set(nativeMcpAllowed(run));
   return {
     errors:[],autoEnableCodemode:false,
-    servers:run.providers.filter(p=>p.enabled()&&!!p.config.token)
+    servers:run.providers.filter(p=>p.enabled()&&(!!p.config.token ||
+    (p.config.id==='atlas' && /^http:\/\/(?:localhost|127\.0\.0\.1|atlas)(?:[:/]|$)/.test(p.config.url))))
       .filter(({config})=>config.readTools.some(name=>allowed.has(nativeName(config.id,name))))
       .map(({config})=>({
         name:config.id,source:'relay:trusted',scope:'extension' as const,
         config:{
           type:'http' as const,url:config.url,enabled:true,
           description:config.label+' read-only tools (Relay approved)',
-          headers:{Authorization:'Bearer '+config.token},
+          ...(config.token?{headers:{Authorization:'Bearer '+config.token}}:{}),
           // Default deny: never discover arbitrary MCP writes or unknown tools.
           exposure:'hidden' as const,
           toolExposure:Object.fromEntries(config.readTools.map(name=>[name,
@@ -91,14 +95,49 @@ export function nativeMcpAuditExtension(run:NativeMcpRun) {
       const entry=active.get(event.toolCallId);
       if(!entry)return;
       active.delete(event.toolCallId);
+      // A provider may be disabled or an agent cancelled *during* dispatch.
+      // Do not deliver or audit a successful result after its authority ends.
+      const revoked=!nativeMcpCanInvoke(run,event.toolName);
+      const failed=event.isError||revoked;
       const stored=run.store.get<InvocationRecord>('invocations',entry.id);
       if(stored)run.store.save('invocations',{...stored,
-        state:event.isError?'failed_read':'completed'});
+        state:failed?'failed_read':'completed'});
       run.store.event(run.task.conversationId,{taskId:run.task.id,
         agentId:run.task.agentId??null,agentRunId:run.task.agentRunId??null,
         invocationId:entry.invocationId,tool:entry.providerId+':'+entry.toolName,
-        type:'tool',state:event.isError?'failed':'completed'});
+        type:'tool',state:failed?'failed':'completed'});
+      if(!failed&&entry.providerId==='atlas'){
+        // Keep Atlas awareness as Relay's bespoke layer above Pi transport.
+        // Only allowlisted, bounded resource observations enter the audit log.
+        let raw:Record<string,unknown>|undefined;
+        const structured=event.structuredContent;
+        if(structured&&typeof structured==='object'&&!Array.isArray(structured)){
+          const value=structured as Record<string,unknown>;
+          raw=(value.result&&typeof value.result==='object'&&!Array.isArray(value.result)
+            ?value.result:value) as Record<string,unknown>;
+        }else{
+          const text=event.content.filter(v=>v.type==='text').map(v=>v.text).join('');
+          if(text.length<=256000)try{
+            const value=JSON.parse(text) as {structuredContent?:{result?:unknown};result?:unknown};
+            const candidate=value.structuredContent?.result??value.result??value;
+            if(candidate&&typeof candidate==='object'&&!Array.isArray(candidate))
+              raw=candidate as Record<string,unknown>;
+          }catch{/* Unsupported provider response; no synthetic observation. */}
+        }
+        if(raw){
+          const observation=observeAtlasResult(entry.toolName,event.input,raw) ??
+            observeAtlasDetailResult(entry.toolName,event.input,raw);
+          if(observation)run.store.event(run.task.conversationId,{
+            taskId:run.task.id,agentId:run.task.agentId??null,
+            agentRunId:run.task.agentRunId??null,
+            invocationId:entry.invocationId,type:'atlas_resource',state:'completed',
+            atlasResource:observation});
+        }
+      }
       // No response bodies, arguments or tokens are written to event records.
+      if(revoked)return {content:[{type:'text' as const,
+        text:'MCP capability revoked while executing; no verified result available'}],
+        structuredContent:null,isError:true};
     });
   }};
 }

@@ -4,13 +4,14 @@ import { dirname,join } from 'node:path';
 import type { SubagentsBus, SubagentTransition } from './pi-subagents-rpc.js';
 import { PiSubagentsRpc } from './pi-subagents-rpc.js';
 import { PiChildMcpBroker } from './pi-child-mcp-broker.js';
+import { piSubagentsEnabled,piChildMcpEnabled } from './pi-mode.js';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Type } from '@sinclair/typebox';
 
 // Explicit, opt-in operator mode. Never install or discover arbitrary Pi
 // extensions from untrusted projects or from a user's chat prompt.
 export function piSubagentEnabled(task:{parentId:string|null;delegation?:unknown}):boolean {
-  return process.env.RELAY_PI_SUBAGENTS==='1' && !task.parentId && !task.delegation;
+  return piSubagentsEnabled() && !task.parentId && !task.delegation;
 }
 /** Upstream tools must not bypass Relay's audited bridge. This list is not
  * the security boundary: the live tool_call hook blocks every other name. */
@@ -24,7 +25,7 @@ export function verifyPiSubagentsPolicy(projectRoot=process.cwd()):void {
     'extensions: false','skills: false','isolated: true'])
     if(!file.split(/\r?\n/).includes(required))
       throw new Error('Reviewed Pi subagent capability policy missing or changed');
-  if(process.env.RELAY_PI_CHILD_MCP==='1'){
+  if(piChildMcpEnabled()){
     const child=readFileSync(join(projectRoot,'.pi','agents','relay-research.md'),'utf8');
     for(const required of ['name: relay-research',
       'tools: ext:pi-child-mcp-extension/relay_child_mcp_read',
@@ -53,9 +54,16 @@ export interface PiSubagentRuntime {
   tool:ToolDefinition;
   extensionFactory:(pi:{events:SubagentsBus})=>void;
 }
+export interface PiChildUsage {
+  agentId:string;
+  usage:{input:number;output:number;cacheRead:number;cacheWrite:number;
+    costUsd:number|null};
+}
 export function piSubagentRuntime(signal:AbortSignal,
   onTransition?:(event:SubagentTransition)=>void,
-  allowedReadNames:readonly string[]=[]):PiSubagentRuntime {
+  allowedReadNames:readonly string[]=[],
+  onReadReceipt?:(agentId:string,tool:string,success:boolean)=>void,
+  onChildUsage?:(usage:PiChildUsage)=>void):PiSubagentRuntime {
   let rpc:PiSubagentsRpc|undefined;
   let bus:SubagentsBus|undefined;
   return {
@@ -75,22 +83,52 @@ export function piSubagentRuntime(signal:AbortSignal,
         if(requested.length!==new Set(requested).size ||
             requested.some(name=>!allowedReadNames.includes(name)))
           throw new Error('Requested child MCP tool is not authorised for this run');
-        if(requested.length&&process.env.RELAY_PI_CHILD_MCP!=='1')
+        if(requested.length&&!piChildMcpEnabled())
           throw new Error('Child MCP broker is not enabled on this Relay server');
         const broker=requested.length?new PiChildMcpBroker(bus,signal,
           async (name,params)=>{
-            // Every call goes through Pi's admitted parent tool, so Relay's
-            // native MCP audit hook checks provider status, run identity and
-            // persists a real execution receipt. No new transport or token.
+            // Nested Pi tool calls preserve native provider revocation, approval
+            // and audit guards; no child credentials or duplicate transport.
             const result=await ctx.executeTool(name,params);
             return result as {isError?:boolean;content?:Array<{type:string;text?:string}>};
-          }):undefined;
+          },(agentId,tool,success)=>onReadReceipt?.(agentId,tool,success)):undefined;
+        // Observe usage only for the lifetime of this delegated call. A
+        // process-level Pi bus can outlive a single root task; never leak
+        // its budget callback into another conversation.
+        const ownedAgents=new Set<string>();
+        const bufferedUsage=new Map<string,PiChildUsage[]>();
+        const unlistenUsage=onChildUsage?bus.on('subagents:usage',value=>{
+          if(!value||typeof value!=='object')return;
+          const raw=value as {id?:unknown;usage?:Record<string,unknown>};
+          if(typeof raw.id!=='string'||!raw.usage)return;
+          const u=raw.usage;
+          const safe=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1e9?v:null;
+          const input=safe(u.input),output=safe(u.output);
+          const cacheRead=safe(u.cacheRead),cacheWrite=safe(u.cacheWrite);
+          const cost=u.cost&&typeof u.cost==='object'
+            ?safe((u.cost as Record<string,unknown>).total):null;
+          if(input===null||output===null||cacheRead===null||cacheWrite===null)return;
+          const item:PiChildUsage={agentId:raw.id,
+            usage:{input,output,cacheRead,cacheWrite,costUsd:cost}};
+          if(ownedAgents.has(raw.id))onChildUsage(item);
+          else if(bufferedUsage.size<16){
+            const entries=bufferedUsage.get(raw.id)??[];
+            if(entries.length<32)entries.push(item);
+            bufferedUsage.set(raw.id,entries);
+          }
+        }):()=>{};
         let binding:Promise<boolean>|undefined;
         try{
           const result=await rpc.run({prompt:args.prompt,
             type:requested.length?'relay-research':'relay-isolated',
             signal:ctxSignal??signal,maxTurns:12,maxRunMs:60000,
             onTransition:event=>{
+              // Started and usage notifications may arrive before the RPC
+              // spawn acknowledgement. Replay only usage for the verified
+              // agent ID that PiSubagentsRpc matched to this delegation.
+              ownedAgents.add(event.agentId);
+              for(const usage of bufferedUsage.get(event.agentId)??[])onChildUsage?.(usage);
+              bufferedUsage.delete(event.agentId);
               onTransition?.(event);
               if(event.status==='started'&&broker)
                 binding=broker.bindWhenReady(event.agentId,requested);
@@ -104,7 +142,7 @@ export function piSubagentRuntime(signal:AbortSignal,
             agentId:result.agentId,result:result.result,
             sourceTools:requested,verifiedExternalSources:!!broker?.verifiedReadCount
           })}],details:{}};
-        }finally{broker?.close();}
+        }finally{broker?.close();unlistenUsage();}
       }
     }
   };

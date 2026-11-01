@@ -11,12 +11,14 @@
     "test": "npm run build && node --import tsx --test --test-timeout=65000 tests/*.test.ts",
     "typecheck": "npm run check",
     "verify": "npm run check && npm test",
-    "atlas:smoke": "node dist/atlas-smoke.js"
+    "atlas:smoke": "node dist/atlas-smoke.js",
+    "pi:smoke": "node dist/pi-smoke.js"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@sinclair/typebox": "^0.34.52"
+    "@sinclair/typebox": "^0.34.52",
+    "@tintinweb/pi-subagents": "0.22.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
