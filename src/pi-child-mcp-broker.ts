@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { SubagentsBus } from './pi-subagents-rpc.js';
+import { READ_TOOLS } from './gateway.js';
 
 type RecordView={session?:{sessionManager?:{getSessionId?:()=>string}}};
 export type ChildRegistry={getRecord:(id:string)=>RecordView|undefined};
@@ -15,6 +16,9 @@ export interface ParentReadExecutor {
   (name:string,args:unknown):Promise<ChildReadResult>;
 }
 export interface ChildReadGrant { agentId:string;sessionId:string;tools:ReadonlySet<string> }
+const approvedReadName=(name:string):boolean =>
+  /^mcp__[a-z0-9_]+__[a-zA-Z0-9_]+$/.test(name) ||
+  (name.startsWith('atlas_')&&READ_TOOLS.has(name.slice('atlas_'.length)));
 const MAX_PENDING=16;
 const MAX_OUTPUT=32000;
 const valid=(s:unknown,max=128):s is string=>typeof s==='string'&&s.length>0&&s.length<=max;
@@ -42,7 +46,7 @@ export class PiChildMcpBroker {
   bind(agentId:string,allowed:readonly string[],registry=piChildRegistry()):boolean {
     if(this.closed||this.rootSignal.aborted||!registry||!valid(agentId))return false;
     const actual=registry.getRecord(agentId)?.session?.sessionManager?.getSessionId?.();
-    if(!valid(actual,256)||!allowed.length||allowed.some(name=>!/^mcp__[a-z0-9_]+__[a-zA-Z0-9_]+$/.test(name)))
+    if(!valid(actual,256)||!allowed.length||allowed.some(name=>!approvedReadName(name)))
       return false;
     if([...this.grants.values()].some(g=>g.agentId===agentId||g.sessionId===actual))return false;
     this.grants.set(actual,{agentId,sessionId:actual,tools:new Set(allowed)});
