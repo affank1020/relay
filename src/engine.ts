@@ -531,7 +531,10 @@ export class Engine {
           {maxItems:16,uniqueItems:true,description:'Pass only the read-only tools this child needs. Omission grants no external tools.'})
         :Type.Array(Type.String(),
           {maxItems:0,description:'No external read tools are currently admitted; this child cannot research live sources.'});
-      if(!joining)tools.push({
+      // Use exactly one delegation backend per root session. In native Pi
+      // subagent mode the SDK extension owns child execution; Relay does not
+      // also offer its SQLite-based relay_delegate scheduler.
+      if(!joining&&process.env.RELAY_PI_SUBAGENTS!=='1')tools.push({
         name:'relay_delegate',label:'Delegate task',
         description:'Spawn a bounded child agent; parent waits and synthesises results. Children have NO external tools by default. For tasks that require GitHub or Atlas evidence, set requiredToolProvider to that provider AND explicitly grant its relevant tools in tools; if that provider is unavailable, admission fails without spawning a tool-less researcher. Never invent sources. Repeated identical requests to the same parent reuse the existing child.',
         parameters:Type.Object({
@@ -651,6 +654,10 @@ export class Engine {
       const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,atlasAvailable,
         modelKey:task.modelKey??this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,
         task:{...task,prompt},signal:controller.signal,tools,nativeMcp,
+        onSubagent:event=>this.store.event(task.conversationId,{
+          taskId:task.id,agentId:event.agentId,agentRunId:task.agentRunId??null,
+          type:'pi_subagent',state:event.status,tool:'pi-subagents'
+        }),
         onSkills:names=>{for(const name of names)this.store.event(task.conversationId,{
           taskId:task.id,agentRunId:task.agentRunId??null,agentId:task.agentId??null,
           type:'skill',state:'loaded',tool:name});},

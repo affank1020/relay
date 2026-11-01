@@ -9,6 +9,10 @@ COPY scripts/build.sh ./scripts/build.sh
 COPY scripts/atlas-smoke.ts ./scripts/atlas-smoke.ts
 RUN npm run check && npm run build
 RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund
+# Optional Pi subagent engine is pinned and only activated by RELAY_PI_SUBAGENTS=1.
+# Package scripts are never executed; the extension remains untrusted code
+# until the operator intentionally opts in after reviewing the package.
+RUN npm install --no-save --omit=dev --ignore-scripts --no-audit --no-fund @tintinweb/pi-subagents@0.22.1
 
 FROM node:22-bookworm-slim
 WORKDIR /app
@@ -20,6 +24,7 @@ COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/skills ./skills
+COPY .pi ./.pi
 RUN mkdir -p /data && chown node:node /data
 USER node
 EXPOSE 8765
