@@ -157,6 +157,9 @@ export class ConnectionManager {
   constructor(private readonly configs:ProviderConfig[],private readonly enabled:(id:string)=>boolean,
     private readonly makeTransport:(config:ProviderConfig)=>ProviderTransport=c=>new HttpProviderTransport(c)) {}
   contains(id:string):boolean{return this.configs.some(p=>p.id===id);}
+  // Keep trusted server configuration in one registry. Pi owns transport and
+  // tool discovery for the native path; this exposes no credentials to clients.
+  nativeProviders(){return this.configs.map(config=>({config,enabled:()=>this.enabled(config.id)}));}
   list():IntegrationStatus[]{
     return this.configs.map(p=>({
       id:p.id,label:p.label,enabled:this.enabled(p.id),configured:!!p.token,
