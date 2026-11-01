@@ -99,3 +99,20 @@ test('Engine uses one Pi executor and does not schedule a duplicate join for its
     else process.env.RELAY_PI_SUBAGENTS=old;
   }
 });
+
+test('recovery interrupts a Pi subagent projection rather than rescheduling it',async()=>{
+  const {store,parent}=fixture();
+  const ledger=new PiSubagentLedger(store,parent);
+  const child=ledger.record({agentId:'pi-agent-restart',status:'started'});
+  assert.equal(child?.state,'running');
+  let calls=0;
+  const harness:Harness={version:1,capabilities:{persistence:true,cancellation:true,tools:true},
+    run:async()=>{calls++;return 'Unexpected resumed run';}};
+  const recovering=new Engine(store,harness,limits);
+  try{
+    assert.equal(store.get<Task>('tasks',parent.id)?.state,'interrupted');
+    assert.equal(store.get<Task>('tasks',child!.id)?.state,'interrupted');
+    assert.equal(ledger.record({agentId:'pi-agent-restart',status:'completed',result:'late'}),undefined);
+    assert.equal(calls,0);
+  }finally{await recovering.stop();store.close();}
+});
