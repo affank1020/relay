@@ -86,7 +86,8 @@ test('local Qwen delegation inherits the selected model and accepts only its own
       assert.ok(tool);
       const schema=tool.parameters as unknown as {properties:{modelKey?:{anyOf?:Array<{const?:string}>}}};
       assert.deepEqual(schema.properties.modelKey?.anyOf?.map(option=>option.const),
-        registry.models.map(model=>model.key),'model overrides must be an exact catalog enum, not arbitrary text');
+        [...registry.models.map(model=>model.key),'qwen3-coder:30b'],
+        'only configured model keys and the selected local model ID may be used');
       await delegate(request,'research without override',{profile:'researcher'});
       await delegate(request,'research with Ollama ID',{modelKey:'qwen3-coder:30b'});
       await assert.rejects(

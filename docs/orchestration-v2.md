@@ -19,7 +19,8 @@ The provider-neutral event model is extended, not replaced. Skills/MCP registrat
 Children inherit the **parent's selected model** by default, including an Ollama
 Qwen model. The optional `modelKey` override is offered to the Pi tool as an
 enum of exact, currently configured Relay model keys, such as
-`ollama/qwen3-coder:30b`, not arbitrary display names. For compatibility,
+`ollama/qwen3-coder:30b`, plus the current local model's exact Ollama ID
+as a shorthand. Arbitrary display names are not accepted. For compatibility,
 a child may supply the raw Ollama model ID only when it matches the exact
 selected local parent model: it is interpreted as **inheritance**, never as
 a provider switch. Invalid, unknown or unauthorised model requests still fail

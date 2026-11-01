@@ -500,6 +500,14 @@ export class Engine {
         const allowed=new Set(task.delegation?.toolNames??[]);
         tools=tools.filter(tool=>allowed.has(tool.name)&&admitted.includes(tool.name));
       }
+      const delegateModelKeys=this.modelRegistry?.models.map(model=>model.key)??[];
+      // Accept a shorthand ONLY for the currently selected Ollama model.
+      // It must be visible in the Pi tool schema as well as in admission,
+      // otherwise Pi rejects the input before compatibility handling runs.
+      const selectedOllamaId=task.modelKey?.startsWith('ollama/')
+        ?task.modelKey.slice('ollama/'.length):null;
+      if(selectedOllamaId && delegateModelKeys.includes(task.modelKey!))
+        delegateModelKeys.push(selectedOllamaId);
       if(!joining)tools.push({
         name:'relay_delegate',label:'Delegate task',
         description:'Spawn a bounded independent child agent and return its durable task/run IDs. By default the child inherits the exact current model, including local Ollama/Qwen; omit modelKey unless changing models deliberately. The parent automatically waits and synthesises child results. External child tools must be explicitly admitted read-only capabilities.',
@@ -512,10 +520,10 @@ export class Engine {
             Type.Literal('reviewer'),Type.Literal('implementer')])),
           // The default is deliberately inheritance; constrain explicit
           // overrides to actual provider-qualified keys, not invented labels.
-          ...(this.modelRegistry?.models.length?{
+          ...(delegateModelKeys.length?{
             modelKey:Type.Optional(Type.Union(
-              this.modelRegistry.models.map(model=>Type.Literal(model.key)),
-              {description:'Optional. Omit to use the parent agent\'s selected model. Override only using an exact Relay model key, e.g. ollama/qwen3-coder:30b; never a display name.'}
+              delegateModelKeys.map(key=>Type.Literal(key)),
+              {description:'Optional. Omit to inherit the parent agent\'s model. Use an exact configured Relay key such as ollama/qwen3-coder:30b, or the current parent\'s exact Ollama ID as shorthand. Display names are not valid.'}
             ))
           }:{}),
           maxTokens:Type.Optional(Type.Integer({minimum:1,maximum:1000000})),
