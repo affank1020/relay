@@ -55,8 +55,11 @@ test('Unbound or unapproved children cannot invoke native MCP or write tools',as
     tool:'mcp__github__issue_read',args:{}});
   await settle();
   assert.equal(calls,0);
-  assert.equal(results.length,2);
-  assert.ok(results.every(r=>(r as {success:boolean}).success===false));
+  // A broker must reject forbidden tools on an owned session, but it must
+  // stay silent about unrelated/unbound sessions (another Pi broker may own
+  // them). The child-side tool itself fails closed on timeout if no one owns it.
+  assert.equal(results.length,1);
+  assert.equal((results[0] as {success:boolean}).success,false);
   broker.revoke('agent1');
   const off=listen('deny3');
   bus.emit('relay:child-mcp:read',{requestId:'deny3',sessionId:'session1',
@@ -124,4 +127,34 @@ test('Pi child can use placement-checked Atlas reads but never approved Atlas mu
   assert.equal(calls,1);
   assert.deepEqual(received,{success:true,text:'verified Atlas data'});
   off();broker.close();
+});
+
+test('two simultaneous Pi child brokers never send competing success/denial replies',async()=>{
+  const bus=new Bus(),controller=new AbortController(),replies=new Map<string,unknown[]>();
+  const first=new PiChildMcpBroker(bus,controller.signal,async()=>({
+    content:[{type:'text',text:'verified issue 28'}]
+  }));
+  const second=new PiChildMcpBroker(bus,controller.signal,async()=>({
+    content:[{type:'text',text:'verified issue 29'}]
+  }));
+  try{
+    assert.equal(first.bind('child-28',['mcp__github__issue_read'],
+      registry('child-28','sid-28')),true);
+    assert.equal(second.bind('child-29',['mcp__github__issue_read'],
+      registry('child-29','sid-29')),true);
+    const unsubs=['read-28','read-29'].map(id=>bus.on(
+      'relay:child-mcp:reply:'+id,reply=>{
+        const arr=replies.get(id)??[];arr.push(reply);replies.set(id,arr);
+      }));
+    bus.emit('relay:child-mcp:read',{requestId:'read-28',
+      sessionId:'sid-28',tool:'mcp__github__issue_read',args:{issue_number:28}});
+    bus.emit('relay:child-mcp:read',{requestId:'read-29',
+      sessionId:'sid-29',tool:'mcp__github__issue_read',args:{issue_number:29}});
+    await settle();
+    assert.deepEqual(replies.get('read-28'),[{success:true,text:'verified issue 28'}]);
+    assert.deepEqual(replies.get('read-29'),[{success:true,text:'verified issue 29'}]);
+    assert.equal(first.verifiedReadCount,1);
+    assert.equal(second.verifiedReadCount,1);
+    for(const remove of unsubs)remove();
+  }finally{first.close();second.close();}
 });

@@ -52,6 +52,7 @@ export function pinnedSubagentsExtension():string {
 }
 export interface PiSubagentRuntime {
   tool:ToolDefinition;
+  batchTool:ToolDefinition;
   extensionFactory:(pi:{events:SubagentsBus})=>void;
 }
 export interface PiChildUsage {
@@ -66,7 +67,7 @@ export function piSubagentRuntime(signal:AbortSignal,
   onChildUsage?:(usage:PiChildUsage)=>void):PiSubagentRuntime {
   let rpc:PiSubagentsRpc|undefined;
   let bus:SubagentsBus|undefined;
-  return {
+  const runtime = {
     extensionFactory:pi=>{bus=pi.events;rpc=new PiSubagentsRpc(pi.events);},
     tool:{
       name:'relay_pi_delegate',label:'Pi subagent',
@@ -133,7 +134,7 @@ export function piSubagentRuntime(signal:AbortSignal,
               ownedAgents.add(event.agentId);
               for(const usage of bufferedUsage.get(event.agentId)??[])onChildUsage?.(usage);
               bufferedUsage.delete(event.agentId);
-              onTransition?.(event);
+              onTransition?.({...event,profile:requested.length?'research':'analysis'});
               if(event.status==='started'&&broker)
                 binding=broker.bindWhenReady(event.agentId,requested);
               if(event.status!=='started')broker?.revoke(event.agentId);
@@ -149,5 +150,64 @@ export function piSubagentRuntime(signal:AbortSignal,
         }finally{broker?.close();unlistenUsage();}
       }
     }
+  } as Pick<PiSubagentRuntime,'extensionFactory'|'tool'>;
+  // Batch fan-out is a single *model-facing* call that starts all approved
+  // children concurrently through Pi's native executor, not a Relay scheduler.
+  // This prevents a model from replacing two requested child reads with a
+  // sequence of direct parent reads followed by one tool-less summary agent.
+  const batchTool:ToolDefinition={
+    name:'relay_pi_delegate_batch',
+    label:'Parallel Pi subagents',
+    description:'Spawn TWO to FOUR independent Pi subagents concurrently and await every real child result. Use this for parallel research or multiple independent sources. Each task MUST specify its own exact tools, e.g. ["mcp__github__issue_read"] for GitHub research. A tool-less child CANNOT fetch sources. Do not substitute direct parent reads for requested child execution.',
+    parameters:Type.Object({tasks:Type.Array(Type.Object({
+      prompt:Type.String({minLength:1,maxLength:6000}),
+      tools:Type.Array(Type.String(),{maxItems:4})
+    }),{minItems:2,maxItems:4})}),
+    execute:async (toolCallId,input,ctxSignal,update,ctx)=>{
+      const tasks=(input as {tasks?:Array<{prompt:string;tools:string[]}>}).tasks;
+      if(!Array.isArray(tasks)||tasks.length<2||tasks.length>4)
+        throw new Error('Parallel Pi delegation needs 2–4 separate child tasks');
+      // Validate EVERY task before starting ANY child. A partial batch must
+      // not accidentally launch privileged or source-free researchers.
+      for(const task of tasks){
+        if(!task||typeof task.prompt!=='string'||!task.prompt.trim()||
+            task.prompt.length>6000||!Array.isArray(task.tools)||
+            task.tools.length>4||task.tools.some(n=>typeof n!=='string')||
+            task.tools.length!==new Set(task.tools).size||
+            task.tools.some(name=>!allowedReadNames.includes(name)))
+          throw new Error('Parallel child has invalid or unauthorised tool grants');
+        if(!task.tools.length&&/\b(github|issue\s*#?\d+|mcp|atlas|fetch|external source|repository)\b/i.test(task.prompt))
+          throw new Error('Parallel GitHub/Atlas researchers require explicit read tools');
+        if(task.tools.length&&!piChildMcpEnabled())
+          throw new Error('Parallel child MCP broker is not enabled');
+      }
+      // Individual child invocations retain separate per-child broker grants,
+      // receipts, usage and IDs; Promise.allSettled waits for all children
+      // even if one fails. Never silently report partial research as success.
+      const results=await Promise.allSettled(tasks.map((task,index)=>
+        runtime.tool.execute(toolCallId+':'+index,task,ctxSignal,update,ctx)));
+      const summaries=results.map((result,index)=>{
+        if(result.status==='rejected')return {index,status:'failed',
+          error:result.reason instanceof Error?result.reason.message:'Pi child failed'};
+        const response=result.value;
+        const text=response.content.filter(part=>part.type==='text')
+          .map(part=>part.text).join('');
+        try{
+          const parsed=JSON.parse(text) as {agentId?:string;result?:string;verifiedExternalSources?:boolean};
+          if(!parsed.agentId||typeof parsed.result!=='string'||
+              (tasks[index].tools.length&&!parsed.verifiedExternalSources))
+            return {index,status:'failed',error:'Child did not produce verified research'};
+          return {index,status:'completed',...parsed};
+        }catch{return {index,status:'failed',error:'Child produced no structured result'};}
+      });
+      if(summaries.some(s=>s.status!=='completed'))
+        throw new Error('Parallel Pi delegation incomplete: '+
+          summaries.filter(s=>s.status==='failed').map(s=>`child ${s.index}: ${s.error}`).join('; '));
+      return {content:[{type:'text' as const,text:JSON.stringify({
+        status:'completed',requested:tasks.length,verifiedChildren:summaries.length,
+        children:summaries
+      })}],details:{}};
+    }
   };
+  return {...runtime,batchTool};
 }

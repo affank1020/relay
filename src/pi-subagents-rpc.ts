@@ -12,6 +12,8 @@ export interface SubagentTransition {
   status:'started'|'completed'|'failed'|'stopped';
   result?:string;
   error?:string;
+  /** Relay-only classification; not taken from untrusted plugin event payloads. */
+  profile?:'research'|'analysis';
 }
 export interface SubagentRunOptions {
   prompt:string;
