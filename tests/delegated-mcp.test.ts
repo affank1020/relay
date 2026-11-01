@@ -40,6 +40,10 @@ test('child profiles use only explicitly selected MCP read tools and persist str
         assert.ok(request.tools.some(t=>t.name==='mcp_github_issue_read'));
         assert.ok(request.tools.some(t=>t.name==='mcp_github_get_file_contents'));
         assert.ok(!request.tools.some(t=>t.name==='mcp_github_create_issue'));
+        const delegateSchema=JSON.stringify(request.tools.find(t=>t.name==='relay_delegate')!.parameters);
+        assert.match(delegateSchema,/"const":"mcp_github_issue_read"/);
+        assert.match(delegateSchema,/"const":"mcp_github_get_file_contents"/);
+        assert.doesNotMatch(delegateSchema,/mcp_github_create_issue/);
         await delegate(request,'scoped child',{profile:'researcher',tools:['mcp_github_issue_read']});
         await delegate(request,'isolated child',{profile:'reviewer'});
         return 'Delegated safely.';
@@ -264,5 +268,44 @@ test('nested plain-text synthesis uses its final continuation, not pre-join tran
     const join=engine.tasks().find(t=>t.continuationOf===nested.id)!;
     assert.equal(join.result,finalReport);
     assert.match(store.get<Task>('tasks',root.id)!.result,/Root has the final nested result/);
+  }finally{await engine.stop();store.close();}
+});
+
+test('tool-less researcher is warned about the lack of independent verification',async()=>{
+  const store=new Store(':memory:');
+  const harness:Harness={version:1,capabilities:{persistence:true,cancellation:true,tools:true},
+    run:async request=>{
+      if(request.task.prompt==='root research'){
+        const delegateTool=request.tools.find(t=>t.name==='relay_delegate')!;
+        const schema=delegateTool.parameters as {properties:{tools:{maxItems:number}}};
+        assert.equal(schema.properties.tools.maxItems,0);
+        const serialized=JSON.stringify(delegateTool.parameters);
+        assert.match(serialized,/"maxItems":0/);
+        await delegate(request,'Verify latest independent research',{profile:'researcher'});
+        return 'Awaiting research.';
+      }
+      if(request.task.kind==='join'){
+        assert.match(request.task.prompt,/No external verification was possible/);
+        return 'No live verification available.';
+      }
+      if(request.task.prompt.startsWith('Verify latest independent research')){
+        assert.deepEqual(request.tools.map(tool=>tool.name),['relay_delegate']);
+        assert.match(request.task.prompt,/Verification limitation: No external read tools/);
+        assert.match(request.task.prompt,/never invent citations or tool execution/);
+        return JSON.stringify({relayHandoff:{
+          summary:'No external verification was possible',evidence:[],artifacts:[],
+          openQuestions:['Provide an approved research source.']
+        }});
+      }
+      throw new Error('Unexpected task '+request.task.prompt);
+    }};
+  const engine=new Engine(store,harness,limits);
+  try{
+    const c=engine.conversation(),root=engine.enqueue(c.id,'root research','no-read-tools-001');
+    await until(()=>store.get<Task>('tasks',root.id)?.state==='completed');
+    const child=engine.tasks().find(task=>task.parentId===root.id)!;
+    assert.deepEqual(child.delegation?.toolNames,[]);
+    assert.equal(child.handoff?.summary,'No external verification was possible');
+    assert.match(store.get<Task>('tasks',root.id)!.result,/No live verification available/);
   }finally{await engine.stop();store.close();}
 });
