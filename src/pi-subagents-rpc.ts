@@ -15,7 +15,7 @@ export interface SubagentTransition {
 }
 export interface SubagentRunOptions {
   prompt:string;
-  type:'relay-isolated';
+  type:'relay-isolated'|'relay-research';
   signal:AbortSignal;
   maxTurns?:number;
   maxRunMs?:number;
@@ -83,7 +83,7 @@ export class PiSubagentsRpc {
   }
   async run(options:SubagentRunOptions):Promise<{agentId:string;result:string}> {
     const prompt=options.prompt.trim();
-    if(!prompt||prompt.length>6000||options.type!=='relay-isolated')
+    if(!prompt||prompt.length>6000||!['relay-isolated','relay-research'].includes(options.type))
       throw Error('Invalid isolated subagent request');
     const maxTurns=boundedInt(options.maxTurns,12,32,'subagent turns');
     const maxRunMs=boundedInt(options.maxRunMs,60000,300000,'subagent duration');
@@ -146,9 +146,10 @@ export class PiSubagentsRpc {
       // This RPC's isolated flag strips extensions and Skills. An operator
       // must additionally supply a reviewed "relay-isolated" agent definition
       // with ALL builtin shell/filesystem tools denied.
-      const reply=await this.rpc('spawn',{type:'relay-isolated',prompt,
-        options:{isolated:true,inheritContext:false,isBackground:true,
-          maxTurns,description:'Relay isolated delegated task'}});
+      const reply=await this.rpc('spawn',{type:options.type,prompt,
+        options:{isolated:options.type==='relay-isolated',inheritContext:false,isBackground:true,
+          maxTurns,description:options.type==='relay-research'
+            ?'Relay scoped read-only research task':'Relay isolated delegated task'}});
       if(!object(reply)||typeof reply.id!=='string'||!reply.id)
         throw Error('Pi subagent RPC did not return an agent ID');
       agentId=reply.id;
