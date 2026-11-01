@@ -4,6 +4,7 @@ import { dirname,join } from 'node:path';
 import type { SubagentsBus, SubagentTransition } from './pi-subagents-rpc.js';
 import { PiSubagentsRpc } from './pi-subagents-rpc.js';
 import { PiChildMcpBroker } from './pi-child-mcp-broker.js';
+import { sharedPiChildMcpBus } from './pi-child-mcp-bus.js';
 import { piSubagentsEnabled,piChildMcpEnabled } from './pi-mode.js';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Type } from '@sinclair/typebox';
@@ -90,7 +91,7 @@ export function piSubagentRuntime(signal:AbortSignal,
           throw new Error('Child MCP broker is not enabled on this Relay server');
         if(!rpc||!bus||!(await rpc.available(signal)))
           throw new Error('Pi subagents extension RPC unavailable; no child was spawned');
-        const broker=requested.length?new PiChildMcpBroker(bus,signal,
+        const broker=requested.length?new PiChildMcpBroker(sharedPiChildMcpBus(),signal,
           async (name,params)=>{
             // Nested Pi tool calls preserve native provider revocation, approval
             // and audit guards; no child credentials or duplicate transport.
