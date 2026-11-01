@@ -65,9 +65,9 @@ test('Unbound or unapproved children cannot invoke native MCP or write tools',as
 
 test('Revocation during a pending MCP call rejects results and records no verified read',async()=>{
   const bus=new Bus(),controller=new AbortController();
-  let finish!:(value:unknown)=>void;
+  let finish!:(value:{content:Array<{type:string;text:string}>})=>void;
   const broker=new PiChildMcpBroker(bus,controller.signal,async()=>
-    await new Promise(resolve=>{finish=resolve;}) as never);
+    await new Promise<{content:Array<{type:string;text:string}>}>(resolve=>{finish=resolve;}));
   broker.bind('agent1',['mcp__github__issue_read'],registry('agent1','session1'));
   let result:unknown;
   const off=bus.on('relay:child-mcp:reply:pending',x=>result=x);
