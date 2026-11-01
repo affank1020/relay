@@ -62,6 +62,8 @@ test('MCP admission, correlated receipts and disable-in-flight are enforced',asy
   try{
     const tools=await manager.tools(task,store,new AbortController().signal);
     assert.deepEqual(tools.map(t=>t.name),['mcp_github_issue_read']);
+    assert.match(tools[0].description,/Read one specific GitHub issue by number/);
+    assert.match(tools[0].description,/Do not substitute repository\/code search/);
     await tools[0].execute('id-1',{owner:'owner'},new AbortController().signal,undefined,{} as never);
     assert.equal(calls,1);
     assert.deepEqual(store.events(conversationId).map(e=>e.state),['validating','started','completed']);
