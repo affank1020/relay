@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname,join } from 'node:path';
 import type { SubagentsBus, SubagentTransition } from './pi-subagents-rpc.js';
 import { PiSubagentsRpc } from './pi-subagents-rpc.js';
+import { PiChildMcpBroker } from './pi-child-mcp-broker.js';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Type } from '@sinclair/typebox';
 
@@ -23,6 +24,16 @@ export function verifyPiSubagentsPolicy(projectRoot=process.cwd()):void {
     'extensions: false','skills: false','isolated: true'])
     if(!file.split(/\r?\n/).includes(required))
       throw new Error('Reviewed Pi subagent capability policy missing or changed');
+  if(process.env.RELAY_PI_CHILD_MCP==='1'){
+    const child=readFileSync(join(projectRoot,'.pi','agents','relay-research.md'),'utf8');
+    for(const required of ['name: relay-research',
+      'tools: ext:pi-child-mcp-extension/relay_child_mcp_read',
+      'disallowed_tools: read, bash, powershell, write, edit, grep, find, ls',
+      'extensions: [/app/dist/pi-child-mcp-extension.js]',
+      'skills: false','isolated: false','persist_session: false'])
+      if(!child.split(/\r?\n/).includes(required))
+        throw new Error('Reviewed Pi child MCP policy missing or changed');
+  }
   if(settings.disableDefaultAgents!==true||settings.fallbackSubagent!=='none'||
       settings.schedulingEnabled!==false||settings.strictAgentFiles!==true)
     throw new Error('Pi subagent fail-closed runtime settings are missing or changed');
@@ -43,22 +54,55 @@ export interface PiSubagentRuntime {
   extensionFactory:(pi:{events:SubagentsBus})=>void;
 }
 export function piSubagentRuntime(signal:AbortSignal,
-  onTransition?:(event:SubagentTransition)=>void):PiSubagentRuntime {
+  onTransition?:(event:SubagentTransition)=>void,
+  allowedReadNames:readonly string[]=[]):PiSubagentRuntime {
   let rpc:PiSubagentsRpc|undefined;
+  let bus:SubagentsBus|undefined;
   return {
-    extensionFactory:pi=>{rpc=new PiSubagentsRpc(pi.events);},
+    extensionFactory:pi=>{bus=pi.events;rpc=new PiSubagentsRpc(pi.events);},
     tool:{
       name:'relay_pi_delegate',label:'Pi subagent',
-      description:'Delegate a bounded, tool-less analysis task to the installed Pi subagents extension. The child has no GitHub, Atlas, shell or filesystem tools. Do not use this for independent research requiring live sources.',
-      parameters:Type.Object({prompt:Type.String({minLength:1,maxLength:6000})}),
-      execute:async (_id,input)=>{
-        if(!rpc||!(await rpc.available(signal)))
-          throw new Error('Pi subagents extension RPC is unavailable; no child was spawned');
-        const result=await rpc.run({prompt:(input as {prompt:string}).prompt,
-          type:'relay-isolated',signal,maxTurns:12,maxRunMs:60000,onTransition});
-        return {content:[{type:'text' as const,text:JSON.stringify({
-          agentId:result.agentId,result:result.result,verifiedExternalSources:false
-        })}],details:{}};
+      description:'Delegate bounded work through Pi subagents. For real GitHub/Atlas research, select exact permitted read-only MCP tool names; the child cannot access anything else.',
+      parameters:Type.Object({
+        prompt:Type.String({minLength:1,maxLength:6000}),
+        tools:Type.Optional(Type.Array(Type.String(),{maxItems:4}))
+      }),
+      execute:async (_id,input,ctxSignal,_update,ctx)=>{
+        if(!rpc||!bus||!(await rpc.available(signal)))
+          throw new Error('Pi subagents extension RPC unavailable; no child was spawned');
+        const args=input as {prompt:string;tools?:string[]};
+        const requested=args.tools??[];
+        if(requested.length!==new Set(requested).size ||
+            requested.some(name=>!allowedReadNames.includes(name)))
+          throw new Error('Requested child MCP tool is not authorised for this run');
+        if(requested.length&&process.env.RELAY_PI_CHILD_MCP!=='1')
+          throw new Error('Child MCP broker is not enabled on this Relay server');
+        const broker=requested.length?new PiChildMcpBroker(bus,signal,
+          async (name,params)=>{
+            // Every call goes through Pi's admitted parent tool, so Relay's
+            // native MCP audit hook checks provider status, run identity and
+            // persists a real execution receipt. No new transport or token.
+            const result=await ctx.executeTool(name,params);
+            return result as {isError?:boolean;content?:Array<{type:string;text?:string}>};
+          }):undefined;
+        let binding:Promise<boolean>|undefined;
+        try{
+          const result=await rpc.run({prompt:args.prompt,
+            type:requested.length?'relay-research':'relay-isolated',
+            signal:ctxSignal??signal,maxTurns:12,maxRunMs:60000,
+            onTransition:event=>{
+              onTransition?.(event);
+              if(event.status==='started'&&broker)
+                binding=broker.bindWhenReady(event.agentId,requested);
+              if(event.status!=='started')broker?.revoke(event.agentId);
+            }});
+          if(requested.length&&(!binding||!(await binding)))
+            throw new Error('Child research MCP authorization could not be bound to its Pi session');
+          return {content:[{type:'text' as const,text:JSON.stringify({
+            agentId:result.agentId,result:result.result,
+            sourceTools:requested,verifiedExternalSources:requested.length>0
+          })}],details:{}};
+        }finally{broker?.close();}
       }
     }
   };
