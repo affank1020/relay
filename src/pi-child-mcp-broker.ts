@@ -87,7 +87,12 @@ export class PiChildMcpBroker {
     });
     if(this.closed||this.rootSignal.aborted){respond(false,'Parent task no longer running');return;}
     const grant=this.grants.get(req.sessionId);
-    if(!grant||!valid(req.tool,180)||!grant.tools.has(req.tool)){
+    // Multiple Pi children share one in-process bus. A broker must never
+    // answer a request belonging to a different child, otherwise its denial
+    // races the real owner's successful read and corrupts parallel research.
+    // Unbound child requests fail closed via the child proxy's timeout.
+    if(!grant)return;
+    if(!valid(req.tool,180)||!grant.tools.has(req.tool)){
       respond(false,'Child MCP read not authorised');return;
     }
     if(this.pending.size>=MAX_PENDING||this.pending.has(req.requestId)){
