@@ -23,39 +23,52 @@ export function recoverQwenToolCall(completion:OpenAICompletion,tools:readonly T
     return {kind:'none',completion};
   const raw=message.content;
   if(raw.length>65536)return {kind:'invalid',completion};
-  const match=/<function=([a-zA-Z_][a-zA-Z0-9_]*)>\s*([\s\S]*?)\s*<\/function>\s*(?:<\/tool_call>)?\s*$/.exec(raw);
-  if(!match||/<function[=\s]/.test(raw.slice(0,match.index))||
-    !tools.some(t=>t.type==='function'&&t.function?.name===match[1]))
-    return {kind:'invalid',completion};
-  const tool=tools.find(t=>t.type==='function'&&t.function?.name===match[1])!;
-  const properties=tool.function?.parameters?.properties;
-  if(!properties||typeof properties!=='object'||Array.isArray(properties))
-    return {kind:'invalid',completion};
-  const body=match[2];let rest=body;
-  const args:Record<string,unknown>={};
-  let count=0;
-  const parameter=/<parameter=([a-zA-Z_][a-zA-Z0-9_]*)>([\s\S]*?)<\/parameter>/g;
-  for(const p of body.matchAll(parameter)){
-    if(!Object.hasOwn(properties,p[1])||Object.hasOwn(args,p[1])||++count>24)
+  const calls:Array<{id:string;type:'function';function:{name:string;arguments:string}}>=[];
+  const fn=/<function=([a-zA-Z_][a-zA-Z0-9_]*)>\s*([\s\S]*?)\s*<\/function>/g;
+  let previousEnd=raw.indexOf('<function=');
+  if(previousEnd<0)return {kind:'invalid',completion};
+  let match:RegExpExecArray|null;
+  while((match=fn.exec(raw))){
+    // Allow an optional Qwen <tool_call> wrapper between functions, but not
+    // arbitrary intervening text or nested/unknown function markup.
+    const gap=raw.slice(previousEnd,match.index)
+      .replace(/<\/?tool_call>/g,'').trim();
+    if(gap||calls.length>=4)return {kind:'invalid',completion};
+    const name=match[1];
+    const tool=tools.find(t=>t.type==='function'&&t.function?.name===name);
+    if(!tool)return {kind:'invalid',completion};
+    const properties=tool.function?.parameters?.properties;
+    if(!properties||typeof properties!=='object'||Array.isArray(properties))
       return {kind:'invalid',completion};
-    const metadata=(properties as Record<string,unknown>)[p[1]];
-    const typ=typeof metadata==='object'&&metadata!==null
-      ?(metadata as Record<string,unknown>).type:undefined;
-    const value=p[2].trim();
-    if(value.length>12000)return {kind:'invalid',completion};
-    if(typ==='string')args[p[1]]=value;
-    else {
-      try{args[p[1]]=JSON.parse(value);}
-      catch{return {kind:'invalid',completion};}
+    const body=match[2];let rest=body;
+    const args:Record<string,unknown>={};
+    let count=0;
+    const parameter=/<parameter=([a-zA-Z_][a-zA-Z0-9_]*)>([\s\S]*?)<\/parameter>/g;
+    for(const p of body.matchAll(parameter)){
+      if(!Object.hasOwn(properties,p[1])||Object.hasOwn(args,p[1])||++count>24)
+        return {kind:'invalid',completion};
+      const metadata=(properties as Record<string,unknown>)[p[1]];
+      const typ=typeof metadata==='object'&&metadata!==null
+        ?(metadata as Record<string,unknown>).type:undefined;
+      const value=p[2].trim();
+      if(value.length>12000)return {kind:'invalid',completion};
+      if(typ==='string')args[p[1]]=value;
+      else {
+        try{args[p[1]]=JSON.parse(value);}
+        catch{return {kind:'invalid',completion};}
+      }
+      rest=rest.replace(p[0],'');
     }
-    rest=rest.replace(p[0],'');
+    if(!count||rest.trim()||Object.keys(args).length!==count)
+      return {kind:'invalid',completion};
+    calls.push({id:'call_'+randomUUID().replaceAll('-',''),type:'function',
+      function:{name,arguments:JSON.stringify(args)}});
+    previousEnd=fn.lastIndex;
   }
-  if(!count||rest.trim()||Object.keys(args).length!==count)
+  if(!calls.length||raw.slice(previousEnd).replace(/<\/?tool_call>/g,'').trim())
     return {kind:'invalid',completion};
   const recovered={...completion,choices:[{...choice,finish_reason:'tool_calls',message:{
-    ...message,content:null,
-    tool_calls:[{id:'call_'+randomUUID().replaceAll('-',''),type:'function',
-      function:{name:match[1],arguments:JSON.stringify(args)}}]
+    ...message,content:null,tool_calls:calls
   }}]};
   return {kind:'recovered',completion:recovered};
 }
