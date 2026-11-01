@@ -163,6 +163,10 @@ export class PiHarness implements Harness {
       // activation. Modifier syntax preserves native tool_search's ability to
       // activate the already registered deferred tools.
       noTools:'builtin',tools:activeNames.map(name=>'+'+name),customTools});
+    // SDK sessions don't bind inline extensions for us. In particular,
+    // native tool_search needs its extension runtime before the first turn.
+    try{await session.bindExtensions();}
+    catch(error){session.dispose();throw error;}
     if(session.getActiveToolNames().some(n=>!allowed.has(n))) { session.dispose(); throw new Error('Harness enabled an unauthorized tool'); }
     const abort=()=>{void session.abort();};
     signal.addEventListener('abort',abort,{once:true});
