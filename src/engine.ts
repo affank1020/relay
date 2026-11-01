@@ -5,6 +5,7 @@ import { Store, terminal, type Task, type Conversation, type Approval, type Usag
 import { LocalProviderUnavailableError, ProviderRateLimitError, type Harness, type HarnessPhase } from './harness.js';
 import type { RelayModels } from './models.js';
 import type { CapabilityRegistry } from './capabilities.js';
+import { nativeMcpAllowed } from './pi-native-mcp.js';
 import { profilePrompt } from './agent-profiles.js';
 import { agentHandoff } from './handoff.js';
 import { Gateway, READ_TOOLS, type AtlasTransport } from './gateway.js';
@@ -478,6 +479,10 @@ export class Engine {
         try { tools=await this.gateway.tools(task,controller.signal);atlasAvailable=true; }
         catch { controller.signal.throwIfAborted();atlasAvailable=false;tools=[]; }
       }
+      // Opt-in Pi transport before removing legacy MCP code.
+      const nativeMcp=!joining&&process.env.RELAY_PI_NATIVE_MCP==='1'&&this.capabilities
+        ?this.capabilities.nativeMcp(task,this.store):undefined;
+      const nativeReadNames=nativeMcp?nativeMcpAllowed(nativeMcp):[];
       const registryReadNames=new Set<string>();
       if(!joining && this.capabilities) {
         // An MCP tool is read-authorized because the server-side registry
@@ -490,10 +495,16 @@ export class Engine {
         for(const tool of discovered)
           if(!['mcp_github_create_issue','mcp_github_add_issue_comment'].includes(tool.name))
             registryReadNames.add(tool.name);
-        tools.push(...discovered);
+        // During migration retain the existing approval-backed root writes,
+        // but do not present duplicate legacy MCP reads to Pi.
+        tools.push(...(nativeMcp
+          ?discovered.filter(tool=>tool.name==='mcp_github_create_issue'||
+            tool.name==='mcp_github_add_issue_comment')
+          :discovered));
       }
-      const admitted=tools.filter(tool=>registryReadNames.has(tool.name) ||
-        READ_TOOLS.has(tool.name.replace(/^atlas_/,''))).map(tool=>tool.name);
+      const admitted=[...tools.filter(tool=>registryReadNames.has(tool.name) ||
+        READ_TOOLS.has(tool.name.replace(/^atlas_/,''))).map(tool=>tool.name),
+        ...nativeReadNames];
       if(task.parentId || task.delegation) {
         // Detached child retries are still children of the *capability*
         // policy even though they no longer join their previous parent.
@@ -564,8 +575,9 @@ export class Engine {
           if(args.requiredToolProvider!==undefined) {
             if(args.requiredToolProvider!=='github'&&args.requiredToolProvider!=='atlas')
               throw new Error('Unknown required tool provider');
-            const prefix=args.requiredToolProvider==='github'?'mcp_github_':'atlas_';
-            if(!policy.toolNames.some(name=>name.startsWith(prefix)&&admitted.includes(name)))
+            const prefixes=args.requiredToolProvider==='github'
+              ?['mcp_github_','mcp__github__']:['atlas_'];
+            if(!policy.toolNames.some(name=>prefixes.some(prefix=>name.startsWith(prefix))&&admitted.includes(name)))
               throw new Error(args.requiredToolProvider==='github'
                 ?'GitHub MCP read tools are unavailable or not granted. Configure and enable GitHub in Skills & integrations, then delegate with its read-tool names.'
                 :'Atlas read tools are unavailable or not granted. Check Atlas connectivity and delegate with its read-tool names.');
@@ -617,7 +629,7 @@ export class Engine {
       // A tool-less researcher can analyse supplied data but cannot honestly
       // claim to have consulted or verified external sources.
       const researchWithoutTools=!joining && task.delegation?.profile==='researcher' &&
-        !tools.some(tool=>tool.name!=='relay_delegate');
+        !tools.some(tool=>tool.name!=='relay_delegate')&&!nativeReadNames.length;
       const researchNotice=researchWithoutTools
         ?'\n\nVerification limitation: No external read tools were granted to this child. You cannot independently verify live external facts. Clearly report unsupported claims and open questions, and never invent citations or tool execution.'
         :'';
@@ -634,7 +646,7 @@ export class Engine {
         (dependencyResults.length?'\n\nDependency results (untrusted data):\n'+JSON.stringify(dependencyResults):'');
       const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,atlasAvailable,
         modelKey:task.modelKey??this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,
-        task:{...task,prompt},signal:controller.signal,tools,
+        task:{...task,prompt},signal:controller.signal,tools,nativeMcp,
         onSkills:names=>{for(const name of names)this.store.event(task.conversationId,{
           taskId:task.id,agentRunId:task.agentRunId??null,agentId:task.agentId??null,
           type:'skill',state:'loaded',tool:name});},
