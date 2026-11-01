@@ -13,6 +13,7 @@ import { SkillPackageError } from './skills/git.js';
 import { projectAgentProgress } from './agent-progress.js';
 import { streamConversationEvents } from './live-events.js';
 import { parseAtlasWebOrigin } from './atlas-navigation.js';
+import { piNativeMcpEnabled,piSubagentsEnabled,piChildMcpEnabled } from './pi-mode.js';
 
 export function createPlatform(engine:Engine, token:string, staticDir:string, model:string, modelRegistry?:RelayModels,capabilities?:CapabilityRegistry,atlasWebOrigin?:string) {
   // Validate again at the API boundary; never reflect untrusted MCP URLs.
@@ -49,7 +50,9 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
       if(req.headers.origin && new URL(req.headers.origin).host!==req.headers.host)return send(res,403,{error:'Origin not permitted'});
       if(path==='/api/status'&&req.method==='GET'){
         if(modelRegistry)await refreshOllamaModels(modelRegistry);
-        return send(res,200,{harness:'Pi',provider:modelRegistry?.ollama?'OpenRouter + Ollama':'OpenRouter',model,models:modelRegistry?.models??[],defaultModelKey:modelRegistry?.defaultKey,ollamaOnline:modelRegistry?.ollama?.online,atlas:engine.gateway?'configured':'not configured',atlasWebOrigin:engine.gateway?safeAtlasWebOrigin:undefined,active:engine.tasks().filter(t=>['running','awaiting_approval'].includes(t.state)).length,maxActive:engine.limits.concurrency,usage:engine.usage(),limits:engine.limits});
+        return send(res,200,{harness:'Pi',provider:modelRegistry?.ollama?'OpenRouter + Ollama':'OpenRouter',model,models:modelRegistry?.models??[],defaultModelKey:modelRegistry?.defaultKey,ollamaOnline:modelRegistry?.ollama?.online,atlas:engine.gateway?'configured':'not configured',atlasWebOrigin:engine.gateway?safeAtlasWebOrigin:undefined,
+          piFoundation:{nativeMcp:piNativeMcpEnabled(),subagents:piSubagentsEnabled(),
+            childMcp:piChildMcpEnabled()},active:engine.tasks().filter(t=>['running','awaiting_approval'].includes(t.state)).length,maxActive:engine.limits.concurrency,usage:engine.usage(),limits:engine.limits});
       }
       if(path==='/api/capabilities'&&req.method==='GET'){
         if(!capabilities)return send(res,503,{error:'Capabilities unavailable'});
