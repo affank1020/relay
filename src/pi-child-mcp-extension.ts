@@ -1,11 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { Type } from '@sinclair/typebox';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { sharedPiChildMcpBus } from './pi-child-mcp-bus.js';
 
 // A reviewed child-only extension. It has no tokens, transport or credential
 // discovery. The parent must bind the child session to a grant before its first
 // read; an unbound child always receives an explicit denial.
 export default function relayChildMcp(pi:ExtensionAPI):void {
+  // A Pi child uses a different DefaultResourceLoader and therefore a
+  // different pi.events from its parent. The sole approved bridge is this
+  // process-local bus. The parent still authenticates the child SDK session
+  // before any MCP read is executed; no credentials live in this extension.
+  const bridge=sharedPiChildMcpBus();
   pi.registerTool({
     name:'relay_child_mcp_read',label:'Read authorised MCP source',
     description:'Read an explicitly authorised GitHub/Atlas source. Tools and permissions are decided by the parent. Never claim source access on denial.',
@@ -27,14 +33,14 @@ export default function relayChildMcp(pi:ExtensionAPI):void {
           resolve({success,text});
         };
         const onAbort=()=>stop(false,'Child read cancelled');
-        const unsubscribe=pi.events.on('relay:child-mcp:reply:'+id,data=>{
+        const unsubscribe=bridge.on('relay:child-mcp:reply:'+id,data=>{
           const reply=data as {success?:boolean;text?:string};
           stop(reply?.success===true,typeof reply?.text==='string'?reply.text:'No verified MCP result');
         });
         timer=setTimeout(()=>stop(false,'Child MCP broker unavailable or not authorised'),12000);
         signal?.addEventListener('abort',onAbort,{once:true});
         if(signal?.aborted)onAbort();
-        else pi.events.emit('relay:child-mcp:read',{
+        else bridge.emit('relay:child-mcp:read',{
           requestId:id,sessionId,tool:data.tool,args:data.args
         });
       });
