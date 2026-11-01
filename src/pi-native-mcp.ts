@@ -37,7 +37,7 @@ export function nativeMcpConfig(run:NativeMcpRun):LoadedMcpConfig {
         config:{
           type:'http' as const,url:config.url,enabled:true,
           description:config.label+' read-only tools (Relay approved)',
-          headers:config.token?{Authorization:'Bearer '+config.token}:{},
+          ...(config.token?{headers:{Authorization:'Bearer '+config.token}}:{}),
           // Default deny: never discover arbitrary MCP writes or unknown tools.
           exposure:'hidden' as const,
           toolExposure:Object.fromEntries(config.readTools.map(name=>[name,
