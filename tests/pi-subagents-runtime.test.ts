@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { PiSubagentsRpc, type SubagentsBus } from '../src/pi-subagents-rpc.js';
-import { piSubagentEnabled, piSubagentRuntime } from '../src/pi-subagents-runtime.js';
+import { piSubagentEnabled, piSubagentRuntime, verifyPiSubagentsPolicy, upstreamSubagentTools } from '../src/pi-subagents-runtime.js';
 import { Store, type Task } from '../src/store.js';
 import { Engine, type Limits } from '../src/engine.js';
 import type { Harness } from '../src/harness.js';
@@ -11,6 +11,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const limits:Limits={concurrency:1,queue:8,sessionUsd:0,globalUsd:0,sessionTokens:0,
   reserveUsd:0,maxRunMs:5000};
+
+test('Pi subagents fail closed without the reviewed policy and fallback-off settings',()=>{
+  assert.doesNotThrow(()=>verifyPiSubagentsPolicy());
+  assert.ok(upstreamSubagentTools.includes('Agent'));
+  assert.ok(upstreamSubagentTools.includes('SubagentWorkflow'));
+  assert.ok(upstreamSubagentTools.includes('get_subagent_result'));
+  assert.throws(()=>verifyPiSubagentsPolicy('/definitely-not-installed'),/ENOENT/);
+});
 
 test('Pi subagent mode only permits root non-delegated tasks',()=>{
   const old=process.env.RELAY_PI_SUBAGENTS;
