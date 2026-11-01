@@ -28,6 +28,7 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/skills ./skills
 COPY .pi ./.pi
+RUN test -s /app/dist/pi-child-mcp-extension.js
 RUN mkdir -p /data && chown node:node /data
 USER node
 EXPOSE 8765

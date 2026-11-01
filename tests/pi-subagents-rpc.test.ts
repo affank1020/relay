@@ -133,3 +133,21 @@ test('abort before spawn acknowledgement stops the late-starting child',async()=
   assert.deepEqual(changes,['stopped']);
   unspawn();unstop();assert.equal(bus.listenerCount(),0);
 });
+
+test('Pi research RPC chooses a fixed profile with exactly one reviewed extension',async()=>{
+  const {bus,api,controller}=setup();
+  const unsubscribe=wire(bus,'spawn',req=>{
+    assert.equal(req.type,'relay-research');
+    assert.equal(req.prompt,'Read the real GitHub issue via approved child MCP tool');
+    assert.deepEqual(req.options,{
+      isolated:false,inheritContext:false,isBackground:true,maxTurns:12,
+      description:'Relay scoped read-only research task'
+    });
+    queueMicrotask(()=>bus.emit('subagents:completed',{id:'research-child',result:'Fetched issue'}));
+    return {success:true,data:{id:'research-child'}};
+  });
+  const result=await api.run({prompt:'Read the real GitHub issue via approved child MCP tool',
+    type:'relay-research',signal:controller.signal});
+  assert.deepEqual(result,{agentId:'research-child',result:'Fetched issue'});
+  unsubscribe();assert.equal(bus.listenerCount(),0);
+});
