@@ -69,7 +69,7 @@ test('Pi native MCP hooks emit durable receipts without leaking arguments or cre
     }} as never);
     const start=handlers.get('tool_call')!,end=handlers.get('tool_result')!;
     const callId='pi-issue-001';
-    assert.equal(start({toolName:'mcp__github__issue_read',toolCallId:callId,
+    assert.equal(await start({toolName:'mcp__github__issue_read',toolCallId:callId,
       input:{method:'get',owner:'affank1020',repo:'relay',issue_number:29}}),undefined);
     const stored=store.get('invocations',run.task.id+':'+callId) as {state:string};
     assert.equal(stored.state,'dispatched');
@@ -77,69 +77,10 @@ test('Pi native MCP hooks emit durable receipts without leaking arguments or cre
     assert.equal((store.get('invocations',run.task.id+':'+callId) as {state:string}).state,'completed');
     assert.deepEqual(store.events(run.task.conversationId).map(e=>e.state),['started','completed']);
     assert.doesNotMatch(JSON.stringify(store.events(run.task.conversationId)),/private-do-not-log|affank1020|issue_number/);
-    assert.match(String(JSON.stringify(start({toolName:'mcp__github__create_issue',toolCallId:'no',
+    assert.match(String(JSON.stringify(await start({toolName:'mcp__github__create_issue',toolCallId:'no',
       input:{owner:'affank1020'}}))),/MCP tool not permitted/);
     assert.equal(store.get('invocations',run.task.id+':no'),undefined);
   }finally{store.close();}
-});
-
-test('opt-in Engine uses Pi native read names for scoped children and omits legacy transport',async()=>{
-  const prior=process.env.RELAY_PI_NATIVE_MCP;
-  process.env.RELAY_PI_NATIVE_MCP='1';
-  const folder=await mkdtemp(join(tmpdir(),'relay-native-mcp-engine-'));
-  const store=new Store(':memory:');
-  const registry=new CapabilityRegistry(folder,join(process.cwd(),'skills'),
-    configuredProviders({RELAY_GITHUB_TOKEN:'private-test'}),()=>({
-      list:async()=>{throw Error('legacy read discovery must not run');},
-      call:async()=>{throw Error('legacy read transport must not run');},
-      close:async()=>{}
-    }));
-  const limits:Limits={concurrency:2,queue:64,sessionUsd:0,globalUsd:0,
-    sessionTokens:0,reserveUsd:0,maxRunMs:5000};
-  const seen:string[]=[];
-  const harness:Harness={version:1,capabilities:{persistence:true,cancellation:true,tools:true},
-    run:async request=>{
-      if(request.task.prompt==='root native'){
-        assert.ok(request.nativeMcp);
-        assert.ok(!request.tools.some(t=>t.name==='mcp_github_issue_read'));
-        assert.ok(nativeMcpAllowed(request.nativeMcp).includes('mcp__github__issue_read'));
-        const schema=JSON.stringify(request.tools.find(t=>t.name==='relay_delegate')!.parameters);
-        assert.match(schema,/mcp__github__issue_read/);
-        const delegate=request.tools.find(t=>t.name==='relay_delegate')!;
-        await delegate.execute('n-1',{prompt:'Read GitHub issue #29',profile:'researcher',
-          requiredToolProvider:'github',tools:['mcp__github__issue_read']},
-          request.signal,undefined,{} as never);
-        return 'Research delegated.';
-      }
-      if(request.task.kind==='join'){
-        assert.equal(request.nativeMcp,undefined);
-        return 'Combined one verified read.';
-      }
-      if(request.task.prompt.startsWith('Read GitHub issue #29')){
-        assert.ok(request.nativeMcp);
-        assert.deepEqual(nativeMcpAllowed(request.nativeMcp),['mcp__github__issue_read']);
-        assert.ok(!request.tools.some(t=>t.name.startsWith('mcp_github_')));
-        seen.push('child');
-        return JSON.stringify({relayHandoff:{summary:'Source read via native path',
-          evidence:[],artifacts:[],openQuestions:[]}});
-      }
-      throw Error('Unexpected inference task '+request.task.prompt);
-    }};
-  const engine=new Engine(store,harness,limits,undefined,{},undefined,registry);
-  try{
-    await registry.update('integrations','github',true);
-    const convo=engine.conversation();
-    const root=engine.enqueue(convo.id,'root native',randomUUID());
-    for(let i=0;i<1000&&store.get<Task>('tasks',root.id)?.state!=='completed';i++)await delay(5);
-    assert.equal(store.get<Task>('tasks',root.id)?.state,'completed');
-    assert.deepEqual(seen,['child']);
-    assert.equal(engine.tasks().filter(t=>t.parentId===root.id).length,1);
-  }finally{
-    await engine.stop();store.close();await registry.close();
-    await rm(folder,{recursive:true,force:true});
-    if(prior===undefined)delete process.env.RELAY_PI_NATIVE_MCP;
-    else process.env.RELAY_PI_NATIVE_MCP=prior;
-  }
 });
 
 test('Atlas becomes a trusted native Pi read provider without exposing mutations or tokens',()=>{
@@ -180,7 +121,7 @@ test('Atlas native endpoint rejects arbitrary cleartext and credentialed URLs',(
   }));
 });
 
-test('Pi native Atlas tool results preserve safe structured resource observations',()=>{
+test('Pi native Atlas tool results preserve safe structured resource observations',async()=>{
   const {run,store}=setup();
   try{
     const configs=configuredProviders({ATLAS_MCP_URL:'https://atlas.affankhan.dev/mcp',
@@ -191,14 +132,23 @@ test('Pi native Atlas tool results preserve safe structured resource observation
       handlers.set(name,callback);return ()=>{};
     }} as never);
     const start=handlers.get('tool_call')!,end=handlers.get('tool_result')!;
-    assert.equal(start({toolName:'mcp__atlas__list_nodes',toolCallId:'atlas-check',
+    assert.equal(await start({toolName:'mcp__atlas__list_nodes',toolCallId:'atlas-check',
       input:{}}),undefined);
     end({toolName:'mcp__atlas__list_nodes',toolCallId:'atlas-check',
-      input:{},content:[],structuredContent:{result:{nodes:[]}},isError:false});
+      input:{},content:[],structuredContent:{content:[],structuredContent:{result:{nodes:[]}}},isError:false});
     assert.equal((store.get('invocations',run.task.id+':atlas-check') as {state:string}).state,
       'completed');
     assert.ok(store.events(run.task.conversationId).some(e=>e.tool==='atlas:list_nodes' &&
       e.state==='completed'));
+    const checkoutId=randomUUID(),nodeId=randomUUID();
+    await start({toolName:'mcp__atlas__get_workspace',toolCallId:'workspace',input:{workspaceId:checkoutId}});
+    end({toolName:'mcp__atlas__get_workspace',toolCallId:'workspace',input:{workspaceId:checkoutId},content:[],
+      structuredContent:{content:[],structuredContent:{result:{id:checkoutId,nodeId,rootPath:'/repo',status:'active'}}},isError:false});
+    await start({toolName:'mcp__atlas__workspace_git_status',toolCallId:'git',input:{workspaceId:checkoutId}});
+    end({toolName:'mcp__atlas__workspace_git_status',toolCallId:'git',input:{workspaceId:checkoutId},content:[],
+      structuredContent:{content:[],structuredContent:{result:{available:true,branch:'main',originRepository:'owner/repo',dirty:false}}},isError:false});
+    assert.ok(store.events(run.task.conversationId).some(e=>e.atlasResource?.git?.repository==='owner/repo'));
+
   }finally{store.close();}
 });
 
@@ -209,7 +159,7 @@ test('MCP provider revoked during execution redacts the result and records failu
     nativeMcpAuditExtension(run).factory({on:(event:string,cb:(value:any)=>unknown)=>{
       handlers.set(event,cb);return ()=>{};
     }} as never);
-    const started=handlers.get('tool_call')!({toolName:'mcp__github__issue_read',
+    const started=await handlers.get('tool_call')!({toolName:'mcp__github__issue_read',
       toolCallId:'revoked-read',input:{issue_number:29}});
     assert.equal(started,undefined);
     disable();
@@ -221,5 +171,31 @@ test('MCP provider revoked during execution redacts the result and records failu
     assert.equal((store.get('invocations',run.task.id+':revoked-read') as {state:string}).state,
       'failed_read');
     assert.ok(store.events(run.task.conversationId).some(e=>e.state==='failed'));
+  }finally{store.close();}
+});
+
+test('native GitHub writes require exact approval and never become child grants',async()=>{
+  const {run,store}=setup();
+  let approved=0;
+  const args={owner:'affank1020',repo:'relay',issue_number:28,body:'Reviewed text'};
+  run.providers[0].config.writeRepositories=['affank1020/relay'];
+  run.signal=new AbortController().signal;
+  run.approve=async(_task,_id,tool,received)=>{assert.equal(tool,'github:add_issue_comment');assert.deepEqual(received,args);approved++;};
+  const handlers=new Map<string,(event:any)=>any>();
+  nativeMcpAuditExtension(run).factory({on:(name:string,handler:any)=>handlers.set(name,handler)} as never);
+  try{
+    assert.ok(nativeMcpAllowed(run).includes('mcp__github__add_issue_comment'));
+    assert.equal(await handlers.get('tool_call')!({toolName:'mcp__github__add_issue_comment',toolCallId:'write',input:args}),undefined);
+    assert.equal(approved,1);
+    assert.equal((store.get('invocations',run.task.id+':write') as any).state,'dispatched');
+    handlers.get('tool_result')!({toolName:'mcp__github__add_issue_comment',toolCallId:'write',isError:true});
+    assert.equal((store.get('invocations',run.task.id+':write') as any).state,'uncertain');
+    const child={...run,task:{...run.task,parentId:'parent'}};
+    assert.ok(!nativeMcpAllowed(child).includes('mcp__github__add_issue_comment'));
+    assert.ok((await handlers.get('tool_call')!({toolName:'mcp__github__add_issue_comment',toolCallId:'outside',input:{...args,repo:'other'}})).block);
+    assert.equal(approved,1);
+    run.approve=async()=>{throw new Error('Rejected');};
+    assert.ok((await handlers.get('tool_call')!({toolName:'mcp__github__add_issue_comment',toolCallId:'rejected',input:args})).block);
+    assert.equal((store.get('invocations',run.task.id+':rejected') as any).state,'denied_before_dispatch');
   }finally{store.close();}
 });

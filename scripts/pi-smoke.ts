@@ -25,7 +25,7 @@ const request=async(path:string,method='GET',value?:unknown):Promise<Record<stri
 };
 const status=await request('/api/status');
 if(!status.piFoundation?.nativeMcp||!status.piFoundation?.subagents||
-  !status.piFoundation?.childMcp)throw Error('Pi foundation test mode is not enabled on the Relay server');
+  !status.piFoundation?.childMcp)throw Error('Pi native runtime is not available on the Relay server');
 if(!Array.isArray(status.models)||!status.models.some((m:{key:string})=>m.key===modelKey))
   throw Error('Selected smoke model is not configured in Relay');
 const cap=await request('/api/capabilities');
@@ -36,10 +36,11 @@ const created=await request('/api/sessions','POST',{modelKey});
 const conversationId=created.session?.id;
 if(typeof conversationId!=='string')throw Error('Failed to create smoke conversation');
 const prompt=[
-  'Use exactly two separate Pi research subagents concurrently via relay_pi_delegate.',
+  'Use exactly two separate Pi research subagents concurrently using delegate with mode=parallel.',
   'Grant each child exactly the tool mcp__github__issue_read.',
   'Child A: read issue #28 in affank1020/relay using method=get, owner=affank1020, repo=relay, issue_number=28.',
   'Child B: read issue #29 in affank1020/relay with the same method/owner/repo and issue_number=29.',
+  'In each child assignment, require the child to return the verbatim issue title and a short requirements summary.',
   'Do not invent issue contents, do not use code/repository search as a substitute.',
   'Wait for both real child results; synthesize their exact titles and main requirements.'
 ].join('\n');

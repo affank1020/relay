@@ -23,18 +23,14 @@ test('real browser shows exact GitHub write details and waits for explicit appro
     owner:{type:'string'},repo:{type:'string'},issue_number:{type:'integer'},body:{type:'string'}
   },required:['owner','repo','issue_number','body'],additionalProperties:false};
   let calls=0;
-  const registry=new CapabilityRegistry(root,join(process.cwd(),'skills'),[provider],()=>({
-    list:async()=>[{name:'add_issue_comment',inputSchema:schema}],
-    call:async()=>{calls++;return {content:[{type:'text',text:'comment posted'}]};},
-    close:async()=>{}
-  }));
+  const registry=new CapabilityRegistry(root,join(process.cwd(),'skills'),[provider]);
   await registry.update('integrations','github',true);
   const harness={version:1 as const,capabilities:{persistence:true,cancellation:true,tools:true},
     deleteConversationSessions:async()=>{},
     run:async(req:HarnessRequest)=>{
-      const tool=req.tools.find(t=>t.name==='mcp_github_add_issue_comment');
-      assert.ok(tool);
-      await tool.execute('ui-approval-call',args,req.signal,undefined,{} as never);
+      assert.ok(req.nativeMcp?.approve);
+      await req.nativeMcp.approve(req.task,'ui-approval-call','github:add_issue_comment',args,req.signal);
+      calls++;
       return 'posted';
     }};
   const engine=new Engine(store,harness,{concurrency:1,queue:8,sessionUsd:0,

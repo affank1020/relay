@@ -96,10 +96,18 @@ const server=createServer(async(req,res)=>{
       return json(res,200,{task:t});
     }
     if(path==='/api/tasks'&&req.method==='GET')return json(res,200,{tasks:[...tasks].reverse()});
-    const m=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/events|\/messages|\/abort|\/context)?$/);
+    const m=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/events|\/messages|\/abort|\/context|\/transcript)?$/);
     if(m){
       const s=sessions.find(x=>x.id===m[1]);if(!s)return json(res,404,{error:'Session not found'});
       const scoped=tasks.filter(t=>t.conversationId===s.id);
+      if(m[2]==='/transcript'&&req.method==='GET')return json(res,200,{session:null});
+      if(!m[2]&&req.method==='PATCH'){
+        const b=await readBody(req);
+        if(scoped.some(t=>['running','queued'].includes(t.state)))return json(res,409,{error:'Conversation has an active task'});
+        if(!models.some(model=>model.key===b.modelKey))return json(res,400,{error:'Invalid model'});
+        s.modelKey=b.modelKey;return json(res,200,{session:summary(s)});
+      }
+
       if(!m[2]&&req.method==='GET')return json(res,200,{session:summary(s),tasks:scoped,approvals:[]});
       if(m[2]==='/context'&&req.method==='PATCH'){
         const b=await readBody(req);

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { projectAgentProgress } from '../src/agent-progress.js';
 import type { Task, State } from '../src/store.js';
-import { agentHandoff } from '../src/handoff.js';
 
 const time='2026-10-31T20:00:00.000Z';
 function make(id:string,parentId:string|null,state:State='completed'):Task {
@@ -19,9 +18,9 @@ test('inline agent progress uses durable parent-child identities, stable order a
   a.delegation={schemaVersion:1,profile:'researcher',toolNames:[],modelKey:null,
     context:'private context',maxTokens:null,maxCostUsd:null};
   a.prompt='Investigate the source of the failure '+('Q'.repeat(400));
-  a.handoff=agentHandoff(JSON.stringify({relayHandoff:{
+  a.handoff={schemaVersion:1,provenance:'agent_reported',structured:true,
     summary:'S'.repeat(270),evidence:[],artifacts:[],openQuestions:[]
-  }}));
+  };
   a.usage=[{input:12,output:6,cacheRead:2,cacheWrite:1,costUsd:0.001,costKind:'estimated'}];
   b.dependencies=['a'];
   const join=make('join','root');join.kind='join';

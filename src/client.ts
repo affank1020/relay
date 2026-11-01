@@ -14,7 +14,7 @@ interface Summary { id:string; title:string; modelKey?:string; atlasContext?:Atl
 interface Snapshot { session:Summary; tasks:Task[]; approvals:Approval[]; agents?:Record<string,AgentProgress[]>; }
 function $<T extends HTMLElement=HTMLElement>(id:string):T { const n=document.getElementById(id);if(!n)throw new Error('Missing element '+id);return n as T; }
 const hosted=window.location.protocol==='https:';
-let token='',current:string|null=null,busy=false,polling=false,timer:ReturnType<typeof setTimeout>|undefined,cursor=0,epoch=0,lastView='',submitting=false;
+let token='',current:string|null=null,busy=false,polling=false,timer:ReturnType<typeof setTimeout>|undefined,cursor=0,epoch=0,lastView='',submitting=false,modelSwitchPending=false;
 let pending:{conversationId:string;message:string;requestId:string}|null=null;
 // A live stream owns the cursor during an active connection; snapshots are
 // authoritative for lifecycle/usage, not for every generated text fragment.
@@ -65,6 +65,7 @@ function indexAtlasObservation(event:ExecutionEvent){
   if(atlasObservations.size>3000)atlasObservations.delete(atlasObservations.keys().next().value!);
 }
 function resetConversationView(){
+  $('sessionTrace').textContent='';
   messageRows.clear();taskPhases.clear();delegatedStates.clear();hasActiveAgents=false;lastView='';
 }
 function indexToolReceipt(event:ExecutionEvent){
@@ -118,7 +119,7 @@ function resetSelection(){
   disconnectStream();
   epoch++;current=null;cursor=0;resetConversationView();activity.length=0;toolReceipts.clear();atlasObservations.clear();receiptVersion=0;
   if(timer)clearTimeout(timer);timer=undefined;
-  $('activity').replaceChildren();$('approvals').replaceChildren();$('messages').replaceChildren(emptyConversation());
+  $('sessionTrace').textContent='';$('activity').replaceChildren();$('approvals').replaceChildren();$('messages').replaceChildren(emptyConversation());
   $('title').textContent='New chat';$('cost').textContent='0 tokens';
   setBusy(false);remember('relay.conversation','');
   renderSessions();
@@ -158,7 +159,8 @@ function notify(error:unknown){$('notice').textContent=text(error);}
 const atlasPicker=new AtlasContextPicker($('atlasContext'),api,notify);
 function setBusy(value:boolean){
   busy=value;
-  $<HTMLButtonElement>('send').disabled=value||submitting;
+  $<HTMLButtonElement>('send').disabled=value||submitting||modelSwitchPending;
+  $<HTMLSelectElement>('modelPicker').disabled=value||modelSwitchPending;
   $<HTMLTextAreaElement>('prompt').disabled=value;
   $('stop').hidden=!value;
   $('state').hidden=!value;
@@ -252,7 +254,7 @@ async function refresh(){
       missing.textContent='MacBook · '+pinned.slice(7)+' (not installed)';
       missing.disabled=true;picker.append(missing);
     }
-    picker.value=configuredModels.some(x=>x.key===previous)?previous:(pinned&&[...picker.options].some(x=>x.value===pinned)?pinned:(state.defaultModelKey??configuredModels[0].key));
+    picker.value=pinned&&[...picker.options].some(x=>x.value===pinned)?pinned:(configuredModels.some(x=>x.key===previous)?previous:(state.defaultModelKey??configuredModels[0].key));
   }
   $('connection').textContent=state.provider==='Preview'?'Local preview':'Pi connected';
   const atlas=$('atlasSummary');
@@ -590,7 +592,7 @@ async function select(id:string){
 }
 async function create(){closeTaskConsole();const picker=$<HTMLSelectElement>('modelPicker');if(picker.selectedOptions[0]?.disabled)throw new Error('Local model offline. Start Ollama or choose another model.');const modelKey=picker.value;const result=await (await api('/sessions',{method:'POST',body:JSON.stringify(modelKey?{modelKey}:{})})).json() as {session:Summary};await select(result.session.id);$<HTMLTextAreaElement>('prompt').focus();}
 async function submit(event:Event){
-  event.preventDefault();if(busy||submitting)return;
+  event.preventDefault();if(busy||submitting||modelSwitchPending)return;
   const prompt=$<HTMLTextAreaElement>('prompt');const value=prompt.value.trim();if(!value&&!pending)return;
   submitting=true;setBusy(busy);
   try{
@@ -735,7 +737,16 @@ $('openSidebar').onclick=()=>{document.body?.classList?.add('sidebar-open');};
 document.addEventListener?.('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();void create().catch(notify);}});
 $('closeSidebar').onclick=closeSidebar;
 $('closeInspector').onclick=()=>{const panel=$('inspector');panel.hidden=true;$('toggleInspector').setAttribute('aria-expanded','false');};
-$<HTMLSelectElement>('modelPicker').onchange=()=>{void create().catch(notify);};
+$<HTMLSelectElement>('modelPicker').onchange=()=>{
+  if(!current||modelSwitchPending)return;
+  const id=current,modelKey=$<HTMLSelectElement>('modelPicker').value;
+  modelSwitchPending=true;setBusy(busy);
+  void (async()=>{
+    try{await api('/sessions/'+id,{method:'PATCH',body:JSON.stringify({modelKey})});}
+    catch(error){notify(error);}
+    finally{modelSwitchPending=false;setBusy(busy);await refresh().catch(notify);}
+  })();
+};
 $<HTMLFormElement>('form').onsubmit=event=>{void submit(event);};
 $('stop').onclick=()=>{if(current)void api('/sessions/'+current+'/abort',{method:'POST',body:'{}'}).then(()=>poll()).catch(notify);};
 $<HTMLTextAreaElement>('prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$<HTMLFormElement>('form').requestSubmit();}};
@@ -745,6 +756,7 @@ window.setInterval?.(()=>{if(document.visibilityState!=='hidden')void refresh().
 void bootstrap();
 
 type CapabilitySnapshot={
+  extensions?:string[];
   skills:Array<{id:string;name:string;description:string;version:string;revision:string|null;installed:boolean;enabled:boolean;loadFailure:string|null;source:'bundled'|'git';sourceRef?:string}>;
   integrations:Array<{id:string;label:string;enabled:boolean;configured:boolean;state:string;availableTools:string[];availableWriteTools?:string[]}>;
 };
@@ -843,6 +855,12 @@ async function drawCapabilities(snapshot:CapabilitySnapshot){
     }
     group.append(list);parent.append(group);
   }
+  if(snapshot.extensions?.length){
+    const group=el('section','capabilities-group','');
+    group.append(el('h3','','Pi extensions'));
+    for(const name of snapshot.extensions)group.append(el('p','capability-description',name));
+    parent.append(group);
+  }
 }
 $<HTMLButtonElement>('openCapabilities').onclick=()=>{
   $<HTMLDialogElement>('capabilitiesDialog').showModal();
@@ -930,4 +948,12 @@ $<HTMLButtonElement>('gitSkillInstall').onclick=()=>{
     }catch(e){$('capabilitiesError').textContent=text(e);}
     finally{button.disabled=!stagedGitSkill||!$<HTMLInputElement>('gitSkillAcknowledge').checked;}
   })();
+};
+
+$('loadTrace').onclick=()=>{
+  if(!current)return;
+  const id=current;
+  void api('/sessions/'+id+'/transcript').then(response=>response.json()).then(data=>{
+    if(current===id)$('sessionTrace').textContent=JSON.stringify(data.session,null,2)??'No Pi session yet.';
+  }).catch(notify);
 };

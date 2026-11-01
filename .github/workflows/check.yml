@@ -28,6 +28,8 @@ jobs:
         run: node --import tsx --test --test-timeout=65000 tests/task-console-browser.browser.ts
       - name: Test real browser reviewed Git Skill management
         run: node --import tsx --test --test-timeout=65000 tests/reviewed-skills-browser.browser.ts
+      - name: Test real browser model switching
+        run: node --import tsx --test --test-timeout=65000 tests/model-switch.browser.ts
       - name: Test real browser GitHub write approval
         run: node --import tsx --test --test-timeout=65000 tests/github-writes-browser.browser.ts
       - name: Reject checked-in JavaScript source
@@ -61,6 +63,12 @@ jobs:
         run: docker run --rm caddy:2-alpine sh -c 'command -v wget'
       - name: Build production container
         run: docker build -t relay:ci .
+      - name: Test real Pi sessions with production-only dependencies
+        run: |
+          ./node_modules/.bin/esbuild tests/pi-runtime.test.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile="$RUNNER_TEMP/relay-runtime-check.mjs"
+          docker run --rm --network none --read-only --tmpfs /tmp \
+            -v "$RUNNER_TEMP/relay-runtime-check.mjs:/app/runtime-check.mjs:ro" \
+            relay:ci node --test --test-timeout=40000 /app/runtime-check.mjs
       - name: Verify Atlas smoke command runs from production image without tsx
         run: |
           set -euo pipefail

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { test } from 'node:test';
@@ -11,6 +12,9 @@ import { join } from 'node:path';
 test('compiled Relay serves HTML and creates durable conversations', { timeout: 65000 }, async () => {
   const token = 'ci-relay-integration-token-12345678';
   const home = await mkdtemp(join(tmpdir(), 'relay-pi-test-'));
+  const offline=createServer((_req,res)=>{res.writeHead(503);res.end();});
+  offline.listen(0,'127.0.0.1');await once(offline,'listening');
+  const offlineUrl='http://127.0.0.1:'+(offline.address() as {port:number}).port+'/v1';
   const child = spawn(process.execPath, ['dist/server.js'], {
     cwd: new URL('..', import.meta.url).pathname,
     env: {
@@ -21,7 +25,7 @@ test('compiled Relay serves HTML and creates durable conversations', { timeout: 
       RELAY_ACCESS_TOKEN: token,
       OPENROUTER_API_KEY: 'ci-test-key-not-valid-for-inference',
       RELAY_MODEL: 'cohere/north-mini-code:free',
-      RELAY_OLLAMA_URL: 'http://127.0.0.1:11434/v1',
+      RELAY_OLLAMA_URL: offlineUrl,
       RELAY_OLLAMA_MODELS: 'qwen3:4b',
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -78,6 +82,7 @@ test('compiled Relay serves HTML and creates durable conversations', { timeout: 
       child.kill('SIGKILL');
       await once(child, 'exit');
     }
+    await new Promise<void>(resolve=>offline.close(()=>resolve()));
     await rm(home, { recursive: true, force: true });
   }
 });

@@ -782,3 +782,5 @@ dialog #deleteName { color: var(--text); overflow-wrap: anywhere; }
 .atlas-observed-link:hover { text-decoration: underline; }
 
 .approval-warning {font-size:12px;line-height:1.5;color:var(--text-secondary);margin:8px 0;}
+
+.native-trace{padding:12px;border-bottom:1px solid #303238;font-size:12px}.native-trace summary{cursor:pointer}.native-trace pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:50vh;overflow:auto;font-size:11px}

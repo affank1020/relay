@@ -14,7 +14,7 @@ The gateway receives only authenticated traffic from the standalone Caddy ingres
 
 ## Deploy Relay's gateway (before public ingress cutover)
 
-Retain your private VPS `~/relay/.env` with `RELAY_ACCESS_TOKEN`, `OPENROUTER_API_KEY`, and the free-only model.
+Retain your private VPS `~/relay/.env` with `RELAY_ACCESS_TOKEN` and either `OPENROUTER_API_KEY` with the free-only model or a configured private Ollama endpoint. Follow [reconstruction migration](migration.md) when upgrading from the legacy runtime.
 
 ~~~bash
 cd ~/relay

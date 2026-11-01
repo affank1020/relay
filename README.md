@@ -1,44 +1,32 @@
 # Relay
 
-Relay is a separate self-hosted AI agent control plane built on Pi and OpenRouter.
+Relay is a self-hosted, general-purpose assistant powered by Pi. It combines a chat-first web UI, independent Pi child sessions, approved MCP integrations, reviewed Skills, and Atlas awareness.
 
-## Development
+Pi owns inference, tool execution and discovery, MCP connections, session transcripts, context and compaction. Relay supplies authentication, bounded web-job admission, approval policy, durable UI projections and Atlas resource views. There is one execution path; no Pi rollout flags or legacy delegation engine.
 
-Relay is TypeScript-only at source level; `npm run check && npm run build && npm test` validates the compiled Node and browser bundles. See [TypeScript development](docs/typescript.md).
+## Develop
 
-See [local Mac development](docs/development.md) for reproducible checks and Atlas task setup, and the [engineering sequence](docs/roadmap.md) for the next reviewable milestones.
+Node 22.19+ is required.
 
-## Current MVP
+```sh
+npm ci --ignore-scripts
+npm run verify
+```
 
-- Streaming web chat, in-memory sessions and basic cost reporting.
-- Free-only OpenRouter model safeguard (models must end in `:free`).
-- Strong internal API bearer token and disabled Pi shell/file tools.
-- VPS deployment with health checks and resource limits.
-- **Standalone vps-infra HTTPS Caddy ingress with the existing Atlas Basic Auth credentials**, without a Cloudflare Tunnel or extra public port.
+Set `RELAY_ACCESS_TOKEN` (at least 24 characters), `RELAY_DATA_DIR`, and either `OPENROUTER_API_KEY` or `RELAY_OLLAMA_URL`. See [.env.example](.env.example). Build with `npm run build`, then `npm start`. OpenRouter model IDs retain the explicit `:free` safeguard. Local Ollama models are discovered from the configured private endpoint.
 
-The public hostname `https://relay.affankhan.dev` uses **the same username/password as Atlas**. The vps-infra Caddy ingress authenticates the browser, then forwards requests across a small shared Docker network to Relay's private gateway. The gateway substitutes the Relay backend token without sending that token to the browser or the Atlas ingress.
+The dark web UI provides streaming chat, model switching within a chat, source-tool activity, a Pi session trace, Tasks & agents, exact write approvals and reviewed Skill/integration controls. Atlas context is optional; the assistant discovers resources as needed.
 
-## Automatic deployment
+## Architecture and operation
 
-Merges into `main` trigger [Relay's GitHub Actions deployment](docs/auto-deploy.md) **after Verify CI passes**, independently of Atlas. One-time Relay GitHub deployment secrets are required; see the runbook. No VPS timer or manual deploy command is needed for future releases after configuration.
+- [Architecture and ownership](docs/architecture.md)
+- [Audit and extension evaluation](docs/architecture-audit.md)
+- [Adding capabilities](docs/extensions.md)
+- [Migration and rollback](docs/migration.md)
+- [Verification and live acceptance](docs/verification.md)
+- [Deployment and ingress](docs/deployment.md)
+- [Atlas awareness](docs/atlas-awareness.md)
 
-## Deployment
+Production data belongs in the persistent `/data` volume. Merging to `main` retains the existing CI-gated deployment workflow; the reconstruction PR must remain unmerged until the owner chooses to deploy.
 
-On the VPS, retain the existing private `~/relay/.env`:
-
-~~~bash
-cd ~/relay
-git pull --ff-only
-./scripts/deploy.sh --ingress
-./scripts/status.sh
-~~~
-
-The first explicit pull is only needed to get the updated script; subsequent runs pull `main` automatically. The script ensures the shared `vps_ingress` network exists. The separate vps-infra repository contains the staged public-ingress cutover and rollback; do not deploy the public proxy until the migration preflight has passed.
-
-Cloudflare only needs the DNS A record for `relay` pointing to the same VPS as Atlas. **Do not create a Cloudflare Tunnel or Access application for Relay.**
-
-See [deployment documentation](docs/deployment.md) for deployment order, verification and security notes.
-
-**Development preview:** Relay now includes a SQLite-backed task/conversation/event store, a Pi adapter, a restricted server-side Atlas MCP gateway, approvals for explicitly allowlisted development tasks, a bounded delegation queue, budget controls, and an execution inspector. These features have passing automated tests, but live Atlas MCP access and production end-to-end behaviour still require configuration and validation. This is not an unrestricted autonomous coding environment. Don't send private data to free model providers without reviewing their policies.
-
-**Hosted authentication:** `https://relay.affankhan.dev` needs only the shared VPS Basic Auth username/password. The private gateway injects `RELAY_ACCESS_TOKEN`; do not enter that token into the hosted browser. Direct `http://127.0.0.1:8765` access still prompts for the separate API token.
+Hosted access uses the existing VPS Basic Auth gateway, which injects the backend token. Direct localhost access prompts for `RELAY_ACCESS_TOKEN`. Credentials stay server-side.

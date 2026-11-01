@@ -1,18 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Type } from '@sinclair/typebox';
 import { Store, terminal, type Task, type Conversation, type Approval, type Usage, type InvocationRecord } from './store.js';
 import { LocalProviderUnavailableError, ProviderRateLimitError, type Harness, type HarnessPhase } from './harness.js';
 import type { RelayModels } from './models.js';
 import type { CapabilityRegistry } from './capabilities.js';
 import { nativeMcpAllowed } from './pi-native-mcp.js';
 import { PiSubagentLedger } from './pi-subagent-ledger.js';
-import { piSubagentEnabled } from './pi-subagents-runtime.js';
-import { piNativeMcpEnabled,piSubagentsEnabled } from './pi-mode.js';
-import { profilePrompt } from './agent-profiles.js';
-import { agentHandoff } from './handoff.js';
 import { Gateway, READ_TOOLS, type AtlasTransport } from './gateway.js';
-import { originatingConversation, completedDependencyReceipts, delegationPolicy, handoffPrompt, used, validateDependencies, type DelegationSnapshot, type DependencyReceipt } from './orchestration.js';
+import { originatingConversation, completedDependencyReceipts, used, validateDependencies, type DelegationSnapshot, type DependencyReceipt } from './orchestration.js';
 import { AtlasContextService, type AtlasContext } from './atlas-context.js';
 
 export interface Limits { concurrency:number; queue:number; sessionUsd:number; globalUsd:number; sessionTokens:number; reserveUsd:number; maxRunMs:number; }
@@ -39,18 +34,9 @@ export class Engine {
     if(limits.queue<1 || limits.maxRunMs<1000)throw new Error('Invalid queue or run timeout');
     if(atlas){this.gateway=new Gateway(store,atlas,devTasks,(...args)=>this.approve(...args));this.atlasContext=new AtlasContextService(atlas);}
     store.transaction(()=>{
-      for(const task of store.all<Task>('tasks'))if(['running','awaiting_approval'].includes(task.state)) {
+      for(const task of store.all<Task>('tasks'))if(['running','awaiting_approval','waiting_children'].includes(task.state)||(task.state==='queued'&&(!!task.parentId||task.kind==='join'))) {
         task.state='interrupted';task.error='Server restarted during execution. Reconcile tools before retrying.';store.save('tasks',task);
         store.event(task.conversationId,{taskId:task.id,agentRunId:task.agentRunId??null,agentId:task.agentId??null,type:'task',state:'interrupted'});
-      }
-      // A join whose execution was interrupted is not silently replayed.
-      for(const task of store.all<Task>('tasks'))if(task.state==='waiting_children'&&task.joinTaskId) {
-        const join=store.get<Task>('tasks',task.joinTaskId);
-        if(!join || join.state==='interrupted' || join.state==='failed' || join.state==='cancelled') {
-          task.state='interrupted';task.error='Child synthesis interrupted; reconcile before retrying.';
-          store.save('tasks',task);
-          store.event(task.conversationId,{taskId:task.id,agentRunId:task.agentRunId??null,type:'task',state:'interrupted'});
-        }
       }
       for(const approval of store.all<Approval>('approvals'))if(approval.state==='pending') { approval.state='rejected';store.save('approvals',approval); }
       // A GitHub write remains strictly pre-dispatch until its ledger state
@@ -101,6 +87,13 @@ export class Engine {
     const renamed={...c,title:trimmed,manualTitle:true};
     this.store.save('conversations',renamed);
     return renamed;
+  }
+  setModel(id:string,modelKey:unknown):Conversation {
+    const c=this.store.get<Conversation>('conversations',id);
+    if(!c)throw new ConversationNotFoundError('Conversation not found');
+    if(typeof modelKey!=='string'||!this.modelRegistry?.models.some(model=>model.key===modelKey))throw new Error('Invalid model selection');
+    if(this.tasks(id).some(task=>!terminal(task.state)))throw new ConversationConflictError('Conversation has an active task');
+    const updated={...c,modelKey};this.store.save('conversations',updated);return updated;
   }
   async deleteConversation(id:string):Promise<void> {
     if(!this.harness.deleteConversationSessions)throw new SessionCleanupError('Session cleanup unavailable');
@@ -253,6 +246,7 @@ export class Engine {
     this.store.save('conversations',current);
     return current;
   }
+  async sessionSnapshot(id:string){return await this.harness.snapshot?.(id)??null;}
   tasks(conversationId?:string) { return this.store.all<Task>('tasks').filter(t=>!conversationId||t.conversationId===conversationId); }
   isInternalConversation(c:Conversation):boolean {
     return !!c.internalParentConversationId || this.store.isInternalConversationId(c.id);
@@ -341,6 +335,7 @@ export class Engine {
   }
   enqueue(conversationId:string,prompt:string,requestId:string,dependencies:string[]=[],parentId:string|null=null,
     attemptOf:string|null=null,options:{delegation?:DelegationSnapshot;kind?:'agent'|'join';continuationOf?:string;agentId?:string;modelKey?:string;retryDependencyResults?:DependencyReceipt[];retryDetachedFromParentId?:string}={}) {
+    if(parentId||options.kind==='join')throw new Error('Child execution belongs to Pi sessions');
     if(typeof prompt!=='string'||!prompt.trim()||prompt.length>6000)throw new Error('Message length must be 1–6000');
     if(typeof requestId!=='string'||!requestId.match(/^[a-zA-Z0-9_-]{8,100}$/))throw new Error('A stable requestId is required');
     const c=this.store.get<Conversation>('conversations',conversationId);if(!c)throw new Error('Conversation not found');
@@ -381,32 +376,6 @@ export class Engine {
   private kick() { if(this.scheduled||this.stopped)return;this.scheduled=true;queueMicrotask(()=>{this.scheduled=false;this.pump();}); }
   private pump() {
     if(this.stopped)return;
-    // A waiting parent does not occupy a worker. Once every direct child is
-    // terminal, persist exactly one synthesis continuation in its conversation.
-    for(const parent of this.tasks().filter(task=>task.state==='waiting_children'&&!task.joinTaskId)) {
-      const children=this.tasks().filter(task=>task.parentId===parent.id);
-      if(!children.length || children.some(child=>!terminal(child.state)))continue;
-      if(this.tasks().filter(t=>!terminal(t.state)).length>=this.limits.queue)continue;
-      try { this.budget(parent.conversationId,parent.id); }
-      catch {
-        this.finish(parent,'failed','Inference budget exhausted before child synthesis');
-        continue;
-      }
-      const join:Task={id:randomUUID(),conversationId:parent.conversationId,requestId:'join-'+parent.id,
-        prompt:'Synthesize delegated results',state:'queued',createdAt:new Date().toISOString(),
-        parentId:null,dependencies:[],attemptOf:null,result:'',error:null,usage:[],
-        atlasContext:parent.atlasContext??null,agentId:parent.agentId??randomUUID(),
-        agentRunId:randomUUID(),modelKey:parent.modelKey,kind:'join',continuationOf:parent.id};
-      this.store.transaction(()=>{
-        // The parent is the authoritative join lock after a crash/restart.
-        const current=this.store.get<Task>('tasks',parent.id);
-        if(!current||current.state!=='waiting_children'||current.joinTaskId)throw new Error('Join already claimed');
-        current.joinTaskId=join.id;
-        this.store.save('tasks',current);this.store.save('tasks',join);
-        this.store.event(parent.conversationId,{taskId:join.id,agentId:join.agentId,agentRunId:join.agentRunId,
-          parentTaskId:parent.id,type:'join',state:'queued'});
-      });
-    }
     const tasks=this.tasks();
     for(const task of tasks.filter(t=>t.state==='queued')) {
       const deps=task.dependencies.map(id=>this.store.get<Task>('tasks',id)!);
@@ -431,7 +400,6 @@ export class Engine {
   }
   private finish(task:Task,state:Task['state'],error:string|null=null) {
     task.state=state;task.error=error;
-    if(state==='completed'&&(task.parentId||task.delegation))task.handoff=agentHandoff(task.result);
     this.store.transaction(()=>{
       this.store.save('tasks',task);
       this.store.event(task.conversationId,{taskId:task.id,agentId:task.agentId??null,
@@ -441,28 +409,7 @@ export class Engine {
         if(parent)this.store.event(parent.conversationId,{taskId:parent.id,agentRunId:parent.agentRunId??null,
           childTaskId:task.id,type:'delegation',state});
       }
-      if(task.continuationOf) {
-        const parent=this.store.get<Task>('tasks',task.continuationOf);
-        if(parent && parent.state==='waiting_children') {
-          parent.state=state==='completed'?'completed':state==='cancelled'?'cancelled':'interrupted';
-          parent.error=state==='completed'?null:'Child synthesis did not complete; reconcile before retrying.';
-          // The parent result contains the synthesis, not an extra synthetic user turn.
-          if(state==='completed'&&task.result&&!parent.result.includes(task.result))
-            parent.result+=(parent.result?'\n\n':'')+task.result;
-          // Use the completed synthesis attempt, not the accumulated transcript:
-          // the pre-join answer and streamed continuation are not one JSON.
-          if(parent.parentId&&parent.state==='completed')
-            parent.handoff=agentHandoff(task.result);
-          this.store.save('tasks',parent);
-          this.store.event(parent.conversationId,{taskId:parent.id,agentId:parent.agentId??null,
-            agentRunId:parent.agentRunId??null,type:'task',state:parent.state});
-          if(parent.parentId) {
-            const ancestor=this.store.get<Task>('tasks',parent.parentId);
-            if(ancestor)this.store.event(ancestor.conversationId,{taskId:ancestor.id,
-              agentRunId:ancestor.agentRunId??null,childTaskId:parent.id,type:'delegation',state:parent.state});
-          }
-        }
-      }
+
     });
     // Native Pi child records are observations, not runnable Relay jobs.
     // Stop projecting a live child when its owner exits unexpectedly.
@@ -488,198 +435,23 @@ export class Engine {
     let phase:HarnessPhase|'atlas_tool_discovery'|'pi_initialization'='atlas_tool_discovery';
     const timeout=setTimeout(()=>controller.abort(new Error('Execution time limit reached')),this.limits.maxRunMs);
     try {
-      const joining=task.kind==='join'&&!!task.continuationOf;
-      // Joins are inference-only; child text is untrusted and cannot introduce
-      // new tool effects while we synthesise the outcome.
-      // Compute trusted Pi read admission before touching the legacy Atlas
-      // Gateway, so the native path never probes two MCP transports for the
-      // same read-only tool inventory.
-      const nativeMcp=!joining&&piNativeMcpEnabled()&&this.capabilities
-        ?this.capabilities.nativeMcp(task,this.store):undefined;
+      const nativeMcp=this.capabilities?.nativeMcp(task,this.store);
+      if(nativeMcp){nativeMcp.approve=(...args)=>this.approve(...args);nativeMcp.signal=controller.signal;}
       const nativeReadNames=nativeMcp?nativeMcpAllowed(nativeMcp):[];
-      const nativeAtlas=nativeReadNames.some(name=>name.startsWith('mcp__atlas__'));
-      let atlasAvailable=nativeAtlas;
+      const atlasAvailable=nativeReadNames.some(name=>name.startsWith('mcp__atlas__'));
+      // Atlas development operations retain their resource/approval policy.
+      // General MCP discovery, reads and invocation belong exclusively to Pi.
       let tools:Awaited<ReturnType<Gateway['tools']>>=[];
-      if(!joining&&this.gateway) {
-        try {
-          tools=await this.gateway.tools(task,controller.signal);
-          atlasAvailable=true;
-          if(nativeAtlas)tools=tools.filter(tool=>
-            tool.name.startsWith('atlas_workspace_'));
-        }catch {controller.signal.throwIfAborted();if(!nativeAtlas)atlasAvailable=false;tools=[];}
-      }
-      const registryReadNames=new Set<string>();
-      if(!joining && this.capabilities &&
-          (!nativeMcp || !!process.env.RELAY_GITHUB_WRITE_REPOS?.trim())) {
-        // In Pi-native read-only mode skip Relay's legacy MCP transport and
-        // discovery entirely; only invoke it when explicit approved GitHub
-        // write tools were configured.
-        // An MCP tool is read-authorized because the server-side registry
-        // admitted it, NOT because a tool name happens to start with mcp_.
-        // Children receive only their exact delegated read-only subset.
-        const discovered=await this.capabilities.tools(task,this.store,controller.signal,
-          (...args)=>this.approve(...args));
-        // Only read tools may become child-admissible by name. A root GitHub
-        // write is explicitly not inheritable even when the root has consent.
-        for(const tool of discovered)
-          if(!['mcp_github_create_issue','mcp_github_add_issue_comment'].includes(tool.name))
-            registryReadNames.add(tool.name);
-        // During migration retain the existing approval-backed root writes,
-        // but do not present duplicate legacy MCP reads to Pi.
-        tools.push(...(nativeMcp
-          ?discovered.filter(tool=>tool.name==='mcp_github_create_issue'||
-            tool.name==='mcp_github_add_issue_comment')
-          :discovered));
-      }
-      const admitted=[...tools.filter(tool=>registryReadNames.has(tool.name) ||
-        READ_TOOLS.has(tool.name.replace(/^atlas_/,''))).map(tool=>tool.name),
-        ...nativeReadNames];
-      if(task.parentId || task.delegation) {
-        // Detached child retries are still children of the *capability*
-        // policy even though they no longer join their previous parent.
-        const allowed=new Set(task.delegation?.toolNames??[]);
-        tools=tools.filter(tool=>allowed.has(tool.name)&&admitted.includes(tool.name));
-      }
-      const delegateModelKeys=this.modelRegistry?.models.map(model=>model.key)??[];
-      // Accept a shorthand ONLY for the currently selected Ollama model.
-      // It must be visible in the Pi tool schema as well as in admission,
-      // otherwise Pi rejects the input before compatibility handling runs.
-      const selectedOllamaId=task.modelKey?.startsWith('ollama/')
-        ?task.modelKey.slice('ollama/'.length):null;
-      if(selectedOllamaId && delegateModelKeys.includes(task.modelKey!))
-        delegateModelKeys.push(selectedOllamaId);
-      // Expose ONLY currently admitted read-only tool names as schema literals.
-      // A free-form string hid tool discovery from the parent model, making
-      // it easy to launch research children without usable sources.
-      const delegatedToolsSchema=admitted.length
-        ?Type.Array(Type.Union(admitted.map(name=>Type.Literal(name))),
-          {maxItems:16,uniqueItems:true,description:'Pass only the read-only tools this child needs. Omission grants no external tools.'})
-        :Type.Array(Type.String(),
-          {maxItems:0,description:'No external read tools are currently admitted; this child cannot research live sources.'});
-      // Use exactly one delegation backend per root session. In native Pi
-      // subagent mode the SDK extension owns child execution; Relay does not
-      // also offer its SQLite-based relay_delegate scheduler.
-      if(!joining&&!piSubagentsEnabled())tools.push({
-        name:'relay_delegate',label:'Delegate task',
-        description:'Spawn a bounded child agent; parent waits and synthesises results. Children have NO external tools by default. For tasks that require GitHub or Atlas evidence, set requiredToolProvider to that provider AND explicitly grant its relevant tools in tools; if that provider is unavailable, admission fails without spawning a tool-less researcher. Never invent sources. Repeated identical requests to the same parent reuse the existing child.',
-        parameters:Type.Object({
-          prompt:Type.String({minLength:1,maxLength:6000}),
-          dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:8})),
-          tools:Type.Optional(delegatedToolsSchema),
-          requiredToolProvider:Type.Optional(Type.Union([Type.Literal('github'),Type.Literal('atlas')],
-            {description:'Fail instead of spawning if this provider has no admitted read tools or none of its tools were explicitly granted to the child. Use github for GitHub issues/PRs and atlas only for Atlas resources.'})),
-          context:Type.Optional(Type.String({maxLength:2000})),
-          profile:Type.Optional(Type.Union([Type.Literal('general'),Type.Literal('researcher'),
-            Type.Literal('reviewer'),Type.Literal('implementer')])),
-          // The default is deliberately inheritance; constrain explicit
-          // overrides to actual provider-qualified keys, not invented labels.
-          ...(delegateModelKeys.length?{
-            modelKey:Type.Optional(Type.Union(
-              delegateModelKeys.map(key=>Type.Literal(key)),
-              {description:'Optional. Omit to inherit the parent agent\'s model. Use an exact configured Relay key such as ollama/qwen3-coder:30b, or the current parent\'s exact Ollama ID as shorthand. Display names are not valid.'}
-            ))
-          }:{}),
-          maxTokens:Type.Optional(Type.Integer({minimum:1,maximum:1000000})),
-          maxCostUsd:Type.Optional(Type.Number({exclusiveMinimum:0,maximum:100}))
-        }),
-        execute:async (_id,input) => {
-          const args=input as {prompt:string;dependencies?:string[];tools?:string[];requiredToolProvider?:'github'|'atlas';context?:string;profile?:string;modelKey?:string;maxTokens?:number;maxCostUsd?:number};
-          controller.signal.throwIfAborted();
-          if(typeof args.prompt!=='string'||!args.prompt.trim()||args.prompt.length>6000)
-            throw new Error('Invalid child task prompt');
-          let depth=0,ancestor:Task|undefined=task;
-          while(ancestor?.parentId) {
-            depth++;if(depth>=2)throw new Error('Delegation depth limit reached');
-            ancestor=this.store.get<Task>('tasks',ancestor.parentId);
-          }
-          const existing=this.tasks();
-          validateDependencies(existing,task.conversationId,args.dependencies??[],task.id);
-          if(existing.filter(t=>!terminal(t.state)).length>=this.limits.queue)
-            throw new Error('Task queue is full');
-          if(args.modelKey!==undefined&&!this.modelRegistry)
-            throw new Error('Delegated model is not permitted');
-          const inheritedModel=task.modelKey??this.store.get<Conversation>('conversations',task.conversationId)?.modelKey??null;
-          const policy=delegationPolicy(args,admitted,inheritedModel,
-            this.modelRegistry?.models.map(m=>m.key)??null,task.delegation);
-          // Requiring a provider is a validation constraint, NOT a permission.
-          // Without admitted and delegated read tools, do not waste a local
-          // model run on a research child that cannot possibly inspect sources.
-          if(args.requiredToolProvider!==undefined) {
-            if(args.requiredToolProvider!=='github'&&args.requiredToolProvider!=='atlas')
-              throw new Error('Unknown required tool provider');
-            const prefixes=args.requiredToolProvider==='github'
-              ?['mcp_github_','mcp__github__']:['atlas_'];
-            if(!policy.toolNames.some(name=>prefixes.some(prefix=>name.startsWith(prefix))&&admitted.includes(name)))
-              throw new Error(args.requiredToolProvider==='github'
-                ?'GitHub MCP read tools are unavailable or not granted. Configure and enable GitHub in Skills & integrations, then delegate with its read-tool names.'
-                :'Atlas read tools are unavailable or not granted. Check Atlas connectivity and delegate with its read-tool names.');
-          }
-          // Pi can submit the same delegation multiple times in a single
-          // inference. Reuse the original task rather than spending tokens
-          // on duplicate children. Different tools, model, limits, context
-          // or dependencies remain distinct work.
-          const matching=existing.find(child=>child.parentId===task.id&&child.prompt===args.prompt&&
-            JSON.stringify(child.dependencies)===JSON.stringify(args.dependencies??[])&&
-            JSON.stringify(child.delegation)===JSON.stringify(policy));
-          const receipt=(child:Task,reused:boolean)=>({content:[{type:'text' as const,text:JSON.stringify({
-            taskId:child.id,agentId:child.agentId,agentRunId:child.agentRunId,
-            state:child.state,conversationId:child.conversationId,reused
-          })}],details:{}});
-          if(matching)return receipt(matching,true);
-          if(existing.filter(child=>child.parentId===task.id).length>=4)
-            throw new Error('Child task limit reached');
-          this.budget(task.conversationId,task.id,policy);
-          const conversation=this.conversation(policy.modelKey??undefined,task.conversationId);
-          // Only the enqueue-time Atlas context is copied. There is no
-          // inherited transcript, prior private chat or arbitrary MCP credential.
-          conversation.atlasContext=task.atlasContext??null;
-          this.store.save('conversations',conversation);
-          let child:Task;
-          try {
-            child=this.enqueue(conversation.id,args.prompt,randomUUID(),args.dependencies??[],task.id,null,
-              {delegation:policy,modelKey:policy.modelKey??undefined});
-          } catch(error) {
-            // A failed admission must not leave an empty hidden child chat.
-            this.store.db.prepare('DELETE FROM conversations WHERE id=?').run(conversation.id);
-            throw error;
-          }
-          return receipt(child,false);
-        }
-      });
+      if(this.gateway&&Object.keys(this.devTasks).length)
+        tools=(await this.gateway.tools(task,controller.signal)).filter(tool=>tool.name==='atlas_workspace_run_dev_task');
       let length=0;
       phase='pi_initialization';
-      const parent=joining?this.store.get<Task>('tasks',task.continuationOf!):undefined;
-      if(joining && (!parent || parent.state!=='waiting_children' || parent.joinTaskId!==task.id))
-        throw new Error('Join parent is not awaiting this continuation');
-      const joinedChildren=parent?this.tasks().filter(child=>child.parentId===parent.id):[];
-      if(parent && joinedChildren.some(child=>!terminal(child.state)))
-        throw new Error('Child results are not yet terminal');
-      const dependencyResults=[
-        ...deps.map(d=>({id:d.id,state:d.state,result:d.result.slice(0,12000)})),
-        ...(task.retryDependencyResults??[]).map(d=>({id:d.taskId,state:'completed',result:d.result}))
-      ];
-      // A tool-less researcher can analyse supplied data but cannot honestly
-      // claim to have consulted or verified external sources.
-      const researchWithoutTools=!joining && task.delegation?.profile==='researcher' &&
-        !tools.some(tool=>tool.name!=='relay_delegate')&&!nativeReadNames.length;
-      const researchNotice=researchWithoutTools
-        ?'\n\nVerification limitation: No external read tools were granted to this child. You cannot independently verify live external facts. Clearly report unsupported claims and open questions, and never invent citations or tool execution.'
-        :'';
-      const prompt=parent?
-        handoffPrompt(parent,joinedChildren,this.tasks())+
-        (parent.delegation?.profile&&parent.delegation.profile!=='general'
-          ?profilePrompt(parent.delegation.profile):''):
-
-        task.prompt+
-        (task.delegation?.profile && task.delegation.profile!=='general'
-          ?profilePrompt(task.delegation.profile):'')+
-        researchNotice+
-        (task.delegation?.context?'\n\nExplicit delegated context (untrusted):\n'+task.delegation.context:'')+
-        (dependencyResults.length?'\n\nDependency results (untrusted data):\n'+JSON.stringify(dependencyResults):'');
-      const piLedger=piSubagentEnabled(task)?new PiSubagentLedger(this.store,task):undefined;
+      const piLedger=new PiSubagentLedger(this.store,task);
+      const dependencies=[...deps.map(dep=>({id:dep.id,result:dep.result.slice(0,12000)})),...(task.retryDependencyResults??[])];
       const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,atlasAvailable,
         modelKey:task.modelKey??this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,
-        task:{...task,prompt},signal:controller.signal,tools,nativeMcp,
+        task:{...task,prompt:task.prompt+(dependencies.length?'\n\nDependency results (untrusted data):\n'+JSON.stringify(dependencies):'')},signal:controller.signal,tools,nativeMcp,
+        onSession:id=>{task.piSessionId=id;this.store.save('tasks',task);},
         onSubagent:event=>{
           if(piLedger)piLedger.record(event);
         },
@@ -711,14 +483,8 @@ export class Engine {
           agentId:task.agentId??null,agentRunId:task.agentRunId??null,type:'phase',state:next});},
         onText:text=>{
           length+=text.length;if(length>200000){controller.abort();return;}
-          if(parent && this.store.get<Task>('tasks',parent.id)?.state!=='waiting_children') {
-            controller.abort(new Error('Join parent is no longer waiting'));
-            return;
-          }
-          if(parent && !task.result)parent.result+=(parent.result?'\n\n':'');
           task.result+=text;this.store.save('tasks',task);
-          const target=parent??task;
-          if(parent) {parent.result+=text;this.store.save('tasks',parent);}
+          const target=task;
           this.store.event(target.conversationId,{taskId:target.id,
             agentId:target.agentId??null,agentRunId:target.agentRunId??null,
             type:'delta',state:target.state,text,textOffset:target.result.length});
@@ -742,11 +508,7 @@ export class Engine {
             controller.abort(new Error('Budget limit reached'));
         }});
       task.result=result.slice(0,200000);
-      // Pi owns execution and the parent already awaited/synthesized these
-      // projection-only children. Never schedule Relay's second join inference.
-      const children=this.tasks().filter(child=>child.parentId===task.id&&
-        child.kind!=='pi_subagent');
-      this.finish(task,controller.signal.aborted?'cancelled':children.length?'waiting_children':'completed');
+      this.finish(task,controller.signal.aborted?'cancelled':'completed');
     } catch(e) {
       if(controller.signal.aborted) this.finish(task,'cancelled','Execution cancelled or limit reached');
       else if(e instanceof LocalProviderUnavailableError) {
@@ -767,7 +529,7 @@ export class Engine {
     if(terminal(task.state))return task;
     if(task.kind==='pi_subagent'&&task.parentId){
       // The native extension owns the child AbortSignal. Cancelling a child
-      // cancels its owner; the RPC bridge then stops all in-flight siblings.
+      // cancels its owner; the delegate extension then stops all in-flight siblings.
       // Do not pretend this projection has its own Relay execution worker.
       await this.cancel(task.parentId);
       return this.store.get<Task>('tasks',id)??task;

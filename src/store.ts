@@ -11,7 +11,7 @@ export interface Conversation { id: string; title: string; createdAt: string; mo
 export interface Usage { input: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; costUsd: number | null; costKind: 'estimated' | 'measured' | 'unknown'; }
 export interface Task { id: string; conversationId: string; requestId: string; prompt: string; state: State; createdAt: string; parentId: string | null; dependencies: string[]; attemptOf: string | null; result: string; error: string | null; usage: Usage[]; atlasContext?: AtlasContext|null;
   /** Absent on legacy tasks, never fabricated during migration. */
-  agentId?: string; agentRunId?: string; modelKey?: string;
+  agentId?: string; agentRunId?: string; modelKey?: string; piSessionId?: string;
   delegation?: import('./orchestration.js').DelegationSnapshot;
   /** Bounded, untrusted model-authored report; never an execution receipt. */
   handoff?: import('./handoff.js').AgentHandoff;
