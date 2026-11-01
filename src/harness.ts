@@ -117,9 +117,18 @@ export class PiHarness implements Harness {
     // validated bytes of the same admission snapshot.
     const layout=piToolLoadout(tools);
     let skillManifest='';
+    // Modifier-based tool activation lets Pi's search enable deferred tools,
+    // so enforce Relay's immutable per-run allowlist at every tool invocation.
+    const runtimeAllowed=new Set(layout.allowedNames);
+    const guard={name:'relay-tool-admission',factory:(pi:import('@earendil-works/pi-coding-agent').ExtensionAPI)=>{
+      pi.on('tool_call',event=>{
+        if(!runtimeAllowed.has(event.toolName))
+          return {block:true,reason:'Tool not authorised for this Relay run'};
+      });
+    }};
     const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager,noExtensions:true,disabledBuiltinExtensions:['mcp'],
-      extensionFactories:layout.deferredNames.length?[{name:'relay-native-tool-search',
-        factory:createToolSearchExtension()}]:[],
+      extensionFactories:[guard,...(layout.deferredNames.length?[{name:'relay-native-tool-search',
+        factory:createToolSearchExtension()}]:[])],
       noSkills:false,additionalSkillPaths:trusted.map(s=>s.path),
       skillsOverride:current=>({...current,skills:current.skills.filter(s=>trusted.some(t=>s.name===t.name&&s.filePath===t.path))}),
       noPromptTemplates:true,noThemes:true,noContextFiles:true,
@@ -131,6 +140,7 @@ export class PiHarness implements Harness {
     skillManifest=piSkillSummary(loaded);
     onSkills?.(loaded.map(s=>s.name));
     const skillDocs=skillSnapshot.documents;
+    if(loaded.length)runtimeAllowed.add('read_skill');
     const skillReader:ToolDefinition|undefined=loaded.length?{
       name:'read_skill',label:'Read trusted Skill',
       description:'Load instructions for one already enabled, reviewed Pi Skill by exact name. Does not grant tools or file access.',
