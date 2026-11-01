@@ -37,11 +37,11 @@ test('Recover only a request-advertised, bounded Qwen3-Coder function into a gen
 test('Two separate Pi delegation calls survive a malformed Qwen multi-call response',()=>{
   const tools=[{type:'function',function:{name:'relay_pi_delegate',
     parameters:{type:'object',properties:{prompt:{type:'string'},tools:{type:'array'}}}}}];
-  const raw='Delegating two issues.\\n\\n'+
-    '<function=relay_pi_delegate>\\n<parameter=prompt>Read issue 28</parameter>\\n'+
-    '<parameter=tools>["mcp__github__issue_read"]</parameter>\\n</function>\\n</tool_call>\\n'+
-    '<function=relay_pi_delegate>\\n<parameter=prompt>Read issue 29</parameter>\\n'+
-    '<parameter=tools>["mcp__github__issue_read"]</parameter>\\n</function>\\n</tool_call>';
+  const raw='Delegating two issues.\n\n'+
+    '<function=relay_pi_delegate>\n<parameter=prompt>Read issue 28</parameter>\n'+
+    '<parameter=tools>["mcp__github__issue_read"]</parameter>\n</function>\n</tool_call>\n'+
+    '<function=relay_pi_delegate>\n<parameter=prompt>Read issue 29</parameter>\n'+
+    '<parameter=tools>["mcp__github__issue_read"]</parameter>\n</function>\n</tool_call>';
   const parsed=recoverQwenToolCall(output(raw),tools);
   assert.equal(parsed.kind,'recovered');
   const calls=parsed.completion.choices![0].message!.tool_calls as
