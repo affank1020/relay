@@ -13,6 +13,9 @@ RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 # Package scripts are never executed; the extension remains untrusted code
 # until the operator intentionally opts in after reviewing the package.
 RUN npm install --no-save --omit=dev --ignore-scripts --no-audit --no-fund @tintinweb/pi-subagents@0.22.1
+# Validate the actual published package. A successful npm install alone
+# does not prove that Pi's TypeScript extension entrypoint is shipped.
+RUN node -e "const r=require('node:module').createRequire(process.cwd()+'/package.json'); const fs=require('node:fs'); const path=require('node:path'); const p=r.resolve('@tintinweb/pi-subagents/package.json'); const m=r(p); if(m.name!=='@tintinweb/pi-subagents'||m.version!=='0.22.1'||!fs.existsSync(path.join(path.dirname(p),'src','index.ts')))process.exit(1)"
 
 FROM node:22-bookworm-slim
 WORKDIR /app
