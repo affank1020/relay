@@ -71,6 +71,51 @@ test('one worker fan-out/fan-in persists distinct agent runs and synthesises wit
   }finally{await engine.stop();store.close();}
 });
 
+test('local Qwen delegation inherits the selected model and accepts only its own exact Ollama ID alias',async()=>{
+  const {loadRelayModels}=await import('../src/models.js');
+  const registry=loadRelayModels({
+    RELAY_OLLAMA_URL:'http://127.0.0.1:11434/v1',
+    RELAY_OLLAMA_MODELS:'qwen3-coder:30b'
+  });
+  const store=new Store(':memory:');
+  const selectedModels:string[]=[];
+  const engine=new Engine(store,fixture(async request=>{
+    selectedModels.push(request.modelKey??'missing');
+    if(request.task.prompt==='parent'){
+      const tool=request.tools.find(tool=>tool.name==='relay_delegate');
+      assert.ok(tool);
+      const schema=tool.parameters as unknown as {properties:{modelKey?:{anyOf?:Array<{const?:string}>}}};
+      assert.deepEqual(schema.properties.modelKey?.anyOf?.map(option=>option.const),
+        [...registry.models.map(model=>model.key),'qwen3-coder:30b'],
+        'only configured model keys and the selected local model ID may be used');
+      await delegate(request,'research without override',{profile:'researcher'});
+      await delegate(request,'research with Ollama ID',{modelKey:'qwen3-coder:30b'});
+      await assert.rejects(
+        delegate(request,'unknown model',{modelKey:'qwen3:30b'}),
+        /Delegated model is not permitted/,
+        'an arbitrary, potentially different model must still fail closed'
+      );
+      return 'Delegated on local Qwen';
+    }
+    if(request.task.kind==='join')return 'Combined local results';
+    return 'Researched';
+  }),limits,undefined,{},registry);
+  try{
+    const conversation=engine.conversation('ollama/qwen3-coder:30b');
+    const parent=engine.enqueue(conversation.id,'parent','qwen30-delegate-001');
+    await until(()=>store.get<Task>('tasks',parent.id)?.state==='completed');
+    const children=engine.tasks().filter(task=>task.parentId===parent.id);
+    assert.equal(children.length,2);
+    assert.ok(children.every(task=>task.state==='completed'));
+    assert.ok(children.every(task=>task.modelKey==='ollama/qwen3-coder:30b'));
+    assert.ok(children.every(task=>task.delegation?.modelKey==='ollama/qwen3-coder:30b'));
+    assert.ok(selectedModels.every(model=>model==='ollama/qwen3-coder:30b'),
+      'neither child nor join may silently switch to cloud');
+    assert.equal(engine.tasks().filter(task=>task.kind==='join').length,1);
+    assert.ok(!engine.tasks().some(task=>task.prompt==='unknown model'));
+  }finally{await engine.stop();store.close();}
+});
+
 test('children receive no Atlas capabilities by default; explicit admitted reads only',async()=>{
   const store=new Store(':memory:');
   const atlas={list:async()=>[
