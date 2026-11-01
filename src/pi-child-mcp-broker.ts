@@ -114,9 +114,16 @@ export class PiChildMcpBroker {
       }
       const texts=(result.content??[]).filter(c=>c.type==='text'&&typeof c.text==='string')
         .map(c=>c.text!).join('\n');
+      // A transport-level success with no source body is not research
+      // evidence. Do not count it as a verified read or tell the child that
+      // content was retrieved. This caught the nested outcome-shape defect.
+      if(!texts.trim()){
+        this.onReceipt?.(grant.agentId,req.tool,false);
+        respond(false,'MCP read returned no source content');return;
+      }
       this.completedReads++;
       this.onReceipt?.(grant.agentId,req.tool,true);
-      respond(true,texts||'Tool succeeded without text content');
+      respond(true,texts);
     }catch{
       this.onReceipt?.(grant.agentId,req.tool,false);
       respond(false,'MCP read failed; no verified result available');
