@@ -18,7 +18,7 @@ export interface IntegrationStatus {
   state:'disabled'|'unconfigured'|'unchecked'|'ready'|'offline'; availableTools:string[];
   availableWriteTools:string[];
 }
-const GITHUB_READ=[
+export const GITHUB_READ=[
   'get_me','get_file_contents','get_commit','get_latest_release','get_release_by_tag',
   'get_tag','list_branches','list_commits','list_issues','list_releases','list_tags',
   'issue_read','pull_request_read','search_code','search_issues',
