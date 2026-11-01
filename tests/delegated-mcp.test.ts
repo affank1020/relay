@@ -322,11 +322,12 @@ test('repeated identical Pi delegation reuses a single child while distinct work
         const first=await delegate(request,'Read issue #28',{profile:'researcher'});
         const duplicate=await delegate(request,'Read issue #28',{profile:'researcher'});
         const second=await delegate(request,'Read issue #29',{profile:'researcher'});
-        assert.match(JSON.stringify(first),/"reused":false/);
-        assert.match(JSON.stringify(duplicate),/"reused":true/);
-        assert.match(JSON.stringify(second),/"reused":false/);
-        assert.equal(JSON.parse((first.content[0] as {text:string}).text).taskId,
-          JSON.parse((duplicate.content[0] as {text:string}).text).taskId);
+        const issued=(value:typeof first)=>JSON.parse((value.content[0] as {text:string}).text)
+          as {taskId:string;reused:boolean};
+        assert.equal(issued(first).reused,false);
+        assert.equal(issued(duplicate).reused,true);
+        assert.equal(issued(second).reused,false);
+        assert.equal(issued(first).taskId,issued(duplicate).taskId);
         return 'Delegated two distinct tasks.';
       }
       if(request.task.kind==='join'){
