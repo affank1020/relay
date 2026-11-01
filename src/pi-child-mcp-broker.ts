@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { SubagentsBus } from './pi-subagents-rpc.js';
 import { READ_TOOLS } from './gateway.js';
+import { GITHUB_READ } from './integrations/manager.js';
 
 type RecordView={session?:{sessionManager?:{getSessionId?:()=>string}}};
 export type ChildRegistry={getRecord:(id:string)=>RecordView|undefined};
@@ -16,9 +17,18 @@ export interface ParentReadExecutor {
   (name:string,args:unknown):Promise<ChildReadResult>;
 }
 export interface ChildReadGrant { agentId:string;sessionId:string;tools:ReadonlySet<string> }
-const approvedReadName=(name:string):boolean =>
-  /^mcp__[a-z0-9_]+__[a-zA-Z0-9_]+$/.test(name) ||
-  (name.startsWith('atlas_')&&READ_TOOLS.has(name.slice('atlas_'.length)));
+const approvedReadName=(name:string):boolean => {
+  if(name.startsWith('atlas_'))
+    return READ_TOOLS.has(name.slice('atlas_'.length));
+  const match=/^mcp__([a-z0-9_]+)__([a-zA-Z0-9_]+)$/.exec(name);
+  if(!match)return false;
+  const [,provider,method]=match;
+  if(provider==='github')return GITHUB_READ.some(read=>read===method);
+  if(provider==='atlas')return READ_TOOLS.has(method) && !method.startsWith('workspace_');
+  // Operator-configured provider vocabulary is constrained to read-only
+  // verbs separately by its trusted ConnectionManager schema.
+  return /^(get|list|read|search|fetch|lookup|query)_[a-z0-9_]+$/.test(method);
+};
 const MAX_PENDING=16;
 const MAX_OUTPUT=32000;
 const valid=(s:unknown,max=128):s is string=>typeof s==='string'&&s.length>0&&s.length<=max;
