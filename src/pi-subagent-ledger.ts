@@ -40,12 +40,14 @@ export class PiSubagentLedger {
           agentId:this.root.agentId??null,agentRunId:this.root.agentRunId??null,
           childTaskId:id,type:'delegation',state:'running'});
       }
-      const next:State=event.status==='completed'?'completed':
-        event.status==='failed'?'failed':event.status==='stopped'?'cancelled':'running';
+      const verifiedCompletion=event.status==='completed'&&typeof event.result==='string';
+      const next:State=verifiedCompletion?'completed':
+        event.status==='failed'||event.status==='completed'?'failed':
+        event.status==='stopped'?'cancelled':'running';
       child!.state=next;
-      if(event.status==='completed')child!.result=(event.result??'').slice(0,12000);
-      if(event.status==='failed'||event.status==='stopped')
-        child!.error=(event.error||'Pi subagent did not complete').slice(0,500);
+      if(verifiedCompletion)child!.result=event.result!.slice(0,12000);
+      if(next==='failed'||next==='cancelled')
+        child!.error=(event.error||'Pi subagent did not provide a completed result').slice(0,500);
       this.store.save('tasks',child!);
       this.store.event(child!.conversationId,{taskId:child!.id,
         agentId:child!.agentId??null,agentRunId:child!.agentRunId??null,
