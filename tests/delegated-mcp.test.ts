@@ -44,7 +44,10 @@ test('child profiles use only explicitly selected MCP read tools and persist str
         assert.match(delegateSchema,/"const":"mcp_github_issue_read"/);
         assert.match(delegateSchema,/"const":"mcp_github_get_file_contents"/);
         assert.doesNotMatch(delegateSchema,/mcp_github_create_issue/);
-        await delegate(request,'scoped child',{profile:'researcher',tools:['mcp_github_issue_read']});
+        await assert.rejects(delegate(request,'missing GitHub grant',
+          {profile:'researcher',requiredToolProvider:'github'}),/GitHub MCP read tools are unavailable or not granted/);
+        await delegate(request,'scoped child',
+          {profile:'researcher',requiredToolProvider:'github',tools:['mcp_github_issue_read']});
         await delegate(request,'isolated child',{profile:'reviewer'});
         return 'Delegated safely.';
       }
@@ -307,5 +310,66 @@ test('tool-less researcher is warned about the lack of independent verification'
     assert.deepEqual(child.delegation?.toolNames,[]);
     assert.equal(child.handoff?.summary,'No external verification was possible');
     assert.match(store.get<Task>('tasks',root.id)!.result,/No live verification available/);
+  }finally{await engine.stop();store.close();}
+});
+
+test('repeated identical Pi delegation reuses a single child while distinct work still runs',async()=>{
+  const store=new Store(':memory:');
+  const dispatched:string[]=[];
+  const harness:Harness={version:1,capabilities:{persistence:true,cancellation:true,tools:true},
+    run:async request=>{
+      if(request.task.prompt==='root duplicate'){
+        const first=await delegate(request,'Read issue #28',{profile:'researcher'});
+        const duplicate=await delegate(request,'Read issue #28',{profile:'researcher'});
+        const second=await delegate(request,'Read issue #29',{profile:'researcher'});
+        assert.match(JSON.stringify(first),/"reused":false/);
+        assert.match(JSON.stringify(duplicate),/"reused":true/);
+        assert.match(JSON.stringify(second),/"reused":false/);
+        assert.equal(JSON.parse((first.content[0] as {text:string}).text).taskId,
+          JSON.parse((duplicate.content[0] as {text:string}).text).taskId);
+        return 'Delegated two distinct tasks.';
+      }
+      if(request.task.kind==='join'){
+        assert.match(request.task.prompt,/Read issue #28/);
+        assert.match(request.task.prompt,/Read issue #29/);
+        return 'Both child reports synthesised.';
+      }
+      dispatched.push(request.task.prompt);
+      return JSON.stringify({relayHandoff:{summary:request.task.prompt,
+        evidence:[],artifacts:[],openQuestions:[]}});
+    }};
+  const engine=new Engine(store,harness,limits);
+  try{
+    const conversation=engine.conversation();
+    const root=engine.enqueue(conversation.id,'root duplicate','dedup-root-001');
+    await until(()=>store.get<Task>('tasks',root.id)?.state==='completed');
+    const children=engine.tasks().filter(t=>t.parentId===root.id);
+    assert.equal(children.length,2);
+    assert.equal(dispatched.length,2);
+    assert.ok(dispatched.some(prompt=>prompt.startsWith('Read issue #28')));
+    assert.ok(dispatched.some(prompt=>prompt.startsWith('Read issue #29')));
+  }finally{await engine.stop();store.close();}
+});
+
+test('required GitHub tool provider fails admission without any GitHub tools',async()=>{
+  const store=new Store(':memory:');
+  const harness:Harness={version:1,capabilities:{persistence:true,cancellation:true,tools:true},
+    run:async request=>{
+      if(request.task.prompt==='root provider'){
+        const schema=JSON.stringify(request.tools.find(t=>t.name==='relay_delegate')!.parameters);
+        assert.match(schema,/requiredToolProvider/);
+        await assert.rejects(delegate(request,'Use GitHub MCP to read issue #28',
+          {profile:'researcher',requiredToolProvider:'github'}),
+          /GitHub MCP read tools are unavailable or not granted/);
+        return 'External research was not started without tools.';
+      }
+      return 'Unexpected child';
+    }};
+  const engine=new Engine(store,harness,limits);
+  try{
+    const conversation=engine.conversation(),root=engine.enqueue(conversation.id,'root provider','no-github-root');
+    await until(()=>store.get<Task>('tasks',root.id)?.state==='completed');
+    assert.equal(engine.tasks().filter(t=>t.parentId===root.id).length,0);
+    assert.match(store.get<Task>('tasks',root.id)!.result,/not started/);
   }finally{await engine.stop();store.close();}
 });
