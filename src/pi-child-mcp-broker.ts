@@ -53,9 +53,11 @@ export class PiChildMcpBroker {
     return true;
   }
   async bindWhenReady(agentId:string,allowed:readonly string[],registry=piChildRegistry()):Promise<boolean> {
-    for(let attempt=0;attempt<30&&!this.closed&&!this.rootSignal.aborted;attempt++){
+    for(let attempt=0;attempt<200&&!this.closed&&!this.rootSignal.aborted;attempt++){
       if(this.bind(agentId,allowed,registry))return true;
-      await new Promise<void>(resolve=>setTimeout(resolve,20));
+      // The upstream started event can precede SDK child session creation,
+      // especially with local Ollama startup. Allow bounded initialization.
+      await new Promise<void>(resolve=>setTimeout(resolve,50));
     }
     return false;
   }
