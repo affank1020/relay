@@ -64,10 +64,12 @@ export class PiSubagentLedger {
     this.store.transaction(()=>{
       if(!child) {
         const conversationId=randomUUID(),id=randomUUID();
-        const conversation:Conversation={id:conversationId,title:'Pi subagent',createdAt:new Date().toISOString(),
+        const research=event.profile==='research';
+        const conversation:Conversation={id:conversationId,title:research?'Pi research subagent':'Pi analysis subagent',createdAt:new Date().toISOString(),
           internalParentConversationId:this.root.conversationId};
         this.store.save('conversations',conversation);
-        child={id,conversationId,requestId:'pi-'+id,prompt:'Pi delegated analysis',
+        child={id,conversationId,requestId:'pi-'+id,
+          prompt:research?'Pi delegated research':'Pi delegated analysis',
           state:'running',createdAt:new Date().toISOString(),parentId:this.root.id,
           dependencies:[],attemptOf:null,result:'',error:null,usage:[],
           agentId:event.agentId,agentRunId:randomUUID(),modelKey:this.root.modelKey,
