@@ -113,7 +113,7 @@ export async function startOllamaProxy(baseUrl:string):Promise<{baseUrl:string;c
       const stream=request.stream===true;
       if(intercept){
         dispatch(Buffer.from(JSON.stringify({...request,stream:false})),true,stream,
-          request.tools as unknown[]);
+          request.tools as ToolSpec[]);
       }else dispatch(input);
     });
   });
