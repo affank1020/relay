@@ -95,10 +95,11 @@ export function piSubagentRuntime(signal:AbortSignal,
         // Observe usage only for the lifetime of this delegated call. A
         // process-level Pi bus can outlive a single root task; never leak
         // its budget callback into another conversation.
+        const ownedAgents=new Set<string>();
         const unlistenUsage=onChildUsage?bus.on('subagents:usage',value=>{
           if(!value||typeof value!=='object')return;
           const raw=value as {id?:unknown;usage?:Record<string,unknown>};
-          if(typeof raw.id!=='string'||!raw.usage)return;
+          if(typeof raw.id!=='string'||!raw.usage||!ownedAgents.has(raw.id))return;
           const u=raw.usage;
           const safe=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1e9?v:null;
           const input=safe(u.input),output=safe(u.output);
@@ -114,6 +115,7 @@ export function piSubagentRuntime(signal:AbortSignal,
             type:requested.length?'relay-research':'relay-isolated',
             signal:ctxSignal??signal,maxTurns:12,maxRunMs:60000,
             onTransition:event=>{
+              if(event.status==='started')ownedAgents.add(event.agentId);
               onTransition?.(event);
               if(event.status==='started'&&broker)
                 binding=broker.bindWhenReady(event.agentId,requested);
