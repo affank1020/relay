@@ -43,6 +43,10 @@ const replyName=(id:string)=>'relay:child-mcp:reply:'+id;
  */
 export class PiChildMcpBroker {
   private grants=new Map<string,ChildReadGrant>();
+  // Agent IDs are approved before the upstream Pi SDK session necessarily
+  // exists. Never assume local model startup completes inside a fixed polling
+  // window. A pending grant is inert until the *real* Pi session ID matches.
+  private waitingAgents=new Map<string,{tools:ReadonlySet<string>;registry:ChildRegistry}>();
   private pending=new Set<string>();
   private closed=false;
   private completedReads=0;
@@ -62,6 +66,30 @@ export class PiChildMcpBroker {
     this.grants.set(actual,{agentId,sessionId:actual,tools:new Set(allowed)});
     return true;
   }
+  allowPendingAgent(agentId:string,allowed:readonly string[],registry=piChildRegistry()):boolean {
+    if(this.closed||this.rootSignal.aborted||!registry||!valid(agentId)||
+        !allowed.length||allowed.some(name=>!approvedReadName(name))||
+        this.waitingAgents.has(agentId)||
+        [...this.grants.values()].some(g=>g.agentId===agentId))return false;
+    this.waitingAgents.set(agentId,{tools:new Set(allowed),registry});
+    return true;
+  }
+  private grantForLiveSession(sessionId:string):ChildReadGrant|undefined {
+    const existing=this.grants.get(sessionId);
+    if(existing)return existing;
+    for(const [agentId,requested] of this.waitingAgents){
+      // The in-process manager registry comes from the pinned Pi extension;
+      // only it can attest the session/agent pair. Never trust a child-supplied
+      // agent ID or grant merely because the child sent a session string.
+      const actual=requested.registry.getRecord(agentId)?.session?.sessionManager?.getSessionId?.();
+      if(actual!==sessionId)continue;
+      const grant:ChildReadGrant={agentId,sessionId,tools:requested.tools};
+      this.grants.set(sessionId,grant);
+      this.waitingAgents.delete(agentId);
+      return grant;
+    }
+    return undefined;
+  }
   async bindWhenReady(agentId:string,allowed:readonly string[],registry=piChildRegistry()):Promise<boolean> {
     for(let attempt=0;attempt<200&&!this.closed&&!this.rootSignal.aborted;attempt++){
       if(this.bind(agentId,allowed,registry))return true;
@@ -72,11 +100,12 @@ export class PiChildMcpBroker {
     return false;
   }
   revoke(agentId:string):void {
+    this.waitingAgents.delete(agentId);
     for(const [sessionId,g] of this.grants)if(g.agentId===agentId)this.grants.delete(sessionId);
   }
   close():void {
     if(this.closed)return;
-    this.closed=true;this.unsubscribe();this.grants.clear();this.pending.clear();
+    this.closed=true;this.unsubscribe();this.grants.clear();this.waitingAgents.clear();this.pending.clear();
   }
   private async read(raw:unknown):Promise<void> {
     if(typeof raw!=='object'||raw===null)return;
@@ -86,7 +115,7 @@ export class PiChildMcpBroker {
       success,text:text.slice(0,MAX_OUTPUT)
     });
     if(this.closed||this.rootSignal.aborted){respond(false,'Parent task no longer running');return;}
-    const grant=this.grants.get(req.sessionId);
+    const grant=this.grantForLiveSession(req.sessionId);
     // Multiple Pi children share one in-process bus. A broker must never
     // answer a request belonging to a different child, otherwise its denial
     // races the real owner's successful read and corrupts parallel research.
@@ -114,9 +143,16 @@ export class PiChildMcpBroker {
       }
       const texts=(result.content??[]).filter(c=>c.type==='text'&&typeof c.text==='string')
         .map(c=>c.text!).join('\n');
+      // A transport-level success with no source body is not research
+      // evidence. Do not count it as a verified read or tell the child that
+      // content was retrieved. This caught the nested outcome-shape defect.
+      if(!texts.trim()){
+        this.onReceipt?.(grant.agentId,req.tool,false);
+        respond(false,'MCP read returned no source content');return;
+      }
       this.completedReads++;
       this.onReceipt?.(grant.agentId,req.tool,true);
-      respond(true,texts||'Tool succeeded without text content');
+      respond(true,texts);
     }catch{
       this.onReceipt?.(grant.agentId,req.tool,false);
       respond(false,'MCP read failed; no verified result available');

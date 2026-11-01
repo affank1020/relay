@@ -94,8 +94,13 @@ export function piSubagentRuntime(signal:AbortSignal,
           async (name,params)=>{
             // Nested Pi tool calls preserve native provider revocation, approval
             // and audit guards; no child credentials or duplicate transport.
-            const result=await ctx.executeTool(name,params);
-            return result as {isError?:boolean;content?:Array<{type:string;text?:string}>};
+            // Pi returns AgentToolCallOutcome { toolCall, result, isError },
+            // NOT a bare AgentToolResult. Unwrap its nested result so the
+            // child receives the actual GitHub/Atlas response and failures
+            // remain failures. Never synthesize a verified source on missing
+            // result data.
+            const outcome=await ctx.executeTool(name,params);
+            return {isError:outcome.isError,content:outcome.result.content};
           },(agentId,tool,success)=>onReadReceipt?.(agentId,tool,success)):undefined;
         // Observe usage only for the lifetime of this delegated call. A
         // process-level Pi bus can outlive a single root task; never leak
@@ -122,7 +127,7 @@ export function piSubagentRuntime(signal:AbortSignal,
             bufferedUsage.set(raw.id,entries);
           }
         }):()=>{};
-        let binding:Promise<boolean>|undefined;
+        let registered=false;
         try{
           const result=await rpc.run({prompt:args.prompt,
             type:requested.length?'relay-research':'relay-isolated',
@@ -136,11 +141,11 @@ export function piSubagentRuntime(signal:AbortSignal,
               bufferedUsage.delete(event.agentId);
               onTransition?.({...event,profile:requested.length?'research':'analysis'});
               if(event.status==='started'&&broker)
-                binding=broker.bindWhenReady(event.agentId,requested);
+                registered=broker.allowPendingAgent(event.agentId,requested);
               if(event.status!=='started')broker?.revoke(event.agentId);
             }});
-          if(requested.length&&(!binding||!(await binding)))
-            throw new Error('Child research MCP authorization could not be bound to its Pi session');
+          if(requested.length&&!registered)
+            throw new Error('Child research MCP authorisation was not registered for its Pi agent');
           if(requested.length&&(!broker||broker.verifiedReadCount===0))
             throw new Error('Child research completed without a successful authorised MCP read; cannot report verified source findings');
           return {content:[{type:'text' as const,text:JSON.stringify({
