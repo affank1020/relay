@@ -65,8 +65,12 @@ in-process event-bus protocol. Its lifecycle includes handshake, spawn,
 completion/failure, explicit `stop` on cancellation, and synchronous
 `consume` to prevent a redundant parent turn. The parent waits for the
 actual Pi child result before continuing. Events carry the current
-Relay root task ID and run ID; child sessions are *not yet* separate
-durable Relay Tasks & Agents records.
+Relay root task ID and run ID. Child starts/completions are projected as
+first-class durable Relay child Tasks & Agents records, with internal
+conversation IDs and stable per-run attribution. **Pi**, not Relay,
+executes the child; the parent does not schedule a second join inference.
+An interrupted parent marks outstanding projections as interrupted and
+never silently replays the child.
 
 The caller cannot select another agent type, grant tools, enable context
 inheritance, change the working directory, or override the model. The
@@ -100,8 +104,10 @@ sandbox: the package's extension code itself runs in the Relay process.
 yet.** The Pi extension's child sessions are separate SDK sessions
 with their own resource loaders and tool gates. They need a verified
 child-side allowlist/audit adapter, a cross-session execution receipt,
-durable parent/child identity, controlled restart recovery and
-budget accounting before they can replace Relay's full orchestration.
+fully verified restart/resumption semantics and
+child-side budget accounting before they can replace Relay's full orchestration.
+The task projections are durable observations, not independent resumable
+Pi child sessions. Do not represent them as such.
 This is tracked in issue #49. The present PR integrates the existing
 Pi subagent executor for isolated tool-less work and proves the
 handoff protocol; it is **not** the full external-research migration.

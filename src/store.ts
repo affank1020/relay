@@ -15,7 +15,8 @@ export interface Task { id: string; conversationId: string; requestId: string; p
   delegation?: import('./orchestration.js').DelegationSnapshot;
   /** Bounded, untrusted model-authored report; never an execution receipt. */
   handoff?: import('./handoff.js').AgentHandoff;
-  kind?: 'agent' | 'join'; continuationOf?: string; joinTaskId?: string;
+  /** Pi extension owns execution; this task is a read-only durable projection. */
+  kind?: 'agent' | 'join' | 'pi_subagent'; continuationOf?: string; joinTaskId?: string;
   /** Snapshot retained when a failed dependent task is retried in a new conversation. */
   retryDependencyResults?: import('./orchestration.js').DependencyReceipt[];
   /** A reconciled child retry is an independent run, never a late parent handoff. */

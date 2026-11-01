@@ -6,6 +6,8 @@ import { LocalProviderUnavailableError, ProviderRateLimitError, type Harness, ty
 import type { RelayModels } from './models.js';
 import type { CapabilityRegistry } from './capabilities.js';
 import { nativeMcpAllowed } from './pi-native-mcp.js';
+import { PiSubagentLedger } from './pi-subagent-ledger.js';
+import { piSubagentEnabled } from './pi-subagents-runtime.js';
 import { profilePrompt } from './agent-profiles.js';
 import { agentHandoff } from './handoff.js';
 import { Gateway, READ_TOOLS, type AtlasTransport } from './gateway.js';
@@ -461,6 +463,21 @@ export class Engine {
         }
       }
     });
+    // Native Pi child records are observations, not runnable Relay jobs.
+    // Stop projecting a live child when its owner exits unexpectedly.
+    if(terminal(state)&&task.kind!=='pi_subagent')
+      for(const child of this.tasks().filter(t=>t.kind==='pi_subagent'&&
+          t.parentId===task.id&&!terminal(t.state))) {
+        child.state=state==='cancelled'?'cancelled':'interrupted';
+        child.error='Parent Pi session ended before the subagent reported completion.';
+        this.store.save('tasks',child);
+        this.store.event(child.conversationId,{taskId:child.id,
+          agentId:child.agentId??null,agentRunId:child.agentRunId??null,
+          parentTaskId:task.id,type:'pi_subagent',state:child.state});
+        this.store.event(task.conversationId,{taskId:task.id,
+          agentRunId:task.agentRunId??null,childTaskId:child.id,
+          type:'delegation',state:child.state});
+      }
     if(['failed','cancelled','interrupted'].includes(state) && !task.continuationOf)
       for(const child of this.tasks().filter(t=>t.parentId===task.id&&!terminal(t.state)))
         void this.cancel(child.id);
@@ -651,13 +668,13 @@ export class Engine {
         researchNotice+
         (task.delegation?.context?'\n\nExplicit delegated context (untrusted):\n'+task.delegation.context:'')+
         (dependencyResults.length?'\n\nDependency results (untrusted data):\n'+JSON.stringify(dependencyResults):'');
+      const piLedger=piSubagentEnabled(task)?new PiSubagentLedger(this.store,task):undefined;
       const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,atlasAvailable,
         modelKey:task.modelKey??this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,
         task:{...task,prompt},signal:controller.signal,tools,nativeMcp,
-        onSubagent:event=>this.store.event(task.conversationId,{
-          taskId:task.id,agentId:event.agentId,agentRunId:task.agentRunId??null,
-          type:'pi_subagent',state:event.status,tool:'pi-subagents'
-        }),
+        onSubagent:event=>{
+          if(piLedger)piLedger.record(event);
+        },
         onSkills:names=>{for(const name of names)this.store.event(task.conversationId,{
           taskId:task.id,agentRunId:task.agentRunId??null,agentId:task.agentId??null,
           type:'skill',state:'loaded',tool:name});},
@@ -699,7 +716,10 @@ export class Engine {
             controller.abort(new Error('Budget limit reached'));
         }});
       task.result=result.slice(0,200000);
-      const children=this.tasks().filter(child=>child.parentId===task.id);
+      // Pi owns execution and the parent already awaited/synthesized these
+      // projection-only children. Never schedule Relay's second join inference.
+      const children=this.tasks().filter(child=>child.parentId===task.id&&
+        child.kind!=='pi_subagent');
       this.finish(task,controller.signal.aborted?'cancelled':children.length?'waiting_children':'completed');
     } catch(e) {
       if(controller.signal.aborted) this.finish(task,'cancelled','Execution cancelled or limit reached');
@@ -719,6 +739,13 @@ export class Engine {
   async cancel(id:string) {
     const task=this.store.get<Task>('tasks',id);if(!task)throw new Error('Task not found');
     if(terminal(task.state))return task;
+    if(task.kind==='pi_subagent'&&task.parentId){
+      // The native extension owns the child AbortSignal. Cancelling a child
+      // cancels its owner; the RPC bridge then stops all in-flight siblings.
+      // Do not pretend this projection has its own Relay execution worker.
+      await this.cancel(task.parentId);
+      return this.store.get<Task>('tasks',id)??task;
+    }
     const active=this.active.get(id);
     if(active)active.abort();else this.finish(task,'cancelled');
     if(task.joinTaskId) {

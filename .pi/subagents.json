@@ -5,5 +5,7 @@
   "maxConcurrentForeground": 2,
   "defaultMaxTurns": 12,
   "backgroundByDefault": true,
-  "rememberAgents": false
+  "rememberAgents": false,
+  "fallbackSubagent": "none",
+  "strictAgentFiles": true
 }
