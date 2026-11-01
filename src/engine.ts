@@ -654,6 +654,10 @@ export class Engine {
       const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,atlasAvailable,
         modelKey:task.modelKey??this.store.get<Conversation>('conversations',task.conversationId)?.modelKey,
         task:{...task,prompt},signal:controller.signal,tools,nativeMcp,
+        onSubagent:event=>this.store.event(task.conversationId,{
+          taskId:task.id,agentId:event.agentId,agentRunId:task.agentRunId??null,
+          type:'pi_subagent',state:event.status,tool:'pi-subagents'
+        }),
         onSkills:names=>{for(const name of names)this.store.event(task.conversationId,{
           taskId:task.id,agentRunId:task.agentRunId??null,agentId:task.agentId??null,
           type:'skill',state:'loaded',tool:name});},
