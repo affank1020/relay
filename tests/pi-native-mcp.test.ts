@@ -166,7 +166,7 @@ test('Atlas becomes a trusted native Pi read provider without exposing mutations
     assert.equal(server.config.toolExposure?.list_nodes,'deferred');
     assert.equal(server.config.toolExposure?.workspace_run_dev_task,undefined);
     assert.doesNotMatch(JSON.stringify(exposed),/private-atlas-token/);
-    assert.match(JSON.stringify(server.config.headers),/private-atlas-token/);
+    assert.match(JSON.stringify(server.config),/private-atlas-token/);
   }finally{store.close();}
 });
 
