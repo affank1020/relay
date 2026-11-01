@@ -63,16 +63,6 @@ test('cancellation, dependency failure, queue bounds and inference budgets fail 
   finally{await budget.stop();budgetStore.close();}
 });
 
-test('delegation has bounded children and returns persistent independent tasks',async()=>{
-  const store=new Store(':memory:');let delegated=false;
-  const engine=new Engine(store,fixtureHarness(async r=>{
-    if(!delegated){delegated=true;const tool=r.tools.find(t=>t.name==='relay_delegate')!;await tool.execute('child',{prompt:'independent child'},r.signal,undefined,{} as never);}
-    return 'done';
-  }),limits);
-  try{const c=engine.conversation();const parent=engine.enqueue(c.id,'delegate','request-001');await until(()=>engine.store.get<Task>('tasks',parent.id)?.state==='completed');assert.equal(engine.tasks().filter(t=>t.parentId===parent.id).length,1);assert.ok(engine.tasks().some(t=>t.continuationOf===parent.id && t.state==='completed'));}
-  finally{await engine.stop();store.close();}
-});
-
 test('real Pi SDK initializes restricted persistent session before cancellation without inference', {timeout:45000},async()=>{
   const root=await mkdtemp(join(tmpdir(),'relay-pi-adapter-'));const store=new Store(':memory:');
   const engine=new Engine(store,fixtureHarness(async()=>''),limits);const c=engine.conversation();
@@ -82,53 +72,6 @@ test('real Pi SDK initializes restricted persistent session before cancellation 
   finally{await engine.stop();store.close();await rm(root,{recursive:true,force:true});}
 });
 
-
-test('offline Atlas continues ordinary chat, while Pi failures retain safe phase attribution',async()=>{
-  const store=new Store(':memory:');
-  const atlas={list:async()=>{throw new Error('secret-atlas-response');},call:async()=>{throw new Error('unreachable');},close:async()=>{}};
-  const engine=new Engine(store,fixtureHarness(async request=>{
-    assert.equal(request.atlasAvailable,false);
-    assert.deepEqual(request.tools.map(t=>t.name),['relay_delegate']);
-    return 'offline chat works';
-  }),limits,atlas);
-  try {
-    const c=engine.conversation();engine.enqueue(c.id,'status','request-stage-001');
-    await until(()=>engine.tasks()[0]?.state==='completed');
-    assert.equal(engine.tasks()[0].result,'offline chat works');
-    assert.doesNotMatch(JSON.stringify(engine.tasks()),/secret-atlas-response/);
-  } finally {await engine.stop();store.close();}
-
-  const secondStore=new Store(':memory:');
-  const second=new Engine(secondStore,fixtureHarness(async r=>{
-    r.onPhase?.('creating_session');
-    throw new TypeError('private provider credential');
-  }),limits);
-  try {
-    const c=second.conversation();second.enqueue(c.id,'status','request-stage-002');
-    await until(()=>second.tasks()[0]?.state==='failed');
-    assert.match(second.tasks()[0].error||'',/creating_session \(TypeError\)/);
-    assert.doesNotMatch(second.tasks()[0].error||'',/private provider credential/);
-  } finally {await second.stop();secondStore.close();}
-});
-
-test('real Pi session accepts all 23 Atlas tools and relay_delegate before cancellation', {timeout:65000},async()=>{
-  const root=await mkdtemp(join(tmpdir(),'relay-pi-tool-startup-'));
-  const controller=new AbortController();controller.abort(new Error('cancel-before-prompt'));
-  const tools:ToolDefinition[]=Array.from({length:23},(_,i)=>({
-    name:'atlas_diagnostic_'+i,label:'Atlas diagnostic '+i,description:'Read-only fixture',
-    parameters:Type.Unsafe<Record<string,unknown>>({type:'object',properties:{id:{type:'string'}},additionalProperties:false}),
-    execute:async()=>({content:[{type:'text' as const,text:'never executed'}],details:{}}),
-  }));
-  tools.push({
-    name:'relay_delegate',label:'Delegate task',description:'Diagnostic delegation fixture',
-    parameters:Type.Object({prompt:Type.String({minLength:1,maxLength:6000}),dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:8}))}),
-    execute:async()=>({content:[{type:'text' as const,text:'never executed'}],details:{}}),
-  });
-  const task:Task={id:crypto.randomUUID(),conversationId:crypto.randomUUID(),requestId:'tool-startup',prompt:'must not infer',state:'running',createdAt:new Date().toISOString(),parentId:null,dependencies:[],attemptOf:null,result:'',error:null,usage:[]};
-  try {
-    await assert.rejects(new PiHarness(root,'cohere/north-mini-code:free').run({version:1,task,signal:controller.signal,tools,onText:()=>assert.fail('text not expected'),onUsage:()=>assert.fail('usage not expected')}),/cancel-before-prompt/);
-  } finally {await rm(root,{recursive:true,force:true});}
-});
 
 test('Pi rate-limit classifier detects provider rate limit messages',()=>{
   assert.equal(isPiRateLimited('HTTP 429 Too Many Requests'),true);

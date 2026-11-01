@@ -13,7 +13,6 @@ import { SkillPackageError } from './skills/git.js';
 import { projectAgentProgress } from './agent-progress.js';
 import { streamConversationEvents } from './live-events.js';
 import { parseAtlasWebOrigin } from './atlas-navigation.js';
-import { piNativeMcpEnabled,piSubagentsEnabled,piChildMcpEnabled } from './pi-mode.js';
 
 export function createPlatform(engine:Engine, token:string, staticDir:string, model:string, modelRegistry?:RelayModels,capabilities?:CapabilityRegistry,atlasWebOrigin?:string) {
   // Validate again at the API boundary; never reflect untrusted MCP URLs.
@@ -51,8 +50,8 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
       if(path==='/api/status'&&req.method==='GET'){
         if(modelRegistry)await refreshOllamaModels(modelRegistry);
         return send(res,200,{harness:'Pi',provider:modelRegistry?.ollama?'OpenRouter + Ollama':'OpenRouter',model,models:modelRegistry?.models??[],defaultModelKey:modelRegistry?.defaultKey,ollamaOnline:modelRegistry?.ollama?.online,atlas:engine.gateway?'configured':'not configured',atlasWebOrigin:engine.gateway?safeAtlasWebOrigin:undefined,
-          piFoundation:{nativeMcp:piNativeMcpEnabled(),subagents:piSubagentsEnabled(),
-            childMcp:piChildMcpEnabled()},active:engine.tasks().filter(t=>['running','awaiting_approval'].includes(t.state)).length,maxActive:engine.limits.concurrency,usage:engine.usage(),limits:engine.limits});
+          piFoundation:{nativeMcp:true,subagents:true,
+            childMcp:true},active:engine.tasks().filter(t=>['running','awaiting_approval'].includes(t.state)).length,maxActive:engine.limits.concurrency,usage:engine.usage(),limits:engine.limits});
       }
       if(path==='/api/capabilities'&&req.method==='GET'){
         if(!capabilities)return send(res,503,{error:'Capabilities unavailable'});
@@ -133,11 +132,20 @@ export function createPlatform(engine:Engine, token:string, staticDir:string, mo
         return detail?send(res,200,detail):send(res,404,{error:'Task not found'});
       }
       if(path==='/api/tasks'&&req.method==='GET')return send(res,200,{tasks:engine.tasks().slice(-200).reverse()});
-      const conversation=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/messages|\/events|\/stream|\/abort|\/context|\/reconcile-mcp-reads)?$/);
+      const conversation=path.match(/^\/api\/sessions\/([a-f0-9-]+)(\/messages|\/events|\/stream|\/transcript|\/abort|\/context|\/reconcile-mcp-reads)?$/);
       if(conversation) {
         const c=engine.store.get<Conversation>('conversations',conversation[1]);if(!c)return send(res,404,{error:'Conversation not found'});
+        if(conversation[2]==='/transcript'&&req.method==='GET')return send(res,200,{session:await engine.sessionSnapshot(c.id)});
         if(!conversation[2]&&req.method==='PATCH') {
           const data=await body(req);
+          if(Object.keys(data).length===1&&typeof data.modelKey==='string'){
+            if(data.modelKey.startsWith('ollama/')&&modelRegistry){
+              await refreshOllamaModels(modelRegistry);
+              if(!modelRegistry.ollama?.online)return send(res,409,{error:'Local model unavailable'});
+            }
+            try{return send(res,200,{session:summary(engine.setModel(c.id,data.modelKey))});}
+            catch(error){if(error instanceof ConversationConflictError)return send(res,409,{error:error.message});throw error;}
+          }
           if(Object.keys(data).length!==1 || typeof data.title!=='string')
             return send(res,400,{error:'Title must be 1–120 characters'});
           try {

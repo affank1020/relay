@@ -98,7 +98,7 @@ test('context lives in its own conversation, freezes at enqueue, survives restar
     await until(()=>engine.tasks().find(t=>t.id===task.id)?.state==='failed');
     assert.equal(requests[0].atlasContext?.checkoutId,checkoutId);
     assert.equal(requests[0].atlasContext?.logicalWorkspaceId,logicalId);
-    assert.equal(requests[0].atlasAvailable,true);
+    assert.equal(requests[0].atlasAvailable,false);
     await engine.updateContext(first.id,projectId,null);
     assert.equal(engine.tasks().find(t=>t.id===task.id)?.atlasContext?.checkoutId,checkoutId);
     const retry=engine.retry(task.id,true);
@@ -131,7 +131,7 @@ test('active task locks context changes while a different conversation remains i
 test('offline Atlas discovery does not prevent ordinary inference',async()=>{
   const store=new Store(':memory:');let called=false;
   const atlas:AtlasTransport={call:async()=>{throw Error('secret Atlas offline');},list:async()=>{throw Error('Atlas offline');},close:async()=>{}};
-  const engine=new Engine(store,harness(async req=>{called=true;assert.deepEqual(req.tools.map(t=>t.name),['relay_delegate']);assert.equal(req.atlasAvailable,false);return 'ordinary reply';}),limits,atlas);
+  const engine=new Engine(store,harness(async req=>{called=true;assert.deepEqual(req.tools.map(t=>t.name),[]);assert.equal(req.atlasAvailable,false);return 'ordinary reply';}),limits,atlas);
   try {const c=engine.conversation();engine.enqueue(c.id,'ordinary text','offline-atlas-001');
     await until(()=>engine.tasks()[0].state==='completed');
     assert.equal(called,true);

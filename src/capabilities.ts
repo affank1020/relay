@@ -1,10 +1,11 @@
 import { mkdir, lstat, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { configuredExtensions } from './extensions.js';
 import { TrustedSkills } from './skills/registry.js';
 import { fetchPinnedGitSkill, skillDigest, validRecord, SkillPackageError,
   type GitSkillCandidate, type ReviewedGitSkill } from './skills/git.js';
-import { configuredProviders, ConnectionManager, type ProviderConfig, type ProviderTransport, type WriteApproval } from './integrations/manager.js';
+import { configuredProviders, ConnectionManager, type ProviderConfig } from './integrations/manager.js';
 import type { Store, Task } from './store.js';
 import type { NativeMcpRun } from './pi-native-mcp.js';
 
@@ -23,16 +24,15 @@ export class CapabilityRegistry {
   private readonly installedDirectory:string;
   private readonly previews=new Map<string,StagedPreview>();
   constructor(root:string,bundledSkills:string,providers:ProviderConfig[],
-    makeTransport?:(config:ProviderConfig)=>ProviderTransport,
     private readonly fetcher:typeof fetch=fetch){
     this.file=join(root,'capabilities.json');
     this.installedDirectory=join(root,'trusted-git-skills');
     this.skills=new TrustedSkills(bundledSkills,id=>this.settings.skills[id]===true,
       this.installedDirectory,()=>this.settings.reviewedSkills??{});
-    this.connections=new ConnectionManager(providers,id=>this.settings.integrations[id]===true,makeTransport);
+    this.connections=new ConnectionManager(providers,id=>this.settings.integrations[id]===true);
   }
   static async open(root:string,bundledSkills:string,env:NodeJS.ProcessEnv=process.env,fetcher:typeof fetch=fetch){
-    const instance=new CapabilityRegistry(root,bundledSkills,configuredProviders(env),undefined,fetcher);
+    const instance=new CapabilityRegistry(root,bundledSkills,configuredProviders(env),fetcher);
     try{
       const data=JSON.parse(await readFile(instance.file,'utf8')) as Settings;
       if(!data||data.version!==1||!data.skills||!data.integrations||
@@ -69,11 +69,8 @@ export class CapabilityRegistry {
     }catch{throw new SkillPackageError('Could not persist capability settings',503);}
     finally{await unlink(temp).catch(()=>{});}
   }
-  async list(){return {skills:await this.skills.list(),integrations:this.connections.list()};}
+  async list(){return {extensions:configuredExtensions().names,skills:await this.skills.list(),integrations:this.connections.list()};}
   async skillPaths(){return this.skills.permittedPaths();}
-  async tools(task:Task,store:Store,signal:AbortSignal,approve?:WriteApproval){
-    return this.connections.tools(task,store,signal,approve);
-  }
   nativeMcp(task:Task,store:Store):NativeMcpRun {
     return {task,store,providers:this.connections.nativeProviders()};
   }
@@ -165,5 +162,5 @@ export class CapabilityRegistry {
         await rm(join(this.installedDirectory,id),{recursive:true,force:true}).catch(()=>{});
     });
   }
-  async close(){await this.writes;await this.connections.close();this.previews.clear();}
+  async close(){await this.writes;this.previews.clear();}
 }

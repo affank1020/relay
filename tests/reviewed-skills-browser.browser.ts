@@ -26,7 +26,7 @@ test('real browser previews, explicitly installs, enables and revokes a pinned G
       content:Buffer.from(content).toString('base64')
     }));
   }) as typeof fetch;
-  const registry=new CapabilityRegistry(root,join(process.cwd(),'skills'),configuredProviders({}),undefined,mockedFetch);
+  const registry=new CapabilityRegistry(root,join(process.cwd(),'skills'),configuredProviders({}),mockedFetch);
   const store=new Store(':memory:');
   const harness={version:1 as const,capabilities:{persistence:true,cancellation:true,tools:true},run:async()=>''};
   const engine=new Engine(store,harness,{concurrency:1,queue:10,sessionUsd:0,globalUsd:0,

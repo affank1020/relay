@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
+import { configuredExtensions } from './extensions.js';
 import { Store } from './store.js';
 import { PiHarness } from './harness.js';
 import { CapabilityRegistry } from './capabilities.js';
@@ -8,18 +9,24 @@ import { Engine } from './engine.js';
 import { McpTransport } from './gateway.js';
 import { parseAtlasWebOrigin } from './atlas-navigation.js';
 import { createPlatform } from './platform.js';
-import { loadRelayModels } from './models.js';
+import { loadRelayModels, refreshOllamaModels } from './models.js';
 import { startOllamaProxy } from './ollama-proxy.js';
 
+configuredExtensions();
 const modelRegistry=loadRelayModels(process.env);
 // Pi's fetch ignores an overridden Host; the local-only proxy fixes Ollama's
 // reverse-proxy Host restriction without weakening TLS or opening any ports.
 const ollamaProxy=modelRegistry.ollama?await startOllamaProxy(modelRegistry.ollama.baseUrl):undefined;
 if(ollamaProxy&&modelRegistry.ollama)modelRegistry.ollama.baseUrl=ollamaProxy.baseUrl;
+if(!process.env.OPENROUTER_API_KEY&&modelRegistry.ollama){
+  await refreshOllamaModels(modelRegistry);
+  const local=modelRegistry.models.find(model=>model.provider==='ollama');
+  if(local)modelRegistry.defaultKey=local.key;
+}
 const model=modelRegistry.models[0].id;
 const token=process.env.RELAY_ACCESS_TOKEN || '';
 if(token.length<24)throw new Error('RELAY_ACCESS_TOKEN must be 24+ characters');
-if(!process.env.OPENROUTER_API_KEY)throw new Error('OPENROUTER_API_KEY is required');
+if(!process.env.OPENROUTER_API_KEY&&!modelRegistry.ollama)throw new Error('Configure OPENROUTER_API_KEY or RELAY_OLLAMA_URL');
 if(!model.endsWith(':free'))throw new Error('Relay free-only mode requires RELAY_MODEL to end in :free');
 const root=process.env.RELAY_DATA_DIR || join(process.cwd(),'.relay');
 await mkdir(root,{recursive:true,mode:0o700});

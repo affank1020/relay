@@ -61,7 +61,7 @@ test('Git Skill fetch requires immutable public GitHub paths and strict content'
 test('pinned Skill remains disabled until reviewed, is verified on every load, and can be revoked across restarts',async()=>{
   const root=await mkdtemp(join(tmpdir(),'relay-git-skills-'));
   const {fetcher}=fakeFetcher();
-  let registry=new CapabilityRegistry(root,bundled,[],undefined,fetcher);
+  let registry=new CapabilityRegistry(root,bundled,[],fetcher);
   try{
     const preview=await registry.previewGitSkill(source);
     assert.equal((await registry.list()).skills.length,2);
@@ -109,7 +109,7 @@ test('pinned Skill remains disabled until reviewed, is verified on every load, a
 test('pinned Skill registry fails closed on tampered manifest or symlinked package',async()=>{
   const root=await mkdtemp(join(tmpdir(),'relay-git-trust-'));
   const {fetcher}=fakeFetcher();
-  const registry=new CapabilityRegistry(root,bundled,[],undefined,fetcher);
+  const registry=new CapabilityRegistry(root,bundled,[],fetcher);
   try{
     const preview=await registry.previewGitSkill(source);
     const record=await registry.installGitSkill(preview.previewId,preview.sha256,true);
@@ -131,7 +131,7 @@ test('pinned Skill registry fails closed on tampered manifest or symlinked packa
 test('reviewed Git Skill loads through real Pi resource loader, without executing extensions',{timeout:65000},async()=>{
   const root=await mkdtemp(join(tmpdir(),'relay-pi-git-skill-'));
   const {fetcher}=fakeFetcher();
-  const registry=new CapabilityRegistry(root,bundled,[],undefined,fetcher);
+  const registry=new CapabilityRegistry(root,bundled,[],fetcher);
   const controller=new AbortController();
   try{
     const preview=await registry.previewGitSkill(source);
@@ -151,7 +151,7 @@ test('Git Skill management endpoints require authentication and explicit content
   const root=await mkdtemp(join(tmpdir(),'relay-git-api-'));
   const store=new Store(':memory:');
   const {fetcher,called}=fakeFetcher();
-  const registry=new CapabilityRegistry(root,bundled,[],undefined,fetcher);
+  const registry=new CapabilityRegistry(root,bundled,[],fetcher);
   const harness={version:1 as const,capabilities:{persistence:true,cancellation:true,tools:true},run:async()=>''};
   const engine=new Engine(store,harness,{concurrency:1,queue:4,sessionUsd:0,globalUsd:0,sessionTokens:0,reserveUsd:0,maxRunMs:1000});
   const token='a'.repeat(32);
@@ -189,7 +189,7 @@ test('aggregate Skill context admission is model-bounded, skips excess instructi
   const root=await mkdtemp(join(tmpdir(),'relay-git-skill-budget-'));
   const large='---\nname: large-fixture\ndescription: A long reviewed Skill used to verify context budgets.\n---\n'+'A'.repeat(20_000);
   const {fetcher}=fakeFetcher(large);
-  const registry=new CapabilityRegistry(root,bundled,[],undefined,fetcher);
+  const registry=new CapabilityRegistry(root,bundled,[],fetcher);
   try {
     const preview=await registry.previewGitSkill(source);
     const installed=await registry.installGitSkill(preview.previewId,preview.sha256,true);
