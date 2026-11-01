@@ -44,6 +44,8 @@ test('Unbound or unapproved children cannot invoke native MCP or write tools',as
   const broker=new PiChildMcpBroker(bus,controller.signal,async()=>{calls++;return {};});
   const reg=registry('agent1','session1');
   broker.bind('agent1',['mcp__github__issue_read'],reg);
+  assert.equal(broker.bind('unsafe-github',['mcp__github__create_issue'],
+    registry('unsafe-github','session-write')),false);
   const results:unknown[]=[];
   const listen=(id:string)=>bus.on('relay:child-mcp:reply:'+id,r=>results.push(r));
   const unsubs=[listen('deny1'),listen('deny2')];
