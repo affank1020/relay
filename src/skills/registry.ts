@@ -64,6 +64,9 @@ export class TrustedSkills {
   // admission decisions. Running tasks may finish with an earlier snapshot.
   async snapshot(maxInstructionBytes=384*1024):Promise<{
     paths:Array<{name:string;path:string}>;instructions:string;skipped:string[];
+    // The same validated bytes used for discovery, for Pi's on-demand reader.
+    // Never reread a path after the admission snapshot.
+    documents:Record<string,string>;
   }> {
     // UTF-8 byte length is a conservative upper bound for text token usage:
     // never assume a 4-bytes-per-token average for arbitrary Skill content.
@@ -75,6 +78,7 @@ export class TrustedSkills {
     const permitted=this.entries().filter(skill=>this.enabled(skill.id));
     const paths:Array<{name:string;path:string}>=[];
     const parts:string[]=[];
+    const documents:Record<string,string>=Object.create(null) as Record<string,string>;
     const skipped:string[]=[];
     let used=0;
     for(const skill of permitted){
@@ -87,9 +91,10 @@ export class TrustedSkills {
       }
       used+=size;
       paths.push({name:skill.name,path:this.path(skill.id,skill.source)});
+      documents[skill.name]=content;
       parts.push(wrapped);
     }
-    return {paths,instructions:parts.join('\n\n'),skipped};
+    return {paths,instructions:parts.join('\n\n'),skipped,documents};
   }
   async permittedPaths():Promise<Array<{name:string;path:string}>> {
     // Missing/modified packages are silently omitted in status and discovery;
