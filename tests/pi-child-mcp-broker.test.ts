@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { sharedPiChildMcpBus } from '../src/pi-child-mcp-bus.js';
 import { test } from 'node:test';
 import { PiChildMcpBroker,type ChildRegistry } from '../src/pi-child-mcp-broker.js';
 import type { SubagentsBus } from '../src/pi-subagents-rpc.js';
@@ -88,7 +89,7 @@ test('Revocation during a pending MCP call rejects results and records no verifi
 });
 
 test('Pi child extension exposes only a delegated read proxy and never credentials',async()=>{
-  const bus=new Bus();let tool:Record<string,unknown>|undefined;
+  const bus=sharedPiChildMcpBus();let tool:Record<string,unknown>|undefined;
   childExtension({
     registerTool:(x:Record<string,unknown>)=>{tool=x;},
     events:bus
