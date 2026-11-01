@@ -128,12 +128,22 @@ export class PiHarness implements Harness {
     // Only the reviewed, pinned extension path may be loaded. Missing package
     // fails before inference rather than falling back to the legacy scheduler.
     const externalExtension=usePiSubagents?pinnedSubagentsExtension():undefined;
+    const completedChildren=new Set<string>(),verifiedChildReads=new Set<string>();
+    const parallelRequested=usePiSubagents&&/\bparallel\b/i.test(task.prompt)&&
+      /\b(?:two|2)\b/i.test(task.prompt)&&/\b(?:subagents?|agents?)\b/i.test(task.prompt);
+    const externalResearchRequested=/\b(?:github|issues?|mcp|atlas|sources?)\b/i.test(task.prompt);
     const nativeReadNames=nativeMcp?nativeMcpAllowed(nativeMcp):[];
     const childReadNames=[...nativeReadNames,...tools.filter(tool=>
       tool.name.startsWith('atlas_') &&
       READ_TOOLS.has(tool.name.slice('atlas_'.length))).map(tool=>tool.name)];
     const subagents=usePiSubagents
-      ?piSubagentRuntime(signal,onSubagent,childReadNames,onChildRead,onChildUsage):undefined;
+      ?piSubagentRuntime(signal,event=>{
+        if(event.status==='completed')completedChildren.add(event.agentId);
+        onSubagent?.(event);
+      },childReadNames,(agentId,tool,success)=>{
+        if(success)verifiedChildReads.add(agentId);
+        onChildRead?.(agentId,tool,success);
+      },onChildUsage):undefined;
     let skillManifest='';
     // Modifier-based tool activation lets Pi's search enable deferred tools,
     // so enforce Relay's immutable per-run allowlist at every tool invocation.
@@ -231,6 +241,12 @@ export class PiHarness implements Harness {
         if(last.stopReason==='error' && provider==='openrouter' && isPiRateLimited(last.errorMessage))throw new ProviderRateLimitError();
         throw new Error('Provider did not complete the response');
       }
+      // A model can write a credible synthesis after doing direct root reads
+      // and spawning only one source-free Pi child. Do not mark that request
+      // complete when the user explicitly required two parallel researchers.
+      if(parallelRequested && (completedChildren.size<2 ||
+          (externalResearchRequested&&[...completedChildren].filter(id=>verifiedChildReads.has(id)).length<2)))
+        throw new Error('Requested parallel Pi research was not verified: expected at least two completed child agents with independent authorised read receipts. Root MCP reads do not count.');
       return session.getLastAssistantText() || '';
     } finally { unsubscribe();signal.removeEventListener('abort',abort);session.dispose(); }
   }
