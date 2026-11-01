@@ -171,3 +171,70 @@ rows. No scheduler, transport or token-manager replacement is claimed.
 
 This bridge exists to enforce user-specific per-child scopes while letting
 Pi own the agent session, tool registry, native MCP transport and scheduler.
+
+## Unified Pi foundation rollout — code-completion PR #54
+
+PR #54 consolidates the remaining production implementation. The single
+opt-in switch activates all three existing native Pi paths:
+
+```dotenv
+RELAY_PI_FOUNDATION=1
+```
+
+The original three individual switches remain compatible but are not needed
+when the unified switch is enabled. This must be tested on the final deployed
+product before changing the default; **do not infer success from CI alone**.
+
+- **MCP:** Pi's native transport and tool search own general provider reads,
+  including the trusted Atlas endpoint. Provider credentials are never given
+  to children. Atlas workspace file/Git reads deliberately remain on Relay's
+  specialised Gateway because it validates checkout placement and Node
+  capabilities before dispatch; Atlas development tasks still require
+  user approval. Those existing scoped Gateway reads can be delegated via
+  the reviewed parent Pi child bridge.
+- **Agents:** The pinned Pi subagents package owns child execution and
+  scheduling, while Relay projects its lifecycle into durable Tasks & Agents
+  records. The native path never presents the old `relay_delegate` tool in
+  the same session.
+- **Accounting:** Per-message `subagents:usage` is recorded against each
+  child Task, counted against Relay session/global limits, and budget breaches
+  abort the owning parent. Nested child MCP success/failure also creates
+  a child-attributed invocation receipt. Parent-attributed transport receipts
+  are preserved independently.
+- **Revocation:** Native Pi MCP revalidates provider and task permission both
+  *before dispatch* and *when a result returns*, redacting results if the
+  capability was revoked during execution.
+- **Dependencies:** The exact Pi subagents version and its transitive graph
+  are now retained in `package-lock.json`; the image uses npm ci and no
+  unpinned secondary install.
+- **Visibility:** `/api/status` exposes `piFoundation` flags without secrets.
+
+### Run final acceptance on the deployed application
+
+With the GitHub integration enabled and working, set `RELAY_PI_FOUNDATION=1`
+on the Relay server and recreate the container. Select a *configured* local
+Qwen model. To test from within the Relay container (where the access token
+is already in the environment):
+
+```sh
+RELAY_SMOKE_URL=http://127.0.0.1:8765 \
+  RELAY_SMOKE_MODEL_KEY='ollama/qwen3-coder:30b' \
+  npm run pi:smoke
+```
+
+Use the actual configured Qwen model ID if it differs. The smoke command
+creates a disposable conversation, asks for **two parallel Pi research
+subagents** reading GitHub issues #28 and #29, and verifies two distinct
+successful child read receipts, overlapping child lifetimes, completed
+child tasks and both exact titles in the parent's final answer. It prints
+only a short verdict, not source bodies or tokens.
+
+Also manually exercise provider revocation, cancellation during a read,
+restart recovery, and Atlas child workspace reads. Unit tests cover these
+paths in isolation but cannot substitute for live provider acceptance.
+
+The legacy executor and transport are intentionally retained **only as an
+opt-out rollback path** until live acceptance proves the migration. A final
+source deletion can then remove that fallback without changing the new
+Pi code; leaving it compiled is not a claim that redundant source removal
+is finished or that live testing already passed.
