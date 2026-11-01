@@ -31,9 +31,12 @@ export class PiChildMcpBroker {
   private grants=new Map<string,ChildReadGrant>();
   private pending=new Set<string>();
   private closed=false;
+  private completedReads=0;
   private unsubscribe:()=>void;
+  get verifiedReadCount():number{return this.completedReads;}
   constructor(private bus:SubagentsBus,private rootSignal:AbortSignal,
-    private readonly execute:ParentReadExecutor) {
+    private readonly execute:ParentReadExecutor,
+    private readonly onReceipt?:(agentId:string,tool:string,success:boolean)=>void) {
     this.unsubscribe=bus.on('relay:child-mcp:read',raw=>{void this.read(raw);});
   }
   bind(agentId:string,allowed:readonly string[],registry=piChildRegistry()):boolean {
@@ -84,11 +87,17 @@ export class PiChildMcpBroker {
       if(this.closed||this.rootSignal.aborted||this.grants.get(req.sessionId)!==grant){
         respond(false,'Child MCP authority revoked during invocation');return;
       }
-      if(result.isError){respond(false,'GitHub/Atlas read failed; no issue content retrieved');return;}
+      if(result.isError){
+        this.onReceipt?.(grant.agentId,req.tool,false);
+        respond(false,'GitHub/Atlas read failed; no issue content retrieved');return;
+      }
       const texts=(result.content??[]).filter(c=>c.type==='text'&&typeof c.text==='string')
         .map(c=>c.text!).join('\n');
+      this.completedReads++;
+      this.onReceipt?.(grant.agentId,req.tool,true);
       respond(true,texts||'Tool succeeded without text content');
     }catch{
+      this.onReceipt?.(grant.agentId,req.tool,false);
       respond(false,'MCP read failed; no verified result available');
     }finally{this.pending.delete(req.requestId);}
   }
