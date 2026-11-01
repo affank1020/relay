@@ -127,7 +127,7 @@ export function piSubagentRuntime(signal:AbortSignal,
             bufferedUsage.set(raw.id,entries);
           }
         }):()=>{};
-        let binding:Promise<boolean>|undefined;
+        let registered=false;
         try{
           const result=await rpc.run({prompt:args.prompt,
             type:requested.length?'relay-research':'relay-isolated',
@@ -141,11 +141,11 @@ export function piSubagentRuntime(signal:AbortSignal,
               bufferedUsage.delete(event.agentId);
               onTransition?.({...event,profile:requested.length?'research':'analysis'});
               if(event.status==='started'&&broker)
-                binding=broker.bindWhenReady(event.agentId,requested);
+                registered=broker.allowPendingAgent(event.agentId,requested);
               if(event.status!=='started')broker?.revoke(event.agentId);
             }});
-          if(requested.length&&(!binding||!(await binding)))
-            throw new Error('Child research MCP authorization could not be bound to its Pi session');
+          if(requested.length&&!registered)
+            throw new Error('Child research MCP authorisation was not registered for its Pi agent');
           if(requested.length&&(!broker||broker.verifiedReadCount===0))
             throw new Error('Child research completed without a successful authorised MCP read; cannot report verified source findings');
           return {content:[{type:'text' as const,text:JSON.stringify({
