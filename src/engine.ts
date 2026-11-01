@@ -463,6 +463,21 @@ export class Engine {
         }
       }
     });
+    // Native Pi child records are observations, not runnable Relay jobs.
+    // Stop projecting a live child when its owner exits unexpectedly.
+    if(terminal(state)&&task.kind!=='pi_subagent')
+      for(const child of this.tasks().filter(t=>t.kind==='pi_subagent'&&
+          t.parentId===task.id&&!terminal(t.state))) {
+        child.state=state==='cancelled'?'cancelled':'interrupted';
+        child.error='Parent Pi session ended before the subagent reported completion.';
+        this.store.save('tasks',child);
+        this.store.event(child.conversationId,{taskId:child.id,
+          agentId:child.agentId??null,agentRunId:child.agentRunId??null,
+          parentTaskId:task.id,type:'pi_subagent',state:child.state});
+        this.store.event(task.conversationId,{taskId:task.id,
+          agentRunId:task.agentRunId??null,childTaskId:child.id,
+          type:'delegation',state:child.state});
+      }
     if(['failed','cancelled','interrupted'].includes(state) && !task.continuationOf)
       for(const child of this.tasks().filter(t=>t.parentId===task.id&&!terminal(t.state)))
         void this.cancel(child.id);
