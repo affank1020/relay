@@ -8,6 +8,7 @@ import type { CapabilityRegistry } from './capabilities.js';
 import { nativeMcpAllowed } from './pi-native-mcp.js';
 import { PiSubagentLedger } from './pi-subagent-ledger.js';
 import { piSubagentEnabled } from './pi-subagents-runtime.js';
+import { piNativeMcpEnabled,piSubagentsEnabled } from './pi-mode.js';
 import { profilePrompt } from './agent-profiles.js';
 import { agentHandoff } from './handoff.js';
 import { Gateway, READ_TOOLS, type AtlasTransport } from './gateway.js';
@@ -497,7 +498,7 @@ export class Engine {
         catch { controller.signal.throwIfAborted();atlasAvailable=false;tools=[]; }
       }
       // Opt-in Pi transport before removing legacy MCP code.
-      const nativeMcp=!joining&&process.env.RELAY_PI_NATIVE_MCP==='1'&&this.capabilities
+      const nativeMcp=!joining&&piNativeMcpEnabled()&&this.capabilities
         ?this.capabilities.nativeMcp(task,this.store):undefined;
       const nativeReadNames=nativeMcp?nativeMcpAllowed(nativeMcp):[];
       // Pi owns ordinary Atlas MCP read discovery in native mode. Retain the
@@ -557,7 +558,7 @@ export class Engine {
       // Use exactly one delegation backend per root session. In native Pi
       // subagent mode the SDK extension owns child execution; Relay does not
       // also offer its SQLite-based relay_delegate scheduler.
-      if(!joining&&process.env.RELAY_PI_SUBAGENTS!=='1')tools.push({
+      if(!joining&&!piSubagentsEnabled())tools.push({
         name:'relay_delegate',label:'Delegate task',
         description:'Spawn a bounded child agent; parent waits and synthesises results. Children have NO external tools by default. For tasks that require GitHub or Atlas evidence, set requiredToolProvider to that provider AND explicitly grant its relevant tools in tools; if that provider is unavailable, admission fails without spawning a tool-less researcher. Never invent sources. Repeated identical requests to the same parent reuse the existing child.',
         parameters:Type.Object({
