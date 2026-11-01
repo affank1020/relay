@@ -201,3 +201,25 @@ test('Pi native Atlas tool results preserve safe structured resource observation
       e.state==='completed'));
   }finally{store.close();}
 });
+
+test('MCP provider revoked during execution redacts the result and records failure',async()=>{
+  const {run,store,disable}=setup();
+  try{
+    const handlers=new Map<string,(event:any)=>unknown>();
+    nativeMcpAuditExtension(run).factory({on:(event:string,cb:(value:any)=>unknown)=>{
+      handlers.set(event,cb);return ()=>{};
+    }} as never);
+    const started=handlers.get('tool_call')!({toolName:'mcp__github__issue_read',
+      toolCallId:'revoked-read',input:{issue_number:29}});
+    assert.equal(started,undefined);
+    disable();
+    const result=await handlers.get('tool_result')!({toolName:'mcp__github__issue_read',
+      toolCallId:'revoked-read',input:{issue_number:29},
+      isError:false,content:[{type:'text',text:'sensitive data'}]});
+    assert.equal((result as {isError:boolean}).isError,true);
+    assert.doesNotMatch(JSON.stringify(result),/sensitive data/);
+    assert.equal((store.get('invocations',run.task.id+':revoked-read') as {state:string}).state,
+      'failed_read');
+    assert.ok(store.events(run.task.conversationId).some(e=>e.state==='failed'));
+  }finally{store.close();}
+});
