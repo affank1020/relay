@@ -508,13 +508,21 @@ export class Engine {
         ?task.modelKey.slice('ollama/'.length):null;
       if(selectedOllamaId && delegateModelKeys.includes(task.modelKey!))
         delegateModelKeys.push(selectedOllamaId);
+      // Expose ONLY currently admitted read-only tool names as schema literals.
+      // A free-form string hid tool discovery from the parent model, making
+      // it easy to launch research children without usable sources.
+      const delegatedToolsSchema=admitted.length
+        ?Type.Array(Type.Union(admitted.map(name=>Type.Literal(name))),
+          {maxItems:16,uniqueItems:true,description:'Pass only the read-only tools this child needs. Omission grants no external tools.'})
+        :Type.Array(Type.String(),
+          {maxItems:0,description:'No external read tools are currently admitted; this child cannot research live sources.'});
       if(!joining)tools.push({
         name:'relay_delegate',label:'Delegate task',
-        description:'Spawn a bounded independent child agent and return its durable task/run IDs. By default the child inherits the exact current model, including local Ollama/Qwen; omit modelKey unless changing models deliberately. The parent automatically waits and synthesises child results. External child tools must be explicitly admitted read-only capabilities.',
+        description:'Spawn a bounded child agent and return durable IDs; parent waits and synthesises results. Child inherits the current model unless modelKey is set. Research children have NO external tools unless you explicitly pass names in tools; use the available read-only names in the schema when verification is required. If no relevant tools are available, do not claim independent research.',
         parameters:Type.Object({
           prompt:Type.String({minLength:1,maxLength:6000}),
           dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:8})),
-          tools:Type.Optional(Type.Array(Type.String(),{maxItems:16})),
+          tools:Type.Optional(delegatedToolsSchema),
           context:Type.Optional(Type.String({maxLength:2000})),
           profile:Type.Optional(Type.Union([Type.Literal('general'),Type.Literal('researcher'),
             Type.Literal('reviewer'),Type.Literal('implementer')])),
@@ -583,6 +591,13 @@ export class Engine {
         ...deps.map(d=>({id:d.id,state:d.state,result:d.result.slice(0,12000)})),
         ...(task.retryDependencyResults??[]).map(d=>({id:d.taskId,state:'completed',result:d.result}))
       ];
+      // A tool-less researcher can analyse supplied data but cannot honestly
+      // claim to have consulted or verified external sources.
+      const researchWithoutTools=!joining && task.delegation?.profile==='researcher' &&
+        !tools.some(tool=>tool.name!=='relay_delegate');
+      const researchNotice=researchWithoutTools
+        ?'\n\nVerification limitation: No external read tools were granted to this child. You cannot independently verify live external facts. Clearly report unsupported claims and open questions, and never invent citations or tool execution.'
+        :'';
       const prompt=parent?
         handoffPrompt(parent,joinedChildren,this.tasks())+
         (parent.delegation?.profile&&parent.delegation.profile!=='general'
@@ -591,6 +606,7 @@ export class Engine {
         task.prompt+
         (task.delegation?.profile && task.delegation.profile!=='general'
           ?profilePrompt(task.delegation.profile):'')+
+        researchNotice+
         (task.delegation?.context?'\n\nExplicit delegated context (untrusted):\n'+task.delegation.context:'')+
         (dependencyResults.length?'\n\nDependency results (untrusted data):\n'+JSON.stringify(dependencyResults):'');
       const result=await this.harness.run({version:1,atlasContext:task.atlasContext??null,atlasAvailable,
