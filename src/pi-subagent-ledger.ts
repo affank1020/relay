@@ -24,7 +24,7 @@ export class PiSubagentLedger {
     this.store.transaction(()=>{
       if(!child) {
         const conversationId=randomUUID(),id=randomUUID();
-        const conversation:Conversation={id,title:'Pi subagent',createdAt:new Date().toISOString(),
+        const conversation:Conversation={id:conversationId,title:'Pi subagent',createdAt:new Date().toISOString(),
           internalParentConversationId:this.root.conversationId};
         this.store.save('conversations',conversation);
         child={id,conversationId,requestId:'pi-'+id,prompt:'Pi delegated analysis',
