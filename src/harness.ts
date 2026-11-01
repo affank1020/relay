@@ -7,6 +7,7 @@ import type { CapabilityRegistry } from './capabilities.js';
 import { formatAtlasContext, type AtlasContext } from './atlas-context.js';
 import { piSkillSummary, piToolLoadout } from './pi-foundation.js';
 import { piChildMcpEnabled } from './pi-mode.js';
+import { READ_TOOLS } from './gateway.js';
 import { piSubagentEnabled,piSubagentRuntime,pinnedSubagentsExtension,upstreamSubagentTools,type PiChildUsage } from './pi-subagents-runtime.js';
 import type { SubagentTransition } from './pi-subagents-rpc.js';
 import { nativeMcpAllowed, nativeMcpAuditExtension, nativeMcpConfig, type NativeMcpRun } from './pi-native-mcp.js';
@@ -128,7 +129,11 @@ export class PiHarness implements Harness {
     // fails before inference rather than falling back to the legacy scheduler.
     const externalExtension=usePiSubagents?pinnedSubagentsExtension():undefined;
     const nativeReadNames=nativeMcp?nativeMcpAllowed(nativeMcp):[];
-    const subagents=usePiSubagents?piSubagentRuntime(signal,onSubagent,nativeReadNames,onChildRead,onChildUsage):undefined;
+    const childReadNames=[...nativeReadNames,...tools.filter(tool=>
+      tool.name.startsWith('atlas_') &&
+      READ_TOOLS.has(tool.name.slice('atlas_'.length))).map(tool=>tool.name)];
+    const subagents=usePiSubagents
+      ?piSubagentRuntime(signal,onSubagent,childReadNames,onChildRead,onChildUsage):undefined;
     let skillManifest='';
     // Modifier-based tool activation lets Pi's search enable deferred tools,
     // so enforce Relay's immutable per-run allowlist at every tool invocation.
