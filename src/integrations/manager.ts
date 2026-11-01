@@ -201,7 +201,7 @@ export class ConnectionManager {
           // Root-only GitHub writes are never inherited by child agents.
           if(delegated&&!task.delegation?.toolNames.includes(name))continue;
           result.push({
-            name,label:config.label+' · '+tool.name,description:(tool.description??tool.name).slice(0,2000),
+            name,label:config.label+' · '+tool.name,description:((config.id==='github'&&tool.name==='issue_read' ? 'Read one specific GitHub issue by number using method=get, owner, repo and issue_number. Use this tool for exact GitHub issue titles, bodies and requirements. Do not substitute repository/code search. ' : '')+(tool.description??tool.name)).slice(0,2000),
             parameters:Type.Unsafe<Record<string,unknown>>(tool.inputSchema),
             execute:async (callId,argumentsValue)=>{
               const data=argumentsValue as Record<string,unknown>;
