@@ -6,7 +6,7 @@ import { refreshOllamaModels, type RelayModels } from './models.js';
 import type { CapabilityRegistry } from './capabilities.js';
 import { formatAtlasContext, type AtlasContext } from './atlas-context.js';
 import { piSkillSummary, piToolLoadout } from './pi-foundation.js';
-import { piSubagentEnabled,piSubagentRuntime,pinnedSubagentsExtension } from './pi-subagents-runtime.js';
+import { piSubagentEnabled,piSubagentRuntime,pinnedSubagentsExtension,upstreamSubagentTools } from './pi-subagents-runtime.js';
 import type { SubagentTransition } from './pi-subagents-rpc.js';
 import { nativeMcpAllowed, nativeMcpAuditExtension, nativeMcpConfig, type NativeMcpRun } from './pi-native-mcp.js';
 import { Type } from '@sinclair/typebox';
@@ -189,7 +189,12 @@ export class PiHarness implements Harness {
       // The Pi SDK treats a plain tools array as an allowlist for future
       // activation. Modifier syntax preserves native tool_search's ability to
       // activate the already registered deferred tools.
-      noTools:'builtin',tools:activeNames.map(name=>'+'+name),customTools});
+      noTools:'builtin',tools:activeNames.map(name=>'+'+name),
+      // The extension owns execution, but only Relay's bridge is allowed to
+      // expose child spawning to the model. Exclude the upstream direct tools
+      // at registry level rather than trusting a prompt or UI to hide them.
+      ...(subagents?{excludeTools:[...upstreamSubagentTools]}:{}),
+      customTools});
     // SDK sessions don't bind inline extensions for us. In particular,
     // native tool_search needs its extension runtime before the first turn.
     try{await session.bindExtensions({});}
