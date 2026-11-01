@@ -116,3 +116,14 @@ test('recovery interrupts a Pi subagent projection rather than rescheduling it',
     assert.equal(calls,0);
   }finally{await recovering.stop();store.close();}
 });
+
+test('a Pi completion event without result is a failed child, not verified completion',()=>{
+  const {store,parent}=fixture();
+  try {
+    const ledger=new PiSubagentLedger(store,parent);
+    const child=ledger.record({agentId:'missing-result',status:'completed'});
+    assert.equal(child?.state,'failed');
+    assert.equal(child?.result,'');
+    assert.match(child?.error??'',/did not provide a completed result/);
+  }finally{store.close();}
+});
