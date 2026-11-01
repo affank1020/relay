@@ -75,7 +75,11 @@ test('batch starts two independent Pi researchers concurrently and requires real
     ]},controller.signal,undefined,{
       executeTool:async(name:string,args:unknown)=>{
         assert.equal(name,read);
-        return {content:[{type:'text',text:'Verified source '+JSON.stringify(args)}]};
+        // Real Pi ctx.executeTool returns an AgentToolCallOutcome, with
+        // content inside .result rather than at the top level.
+        return {toolCall:{id:'nested-'+String((args as {issue_number:number}).issue_number),
+          name,arguments:args},isError:false,
+          result:{content:[{type:'text',text:'Verified source '+JSON.stringify(args)}]}};
       }
     } as never);
     const summary=JSON.parse(response.content.filter(x=>x.type==='text')
