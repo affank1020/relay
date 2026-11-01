@@ -11,5 +11,6 @@ mkdir -p dist/public
 # Standalone operator smoke: bundled TS sources with external runtime dependencies.
 # The production image contains dist/ but intentionally excludes tsx/dev tools.
 ./node_modules/.bin/esbuild scripts/atlas-smoke.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=dist/atlas-smoke.js
+./node_modules/.bin/esbuild scripts/pi-smoke.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=dist/pi-smoke.js
 ./node_modules/.bin/esbuild src/client.ts --bundle --platform=browser --format=iife --target=es2022 --outfile=dist/public/app.js
 cp public/index.html public/style.css dist/public/
