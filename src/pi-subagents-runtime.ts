@@ -76,8 +76,6 @@ export function piSubagentRuntime(signal:AbortSignal,
         tools:Type.Array(Type.String(),{maxItems:4,description:'Required: exact allowed read names for research, [] only for source-free analysis'})
       }),
       execute:async (_id,input,ctxSignal,_update,ctx)=>{
-        if(!rpc||!bus||!(await rpc.available(signal)))
-          throw new Error('Pi subagents extension RPC unavailable; no child was spawned');
         const args=input as {prompt:string;tools?:string[]};
         if(!Array.isArray(args.tools))throw new Error(
           'Pi delegation requires explicit tools; research must include authorised MCP read names');
@@ -89,6 +87,8 @@ export function piSubagentRuntime(signal:AbortSignal,
           throw new Error('Requested child MCP tool is not authorised for this run');
         if(requested.length&&!piChildMcpEnabled())
           throw new Error('Child MCP broker is not enabled on this Relay server');
+        if(!rpc||!bus||!(await rpc.available(signal)))
+          throw new Error('Pi subagents extension RPC unavailable; no child was spawned');
         const broker=requested.length?new PiChildMcpBroker(bus,signal,
           async (name,params)=>{
             // Nested Pi tool calls preserve native provider revocation, approval
