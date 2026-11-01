@@ -42,7 +42,7 @@ test('real browser previews, explicitly installs, enables and revokes a pinned G
     await page.locator('#token').fill(token);
     await page.locator('#loginForm button').click();
     await page.locator('#openCapabilities').click();
-    await page.locator('#capabilitiesHome').waitFor({state:'visible'});
+    await page.locator('#capabilitiesContent .capability-row').first().waitFor({state:'visible'});
     assert.equal(await page.locator('#gitSkillInstaller').isHidden(),true,
       'GitHub installation form stays out of the ordinary settings view');
     assert.equal(await page.locator('#capabilitiesContent .capability-row').count(),2);
