@@ -42,7 +42,10 @@ export function configuredProviders(env:NodeJS.ProcessEnv):ProviderConfig[] {
           ['localhost','127.0.0.1','atlas'].includes(url.hostname))))
       throw new Error('Atlas native MCP requires HTTPS or a trusted local endpoint');
     providers.push({id:'atlas',label:'Atlas',url:url.toString(),
-      token:env.ATLAS_MCP_TOKEN??'',readTools:[...READ_TOOLS]});
+      token:env.ATLAS_MCP_TOKEN??'',
+      // Workspace reads stay with Atlas Gateway: it verifies checkout
+      // placement and Node capability before dispatch.
+      readTools:[...READ_TOOLS].filter(name=>!name.startsWith('workspace_'))});
   }
   const raw=env.RELAY_MCP_PROVIDERS || '[]';
   let configs:unknown;
