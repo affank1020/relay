@@ -518,11 +518,13 @@ export class Engine {
           {maxItems:0,description:'No external read tools are currently admitted; this child cannot research live sources.'});
       if(!joining)tools.push({
         name:'relay_delegate',label:'Delegate task',
-        description:'Spawn a bounded child agent and return durable IDs; parent waits and synthesises results. Child inherits the current model unless modelKey is set. Research children have NO external tools unless you explicitly pass names in tools; use the available read-only names in the schema when verification is required. If no relevant tools are available, do not claim independent research.',
+        description:'Spawn a bounded child agent; parent waits and synthesises results. Children have NO external tools by default. For tasks that require GitHub or Atlas evidence, set requiredToolProvider to that provider AND explicitly grant its relevant tools in tools; if that provider is unavailable, admission fails without spawning a tool-less researcher. Never invent sources. Repeated identical requests to the same parent reuse the existing child.',
         parameters:Type.Object({
           prompt:Type.String({minLength:1,maxLength:6000}),
           dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:8})),
           tools:Type.Optional(delegatedToolsSchema),
+          requiredToolProvider:Type.Optional(Type.Union([Type.Literal('github'),Type.Literal('atlas')],
+            {description:'Fail instead of spawning if this provider has no admitted read tools or none of its tools were explicitly granted to the child. Use github for GitHub issues/PRs and atlas only for Atlas resources.'})),
           context:Type.Optional(Type.String({maxLength:2000})),
           profile:Type.Optional(Type.Union([Type.Literal('general'),Type.Literal('researcher'),
             Type.Literal('reviewer'),Type.Literal('implementer')])),
@@ -538,12 +540,10 @@ export class Engine {
           maxCostUsd:Type.Optional(Type.Number({exclusiveMinimum:0,maximum:100}))
         }),
         execute:async (_id,input) => {
-          const args=input as {prompt:string;dependencies?:string[];tools?:string[];context?:string;profile?:string;modelKey?:string;maxTokens?:number;maxCostUsd?:number};
+          const args=input as {prompt:string;dependencies?:string[];tools?:string[];requiredToolProvider?:'github'|'atlas';context?:string;profile?:string;modelKey?:string;maxTokens?:number;maxCostUsd?:number};
           controller.signal.throwIfAborted();
           if(typeof args.prompt!=='string'||!args.prompt.trim()||args.prompt.length>6000)
             throw new Error('Invalid child task prompt');
-          if(this.tasks().filter(child=>child.parentId===task.id).length>=4)
-            throw new Error('Child task limit reached');
           let depth=0,ancestor:Task|undefined=task;
           while(ancestor?.parentId) {
             depth++;if(depth>=2)throw new Error('Delegation depth limit reached');
@@ -558,6 +558,32 @@ export class Engine {
           const inheritedModel=task.modelKey??this.store.get<Conversation>('conversations',task.conversationId)?.modelKey??null;
           const policy=delegationPolicy(args,admitted,inheritedModel,
             this.modelRegistry?.models.map(m=>m.key)??null,task.delegation);
+          // Requiring a provider is a validation constraint, NOT a permission.
+          // Without admitted and delegated read tools, do not waste a local
+          // model run on a research child that cannot possibly inspect sources.
+          if(args.requiredToolProvider!==undefined) {
+            if(args.requiredToolProvider!=='github'&&args.requiredToolProvider!=='atlas')
+              throw new Error('Unknown required tool provider');
+            const prefix=args.requiredToolProvider==='github'?'mcp_github_':'atlas_';
+            if(!policy.toolNames.some(name=>name.startsWith(prefix)&&admitted.includes(name)))
+              throw new Error(args.requiredToolProvider==='github'
+                ?'GitHub MCP read tools are unavailable or not granted. Configure and enable GitHub in Skills & integrations, then delegate with its read-tool names.'
+                :'Atlas read tools are unavailable or not granted. Check Atlas connectivity and delegate with its read-tool names.');
+          }
+          // Pi can submit the same delegation multiple times in a single
+          // inference. Reuse the original task rather than spending tokens
+          // on duplicate children. Different tools, model, limits, context
+          // or dependencies remain distinct work.
+          const matching=existing.find(child=>child.parentId===task.id&&child.prompt===args.prompt&&
+            JSON.stringify(child.dependencies)===JSON.stringify(args.dependencies??[])&&
+            JSON.stringify(child.delegation)===JSON.stringify(policy));
+          const receipt=(child:Task,reused:boolean)=>({content:[{type:'text' as const,text:JSON.stringify({
+            taskId:child.id,agentId:child.agentId,agentRunId:child.agentRunId,
+            state:child.state,conversationId:child.conversationId,reused
+          })}],details:{}});
+          if(matching)return receipt(matching,true);
+          if(existing.filter(child=>child.parentId===task.id).length>=4)
+            throw new Error('Child task limit reached');
           this.budget(task.conversationId,task.id,policy);
           const conversation=this.conversation(policy.modelKey??undefined,task.conversationId);
           // Only the enqueue-time Atlas context is copied. There is no
@@ -573,10 +599,7 @@ export class Engine {
             this.store.db.prepare('DELETE FROM conversations WHERE id=?').run(conversation.id);
             throw error;
           }
-          return {content:[{type:'text' as const,text:JSON.stringify({
-            taskId:child.id,agentId:child.agentId,agentRunId:child.agentRunId,
-            state:child.state,conversationId:child.conversationId
-          })}],details:{}};
+          return receipt(child,false);
         }
       });
       let length=0;
