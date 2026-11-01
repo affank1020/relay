@@ -95,14 +95,18 @@ export function nativeMcpAuditExtension(run:NativeMcpRun) {
       const entry=active.get(event.toolCallId);
       if(!entry)return;
       active.delete(event.toolCallId);
+      // A provider may be disabled or an agent cancelled *during* dispatch.
+      // Do not deliver or audit a successful result after its authority ends.
+      const revoked=!nativeMcpCanInvoke(run,event.toolName);
+      const failed=event.isError||revoked;
       const stored=run.store.get<InvocationRecord>('invocations',entry.id);
       if(stored)run.store.save('invocations',{...stored,
-        state:event.isError?'failed_read':'completed'});
+        state:failed?'failed_read':'completed'});
       run.store.event(run.task.conversationId,{taskId:run.task.id,
         agentId:run.task.agentId??null,agentRunId:run.task.agentRunId??null,
         invocationId:entry.invocationId,tool:entry.providerId+':'+entry.toolName,
-        type:'tool',state:event.isError?'failed':'completed'});
-      if(!event.isError&&entry.providerId==='atlas'){
+        type:'tool',state:failed?'failed':'completed'});
+      if(!failed&&entry.providerId==='atlas'){
         // Keep Atlas awareness as Relay's bespoke layer above Pi transport.
         // Only allowlisted, bounded resource observations enter the audit log.
         let raw:Record<string,unknown>|undefined;
@@ -131,6 +135,9 @@ export function nativeMcpAuditExtension(run:NativeMcpRun) {
         }
       }
       // No response bodies, arguments or tokens are written to event records.
+      if(revoked)return {content:[{type:'text' as const,
+        text:'MCP capability revoked while executing; no verified result available'}],
+        structuredContent:null,isError:true};
     });
   }};
 }
