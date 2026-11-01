@@ -127,3 +127,45 @@ test('a Pi completion event without result is a failed child, not verified compl
     assert.match(child?.error??'',/did not provide a completed result/);
   }finally{store.close();}
 });
+
+test('Pi child usage and nested MCP receipts are charged to real child identity',()=>{
+  const {store,parent}=fixture();
+  try{
+    const ledger=new PiSubagentLedger(store,parent);
+    const child=ledger.record({agentId:'pi-budget-child',status:'started'});
+    assert.ok(child);
+    const usage={input:150,output:20,cacheRead:5,cacheWrite:0,
+      costUsd:0.004,costKind:'estimated' as const};
+    const updated=ledger.recordUsage('pi-budget-child',usage);
+    assert.deepEqual(updated?.usage,[usage]);
+    ledger.recordRead('pi-budget-child','mcp__github__issue_read',true);
+    ledger.recordRead('pi-budget-child','mcp__github__create_issue',false);
+    const receipts=store.invocationRecords(child.id);
+    assert.equal(receipts.length,2);
+    assert.deepEqual(receipts.map(v=>v.state).sort(),['completed','failed_read']);
+    assert.ok(store.events(child.conversationId).some(e=>
+      e.type==='tool'&&e.tool==='mcp__github__issue_read'&&e.state==='completed'));
+    assert.ok(store.events(parent.conversationId).some(e=>
+      e.type==='delegated_tool'&&e.childTaskId===child.id));
+    assert.equal(JSON.stringify(receipts).includes('issue_number'),false);
+    ledger.record({agentId:'pi-budget-child',status:'completed',result:'done'});
+    assert.equal(ledger.recordUsage('pi-budget-child',usage),undefined);
+    assert.equal(store.invocationRecords(child.id).length,2);
+  }finally{store.close();}
+});
+
+test('Pi child accounting is revoked after parent cancellation and ignores unbound ids',()=>{
+  const {store,parent}=fixture();
+  try{
+    const ledger=new PiSubagentLedger(store,parent);
+    ledger.record({agentId:'child-valid',status:'started'});
+    const usage={input:5,output:3,cacheRead:0,cacheWrite:0,costUsd:0,costKind:'estimated' as const};
+    assert.equal(ledger.recordUsage('other-agent',usage),undefined);
+    store.save('tasks',{...parent,state:'cancelled'});
+    assert.equal(ledger.recordUsage('child-valid',usage),undefined);
+    ledger.recordRead('child-valid','mcp__github__issue_read',true);
+    const child=store.all<Task>('tasks').find(t=>t.parentId===parent.id)!;
+    assert.equal(child.usage.length,0);
+    assert.equal(store.invocationRecords(child.id).length,0);
+  }finally{store.close();}
+});
