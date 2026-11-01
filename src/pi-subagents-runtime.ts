@@ -70,21 +70,25 @@ export function piSubagentRuntime(signal:AbortSignal,
     extensionFactory:pi=>{bus=pi.events;rpc=new PiSubagentsRpc(pi.events);},
     tool:{
       name:'relay_pi_delegate',label:'Pi subagent',
-      description:'Delegate bounded work through Pi subagents. For real GitHub/Atlas research, select exact permitted read-only MCP tool names; the child cannot access anything else.',
+      description:'Delegate one Pi child task. Always supply tools: [] for analysing supplied text, or explicit authorised MCP tools (e.g. ["mcp__github__issue_read"]) for GitHub/Atlas research. For two independent issues make two separate parallel tool calls. A child with [] cannot access external data.',
       parameters:Type.Object({
         prompt:Type.String({minLength:1,maxLength:6000}),
-        tools:Type.Optional(Type.Array(Type.String(),{maxItems:4}))
+        tools:Type.Array(Type.String(),{maxItems:4,description:'Required: exact allowed read names for research, [] only for source-free analysis'})
       }),
       execute:async (_id,input,ctxSignal,_update,ctx)=>{
-        if(!rpc||!bus||!(await rpc.available(signal)))
-          throw new Error('Pi subagents extension RPC unavailable; no child was spawned');
         const args=input as {prompt:string;tools?:string[]};
-        const requested=args.tools??[];
+        if(!Array.isArray(args.tools))throw new Error(
+          'Pi delegation requires explicit tools; research must include authorised MCP read names');
+        const requested=args.tools;
+        if(!requested.length&&/\b(github|issue\s*#?\d+|mcp|atlas|fetch|external source|repository)\b/i.test(args.prompt))
+          throw new Error('This Pi child has no source tools. Include an explicitly authorised MCP read tool for research.');
         if(requested.length!==new Set(requested).size ||
             requested.some(name=>!allowedReadNames.includes(name)))
           throw new Error('Requested child MCP tool is not authorised for this run');
         if(requested.length&&!piChildMcpEnabled())
           throw new Error('Child MCP broker is not enabled on this Relay server');
+        if(!rpc||!bus||!(await rpc.available(signal)))
+          throw new Error('Pi subagents extension RPC unavailable; no child was spawned');
         const broker=requested.length?new PiChildMcpBroker(bus,signal,
           async (name,params)=>{
             // Nested Pi tool calls preserve native provider revocation, approval
