@@ -5,7 +5,7 @@ type RecordView={session?:{sessionManager?:{getSessionId?:()=>string}}};
 export type ChildRegistry={getRecord:(id:string)=>RecordView|undefined};
 export function piChildRegistry():ChildRegistry|undefined {
   const key=Symbol.for('pi-subagents:manager');
-  const obj=(globalThis as Record<symbol,unknown>)[key] as ChildRegistry|undefined;
+  const obj=(globalThis as unknown as Record<symbol,unknown>)[key] as ChildRegistry|undefined;
   return obj&&typeof obj.getRecord==='function'?obj:undefined;
 }
 
