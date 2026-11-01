@@ -7,6 +7,7 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { Store, Task, ExecutionEvent } from '../store.js';
 import { toolDisplayName, type ToolInvocationEnvelopeV1, type ToolInvocationState } from './contracts.js';
 import { approvedGitHubWriteArgs, githubWriteRepositories, isGitHubWrite } from './github-writes.js';
+import { READ_TOOLS } from '../gateway.js';
 
 export interface ProviderConfig {
   id:string; label:string; url:string; token:string; readTools:readonly string[];
@@ -31,6 +32,18 @@ export function configuredProviders(env:NodeJS.ProcessEnv):ProviderConfig[] {
   const providers:ProviderConfig[]=[{id:'github',label:'GitHub',url:'https://api.githubcopilot.com/mcp/',
     token:env.RELAY_GITHUB_TOKEN??'',readTools:GITHUB_READ,
     writeRepositories:githubWriteRepositories(env.RELAY_GITHUB_WRITE_REPOS)}];
+  // Atlas is a first-class trusted Pi MCP provider. Unlike arbitrary
+  // operator-added hosts its endpoint already belongs to Relay's Atlas
+  // awareness configuration and is validated by the existing Gateway.
+  if(env.ATLAS_MCP_URL){
+    const url=new URL(env.ATLAS_MCP_URL);
+    if(url.username||url.password||url.search||url.hash||
+        (url.protocol!=='https:'&&!(url.protocol==='http:'&&
+          ['localhost','127.0.0.1','atlas'].includes(url.hostname))))
+      throw new Error('Atlas native MCP requires HTTPS or a trusted local endpoint');
+    providers.push({id:'atlas',label:'Atlas',url:url.toString(),
+      token:env.ATLAS_MCP_TOKEN??'',readTools:[...READ_TOOLS]});
+  }
   const raw=env.RELAY_MCP_PROVIDERS || '[]';
   let configs:unknown;
   try {configs=JSON.parse(raw);}catch {throw new Error('Invalid RELAY_MCP_PROVIDERS');}
@@ -39,7 +52,7 @@ export function configuredProviders(env:NodeJS.ProcessEnv):ProviderConfig[] {
   for(const item of configs) {
     if(!item||typeof item!=='object'||Array.isArray(item))throw new Error('Invalid MCP provider');
     const v=item as Record<string,unknown>;
-    if(typeof v.id!=='string'||!validId(v.id)||v.id==='github'||providers.some(p=>p.id===v.id)||
+    if(typeof v.id!=='string'||!validId(v.id)||(v.id==='github'||v.id==='atlas')||providers.some(p=>p.id===v.id)||
        typeof v.label!=='string'||v.label.length<1||v.label.length>48||
        typeof v.url!=='string'||typeof v.tokenEnv!=='string'||
        !/^RELAY_MCP_TOKEN_[A-Z0-9_]{1,40}$/.test(v.tokenEnv)||
