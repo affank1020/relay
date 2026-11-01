@@ -6,13 +6,16 @@ import { refreshOllamaModels, type RelayModels } from './models.js';
 import type { CapabilityRegistry } from './capabilities.js';
 import { formatAtlasContext, type AtlasContext } from './atlas-context.js';
 import { piSkillSummary, piToolLoadout } from './pi-foundation.js';
-import { piSubagentEnabled,piSubagentRuntime,pinnedSubagentsExtension,upstreamSubagentTools } from './pi-subagents-runtime.js';
+import { piSubagentEnabled,piSubagentRuntime,pinnedSubagentsExtension,upstreamSubagentTools,type PiChildUsage } from './pi-subagents-runtime.js';
 import type { SubagentTransition } from './pi-subagents-rpc.js';
 import { nativeMcpAllowed, nativeMcpAuditExtension, nativeMcpConfig, type NativeMcpRun } from './pi-native-mcp.js';
 import { Type } from '@sinclair/typebox';
 
 export type HarnessPhase = 'preparing_directories' | 'loading_model' | 'checking_local_provider' | 'loading_resources' | 'opening_session' | 'creating_session' | 'running_inference' | 'finalizing_response';
-export interface HarnessRequest { version:1; task:Task; modelKey?:string; atlasContext?:AtlasContext|null; atlasAvailable?:boolean; nativeMcp?:NativeMcpRun; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; onSubagent?:(event:SubagentTransition)=>void; onSkills?:(names:string[])=>void; onSkippedSkills?:(names:string[])=>void; }
+export interface HarnessRequest { version:1; task:Task; modelKey?:string; atlasContext?:AtlasContext|null; atlasAvailable?:boolean; nativeMcp?:NativeMcpRun; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; onSubagent?:(event:SubagentTransition)=>void;
+  onChildUsage?:(usage:PiChildUsage)=>void;
+  onChildRead?:(agentId:string,tool:string,success:boolean)=>void;
+  onSkills?:(names:string[])=>void; onSkippedSkills?:(names:string[])=>void; }
 export interface Harness {
   readonly version:1;
   readonly capabilities: { persistence:boolean; cancellation:boolean; tools:boolean };
@@ -54,7 +57,7 @@ export class PiHarness implements Harness {
     }
     await rm(directory,{recursive:true,force:true,maxRetries:2,retryDelay:100});
   }
-  async run({task,modelKey,atlasContext,atlasAvailable,nativeMcp,signal,tools,onText,onUsage,onPhase,onSubagent,onSkills,onSkippedSkills}:HarnessRequest):Promise<string> {
+  async run({task,modelKey,atlasContext,atlasAvailable,nativeMcp,signal,tools,onText,onUsage,onPhase,onSubagent,onChildUsage,onChildRead,onSkills,onSkippedSkills}:HarnessRequest):Promise<string> {
     onPhase?.('preparing_directories');
     const cwd=join(this.root,'isolated'); const agentDir=join(this.root,'agent');
     const sessionDir=join(this.root,'sessions',task.conversationId);
@@ -124,7 +127,7 @@ export class PiHarness implements Harness {
     // fails before inference rather than falling back to the legacy scheduler.
     const externalExtension=usePiSubagents?pinnedSubagentsExtension():undefined;
     const nativeReadNames=nativeMcp?nativeMcpAllowed(nativeMcp):[];
-    const subagents=usePiSubagents?piSubagentRuntime(signal,onSubagent,nativeReadNames):undefined;
+    const subagents=usePiSubagents?piSubagentRuntime(signal,onSubagent,nativeReadNames,onChildRead,onChildUsage):undefined;
     let skillManifest='';
     // Modifier-based tool activation lets Pi's search enable deferred tools,
     // so enforce Relay's immutable per-run allowlist at every tool invocation.
