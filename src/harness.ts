@@ -149,7 +149,10 @@ export class PiHarness implements Harness {
     const activeNames=[...layout.activeNames,...(skillReader?['read_skill']:[])];
     const allowed=new Set([...layout.allowedNames,...(skillReader?['read_skill']:[])]);
     const {session}=await createAgentSession({cwd,agentDir,modelRuntime,model,settingsManager,resourceLoader:loader,sessionManager:manager,
-      noTools:'builtin',tools:activeNames,customTools});
+      // The Pi SDK treats a plain tools array as an allowlist for future
+      // activation. Modifier syntax preserves native tool_search's ability to
+      // activate the already registered deferred tools.
+      noTools:'builtin',tools:activeNames.map(name=>'+'+name),customTools});
     if(session.getActiveToolNames().some(n=>!allowed.has(n))) { session.dispose(); throw new Error('Harness enabled an unauthorized tool'); }
     const abort=()=>{void session.abort();};
     signal.addEventListener('abort',abort,{once:true});
