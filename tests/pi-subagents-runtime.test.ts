@@ -98,7 +98,7 @@ test('model-facing pi delegation bridges to extension RPC with fixed safe profil
   const transitions:string[]=[];
   const runtime=piSubagentRuntime(signal,event=>transitions.push(event.status));
   runtime.extensionFactory({events:bus});
-  const response=await runtime.tool.execute('tool-call-1',{prompt:'Analyse supplied data'},
+  const response=await runtime.tool.execute('tool-call-1',{prompt:'Analyse supplied data',tools:[]},
     signal,undefined,{} as never);
   assert.match(JSON.stringify(response),/Analysis completed/);
   assert.match(JSON.stringify(response),/verifiedExternalSources/);
@@ -152,8 +152,19 @@ test('parallel Pi delegation usage listeners never count another subagent',async
   const runtime=piSubagentRuntime(new AbortController().signal,undefined,[],
     undefined,value=>recorded.push(value.agentId));
   runtime.extensionFactory({events:bus});
-  await runtime.tool.execute('t-usage',{prompt:'Analyze provided text'},
+  await runtime.tool.execute('t-usage',{prompt:'Analyze provided text',tools:[]},
     new AbortController().signal,undefined,{} as never);
   assert.deepEqual(recorded,['owned-child']);
   assert.equal(listeners.size,0);
+});
+
+test('research delegation cannot silently fall back to a tool-less child',async()=>{
+  const signal=new AbortController().signal;
+  const runtime=piSubagentRuntime(signal,undefined,['mcp__github__issue_read']);
+  await assert.rejects(runtime.tool.execute('no-grants',
+    {prompt:'Read GitHub issue #29'},signal,undefined,{} as never),
+    /requires explicit tools/);
+  // Valid empty grants are for analysis of supplied facts, not GitHub reads.
+  // A missing MCP tool must be refused before it starts a new child.
+  assert.ok(runtime.tool.parameters);
 });
