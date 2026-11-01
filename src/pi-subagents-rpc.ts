@@ -153,7 +153,13 @@ export class PiSubagentsRpc {
         throw Error('Pi subagent RPC did not return an agent ID');
       agentId=reply.id;
       if(terminal.has(agentId))finish(terminal.get(agentId)!);
-      if(options.signal.aborted)abort();
+      // Cancellation may precede the spawn reply. Once Pi finally supplies
+      // the ID, stop that potentially-running orphan even though the caller
+      // has already received a rejected cancellation promise.
+      if(options.signal.aborted&&settled){
+        options.onTransition?.({agentId,status:'stopped',error:'Cancelled before spawn acknowledgement'});
+        void this.stop(agentId).catch(()=>{});
+      }else if(options.signal.aborted)abort();
       return await completion;
     }finally{
       clearTimeout(timer);options.signal.removeEventListener('abort',abort);
