@@ -681,6 +681,24 @@ export class Engine {
         onSubagent:event=>{
           if(piLedger)piLedger.record(event);
         },
+        onChildRead:(agentId,tool,success)=>{
+          piLedger?.recordRead(agentId,tool,success);
+        },
+        onChildUsage:event=>{
+          if(!piLedger)return;
+          const u=event.usage;
+          const child=piLedger.recordUsage(event.agentId,{
+            input:u.input,output:u.output,cacheRead:u.cacheRead,cacheWrite:u.cacheWrite,
+            costUsd:u.costUsd,costKind:u.costUsd===null?'unknown':'estimated'
+          });
+          if(!child)return;
+          const family=this.familyUsage(task.conversationId,task.id);
+          const global=this.usage();
+          if((this.limits.sessionTokens>0&&(family.unknown||family.tokens>=this.limits.sessionTokens))||
+            (this.limits.sessionUsd>0&&(family.unknown||family.costUsd>=this.limits.sessionUsd))||
+            (this.limits.globalUsd>0&&(global.unknown||global.costUsd>=this.limits.globalUsd)))
+            controller.abort(new Error('Pi child inference budget exhausted'));
+        },
         onSkills:names=>{for(const name of names)this.store.event(task.conversationId,{
           taskId:task.id,agentRunId:task.agentRunId??null,agentId:task.agentId??null,
           type:'skill',state:'loaded',tool:name});},
