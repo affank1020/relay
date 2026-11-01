@@ -30,7 +30,7 @@ export async function startOllamaProxy(baseUrl:string):Promise<{baseUrl:string;c
     for(const name of ['connection','proxy-connection','keep-alive','upgrade','te','trailer','transfer-encoding'])
       delete headers[name];
 
-    const dispatch=(body?:Buffer,intercept=false,stream=false,tools:unknown[]=[])=>{
+    const dispatch=(body?:Buffer,intercept=false,stream=false,tools:ToolSpec[]=[])=>{
       if(body)headers['content-length']=body.length;
       const remote=transport({
         hostname:upstream.hostname,port:upstream.port||undefined,
