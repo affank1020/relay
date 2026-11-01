@@ -67,22 +67,7 @@ export function piSubagentRuntime(signal:AbortSignal,
   let rpc:PiSubagentsRpc|undefined;
   let bus:SubagentsBus|undefined;
   return {
-    extensionFactory:pi=>{
-      bus=pi.events;rpc=new PiSubagentsRpc(pi.events);
-      pi.events.on('subagents:usage',value=>{
-        if(!onChildUsage||!value||typeof value!=='object')return;
-        const raw=value as {id?:unknown;usage?:Record<string,unknown>};
-        if(typeof raw.id!=='string'||!raw.usage)return;
-        const u=raw.usage;
-        const safe=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1e9?v:null;
-        const input=safe(u.input),output=safe(u.output);
-        const cacheRead=safe(u.cacheRead),cacheWrite=safe(u.cacheWrite);
-        const cost= u.cost&&typeof u.cost==='object'
-          ?safe((u.cost as Record<string,unknown>).total):null;
-        if(input===null||output===null||cacheRead===null||cacheWrite===null)return;
-        onChildUsage({agentId:raw.id,usage:{input,output,cacheRead,cacheWrite,costUsd:cost}});
-      });
-    },
+    extensionFactory:pi=>{bus=pi.events;rpc=new PiSubagentsRpc(pi.events);},
     tool:{
       name:'relay_pi_delegate',label:'Pi subagent',
       description:'Delegate bounded work through Pi subagents. For real GitHub/Atlas research, select exact permitted read-only MCP tool names; the child cannot access anything else.',
@@ -107,6 +92,22 @@ export function piSubagentRuntime(signal:AbortSignal,
             const result=await ctx.executeTool(name,params);
             return result as {isError?:boolean;content?:Array<{type:string;text?:string}>};
           },(agentId,tool,success)=>onReadReceipt?.(agentId,tool,success)):undefined;
+        // Observe usage only for the lifetime of this delegated call. A
+        // process-level Pi bus can outlive a single root task; never leak
+        // its budget callback into another conversation.
+        const unlistenUsage=onChildUsage?bus.on('subagents:usage',value=>{
+          if(!value||typeof value!=='object')return;
+          const raw=value as {id?:unknown;usage?:Record<string,unknown>};
+          if(typeof raw.id!=='string'||!raw.usage)return;
+          const u=raw.usage;
+          const safe=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1e9?v:null;
+          const input=safe(u.input),output=safe(u.output);
+          const cacheRead=safe(u.cacheRead),cacheWrite=safe(u.cacheWrite);
+          const cost=u.cost&&typeof u.cost==='object'
+            ?safe((u.cost as Record<string,unknown>).total):null;
+          if(input===null||output===null||cacheRead===null||cacheWrite===null)return;
+          onChildUsage({agentId:raw.id,usage:{input,output,cacheRead,cacheWrite,costUsd:cost}});
+        }):()=>{};
         let binding:Promise<boolean>|undefined;
         try{
           const result=await rpc.run({prompt:args.prompt,
@@ -126,7 +127,7 @@ export function piSubagentRuntime(signal:AbortSignal,
             agentId:result.agentId,result:result.result,
             sourceTools:requested,verifiedExternalSources:!!broker?.verifiedReadCount
           })}],details:{}};
-        }finally{broker?.close();}
+        }finally{broker?.close();unlistenUsage();}
       }
     }
   };
