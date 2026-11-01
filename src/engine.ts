@@ -500,11 +500,12 @@ export class Engine {
       const nativeAtlas=nativeReadNames.some(name=>name.startsWith('mcp__atlas__'));
       let atlasAvailable=nativeAtlas;
       let tools:Awaited<ReturnType<Gateway['tools']>>=[];
-      if(!joining&&this.gateway&&(!nativeAtlas||Object.keys(this.devTasks).length>0)) {
+      if(!joining&&this.gateway) {
         try {
           tools=await this.gateway.tools(task,controller.signal);
           atlasAvailable=true;
-          if(nativeAtlas)tools=tools.filter(tool=>tool.name==='atlas_workspace_run_dev_task');
+          if(nativeAtlas)tools=tools.filter(tool=>
+            tool.name.startsWith('atlas_workspace_'));
         }catch {controller.signal.throwIfAborted();if(!nativeAtlas)atlasAvailable=false;tools=[];}
       }
       const registryReadNames=new Set<string>();
