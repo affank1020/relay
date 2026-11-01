@@ -158,3 +158,24 @@ test('two simultaneous Pi child brokers never send competing success/denial repl
     for(const remove of unsubs)remove();
   }finally{first.close();second.close();}
 });
+
+test('Pi child MCP broker does not count a successful tool outcome with missing source content',async()=>{
+  const bus=new Bus(),controller=new AbortController(),receipts:boolean[]=[];
+  const broker=new PiChildMcpBroker(bus,controller.signal,async()=>({isError:false,content:[]}),
+    (_agent,_tool,success)=>receipts.push(success));
+  const unlisten=bus.on('relay:child-mcp:reply:empty',result=>{
+    response=result as {success:boolean;text:string};
+  });
+  let response:{success:boolean;text:string}|undefined;
+  try{
+    assert.equal(broker.bind('source-child',['mcp__github__issue_read'],
+      registry('source-child','source-session')),true);
+    bus.emit('relay:child-mcp:read',{requestId:'empty',sessionId:'source-session',
+      tool:'mcp__github__issue_read',args:{method:'get',issue_number:29}});
+    await settle();
+    assert.equal(response?.success,false);
+    assert.match(response?.text??'',/no source content/);
+    assert.deepEqual(receipts,[false]);
+    assert.equal(broker.verifiedReadCount,0);
+  }finally{unlisten();broker.close();}
+});
