@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import { dirname,join } from 'node:path';
 import type { SubagentsBus, SubagentTransition } from './pi-subagents-rpc.js';
 import { PiSubagentsRpc } from './pi-subagents-rpc.js';
@@ -10,7 +11,24 @@ import { Type } from '@sinclair/typebox';
 export function piSubagentEnabled(task:{parentId:string|null;delegation?:unknown}):boolean {
   return process.env.RELAY_PI_SUBAGENTS==='1' && !task.parentId && !task.delegation;
 }
+/** Upstream tools must not bypass Relay's audited bridge. This list is not
+ * the security boundary: the live tool_call hook blocks every other name. */
+export const upstreamSubagentTools=['Agent','SubagentWorkflow','get_subagent_result',
+  'steer_subagent'] as const;
+export function verifyPiSubagentsPolicy(projectRoot=process.cwd()):void {
+  const file=readFileSync(join(projectRoot,'.pi','agents','relay-isolated.md'),'utf8');
+  const settings=JSON.parse(readFileSync(join(projectRoot,'.pi','subagents.json'),'utf8')) as Record<string,unknown>;
+  for(const required of ['name: relay-isolated','tools: read',
+    'disallowed_tools: read, bash, powershell, write, edit, grep, find, ls',
+    'extensions: false','skills: false','isolated: true'])
+    if(!file.split(/\\r?\\n/).includes(required))
+      throw new Error('Reviewed Pi subagent capability policy missing or changed');
+  if(settings.disableDefaultAgents!==true||settings.fallbackSubagent!=='none'||
+      settings.schedulingEnabled!==false||settings.strictAgentFiles!==true)
+    throw new Error('Pi subagent fail-closed runtime settings are missing or changed');
+}
 export function pinnedSubagentsExtension():string {
+  verifyPiSubagentsPolicy();
   const require=createRequire(import.meta.url);
   let manifest:string;
   try {manifest=require.resolve('@tintinweb/pi-subagents/package.json');}
