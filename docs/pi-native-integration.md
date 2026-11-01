@@ -111,3 +111,63 @@ Pi child sessions. Do not represent them as such.
 This is tracked in issue #49. The present PR integrates the existing
 Pi subagent executor for isolated tool-less work and proves the
 handoff protocol; it is **not** the full external-research migration.
+
+## Scoped child MCP research (experimental)
+
+The Pi child research broker adds a third independent rollout switch:
+
+```
+RELAY_PI_NATIVE_MCP=1
+RELAY_PI_SUBAGENTS=1
+RELAY_PI_CHILD_MCP=1
+```
+
+**Leave all three disabled in production until the following live test passes.**
+No external credentials are copied into child sessions, prompts or transcripts.
+
+The new, reviewed `relay-research` profile uses Pi's existing subagent
+scheduler but exposes only the `relay_child_mcp_read` extension tool; it
+has no builtin shell/filesystem tools, no Skills, no nested agents, and no
+ambient provider connections. The extension is compiled to
+`/app/dist/pi-child-mcp-extension.js` and loaded by exact path.
+
+A parent `relay_pi_delegate` call must explicitly enumerate exact
+permitted tools, e.g. `["mcp__github__issue_read"]`. Tool grants are
+bound to the actual Pi child session ID using the upstream in-process
+manager registry, not the model's claimed agent ID. The broker refuses
+unknown or unbound sessions, non-allowlisted tool names and writes.
+The child requests a read through Pi's in-process event bus; the parent
+executes it through `ctx.executeTool()` using Pi's **already-admitted
+native MCP tool**. This retains the parent's live cancellation, provider
+revocation and durable MCP invocation receipts. Broker read responses
+never include the provider token. The child may not report verified
+external facts unless a real read completed successfully.
+
+The research profile **is not OS-level isolation**; third-party extension
+code remains in the Relay process. Per-child inference usage is not yet
+accounted separately, and this bridge's execution receipts are currently
+root-attributed nested Pi tool calls rather than independent child audit
+rows. No scheduler, transport or token-manager replacement is claimed.
+
+### Credentialed acceptance
+
+1. Confirm GitHub is configured and Pi-native MCP independently retrieves
+   `affank1020/relay#28` with `mcp__github__issue_read`.
+2. Enable the three flags only in a controlled Relay deployment; restart
+   the container. Start two parallel `relay_pi_delegate` research calls,
+   each with exactly that read tool, for issues #28 and #29.
+3. Require **two real nested tool receipts** and correct, source-grounded
+   issue titles/bodies. A plausible summary or model-only claimed citation
+   is not evidence.
+4. Attempt `mcp__github__create_issue` from a child and verify it is denied
+   before dispatch. Disable GitHub or cancel the parent during a child read;
+   verify no final verified result is returned.
+5. Restart during a child run, verify the durable child state is interrupted
+   rather than replayed, and check that there is no shell/FS/native MCP
+   direct access in the child.
+6. Only after live acceptance, extend the bridge to other explicitly
+   approved providers (Atlas included), add child-specific usage/receipt
+   association, and remove the old Relay delegation/MCP duplicate code.
+
+This bridge exists to enforce user-specific per-child scopes while letting
+Pi own the agent session, tool registry, native MCP transport and scheduler.
