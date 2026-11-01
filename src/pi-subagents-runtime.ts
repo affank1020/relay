@@ -21,7 +21,7 @@ export function verifyPiSubagentsPolicy(projectRoot=process.cwd()):void {
   for(const required of ['name: relay-isolated','tools: read',
     'disallowed_tools: read, bash, powershell, write, edit, grep, find, ls',
     'extensions: false','skills: false','isolated: true'])
-    if(!file.split(/\\r?\\n/).includes(required))
+    if(!file.split(/\r?\n/).includes(required))
       throw new Error('Reviewed Pi subagent capability policy missing or changed');
   if(settings.disableDefaultAgents!==true||settings.fallbackSubagent!=='none'||
       settings.schedulingEnabled!==false||settings.strictAgentFiles!==true)
