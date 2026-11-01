@@ -322,8 +322,9 @@ test('repeated identical Pi delegation reuses a single child while distinct work
         const first=await delegate(request,'Read issue #28',{profile:'researcher'});
         const duplicate=await delegate(request,'Read issue #28',{profile:'researcher'});
         const second=await delegate(request,'Read issue #29',{profile:'researcher'});
-        const issued=(value:typeof first)=>JSON.parse((value.content[0] as {text:string}).text)
-          as {taskId:string;reused:boolean};
+        const issued=(value:typeof first):{taskId:string;reused:boolean}=>(
+          JSON.parse((value.content[0] as {text:string}).text)
+        );
         assert.equal(issued(first).reused,false);
         assert.equal(issued(duplicate).reused,true);
         assert.equal(issued(second).reused,false);
