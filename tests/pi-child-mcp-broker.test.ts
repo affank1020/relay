@@ -179,3 +179,60 @@ test('Pi child MCP broker does not count a successful tool outcome with missing 
     assert.equal(broker.verifiedReadCount,0);
   }finally{unlisten();broker.close();}
 });
+
+test('Delayed local Pi child model startup cannot expire a future authorised read',async()=>{
+  const bus=new Bus(),controller=new AbortController(),receipts:boolean[]=[];
+  let liveSession:string|undefined;
+  const registry:ChildRegistry={getRecord:id=>id==='late-qwen-child'&&liveSession
+    ?{session:{sessionManager:{getSessionId:()=>liveSession!}}}:undefined};
+  const broker=new PiChildMcpBroker(bus,controller.signal,async(name,args)=>{
+    assert.equal(name,'mcp__github__issue_read');
+    assert.deepEqual(args,{issue_number:29});
+    return {isError:false,content:[{type:'text',text:'Actual issue 29 body'}]};
+  },(_agent,_tool,success)=>receipts.push(success));
+  try{
+    assert.equal(broker.allowPendingAgent('late-qwen-child',
+      ['mcp__github__issue_read'],registry),true);
+    // Registration must not use a guessed session ID, and a fake session has
+    // no grant even after an agent ID is recognised.
+    let unexpected=0;
+    const off=bus.on('relay:child-mcp:reply:fake',()=>unexpected++);
+    bus.emit('relay:child-mcp:read',{requestId:'fake',sessionId:'untrusted',
+      tool:'mcp__github__issue_read',args:{issue_number:29}});
+    await settle();assert.equal(unexpected,0);off();
+    // Simulate Pi assigning a real SDK session after delayed Ollama startup.
+    liveSession='real-qwen-session';
+    let response:unknown;
+    const remove=bus.on('relay:child-mcp:reply:real',r=>{response=r;});
+    bus.emit('relay:child-mcp:read',{requestId:'real',
+      sessionId:'real-qwen-session',tool:'mcp__github__issue_read',
+      args:{issue_number:29}});
+    await settle();
+    assert.deepEqual(response,{success:true,text:'Actual issue 29 body'});
+    assert.equal(broker.verifiedReadCount,1);
+    assert.deepEqual(receipts,[true]);
+    remove();
+    broker.revoke('late-qwen-child');
+    assert.equal(broker.verifiedReadCount,1);
+  }finally{broker.close();}
+});
+
+test('A revoked pending child grant cannot become active on its eventual SDK session',async()=>{
+  const bus=new Bus(),controller=new AbortController();let called=0;
+  let live:string|undefined;
+  const registry:ChildRegistry={getRecord:id=>id==='agent-1'&&live
+    ?{session:{sessionManager:{getSessionId:()=>live!}}}:undefined};
+  const broker=new PiChildMcpBroker(bus,controller.signal,async()=>{called++;return {
+    content:[{type:'text',text:'data'}]
+  };});
+  try{
+    assert.equal(broker.allowPendingAgent('agent-1',['mcp__github__issue_read'],registry),true);
+    broker.revoke('agent-1');
+    live='session-after-revocation';
+    bus.emit('relay:child-mcp:read',{requestId:'revoked',
+      sessionId:live,tool:'mcp__github__issue_read',args:{issue_number:29}});
+    await settle();
+    assert.equal(called,0);
+    assert.equal(broker.verifiedReadCount,0);
+  }finally{broker.close();}
+});
