@@ -1,7 +1,7 @@
 import { createServer, request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import type { AddressInfo } from 'node:net';
-import { completionAsSse, recoverQwenToolCall, type OpenAICompletion } from './qwen-ollama-tools.js';
+import { completionAsSse, recoverQwenToolCall, type OpenAICompletion,type ToolSpec } from './qwen-ollama-tools.js';
 
 /**
  * Loopback-only Ollama reverse proxy: set Host for Tailscale Serve, preserving
