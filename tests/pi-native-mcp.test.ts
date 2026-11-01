@@ -5,6 +5,13 @@ import { configuredProviders } from '../src/integrations/manager.js';
 import { nativeMcpAllowed, nativeMcpCanInvoke, nativeMcpConfig,
   nativeMcpAuditExtension, type NativeMcpRun } from '../src/pi-native-mcp.js';
 import { Store, type Task } from '../src/store.js';
+import { Engine, type Limits } from '../src/engine.js';
+import { CapabilityRegistry } from '../src/capabilities.js';
+import type { Harness } from '../src/harness.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const setup=(child=false)=>{
   const store=new Store(':memory:');
@@ -74,4 +81,63 @@ test('Pi native MCP hooks emit durable receipts without leaking arguments or cre
       input:{owner:'affank1020'}}))),/MCP tool not permitted/);
     assert.equal(store.get('invocations',run.task.id+':no'),undefined);
   }finally{store.close();}
+});
+
+test('opt-in Engine uses Pi native read names for scoped children and omits legacy transport',async()=>{
+  const prior=process.env.RELAY_PI_NATIVE_MCP;
+  process.env.RELAY_PI_NATIVE_MCP='1';
+  const folder=await mkdtemp(join(tmpdir(),'relay-native-mcp-engine-'));
+  const store=new Store(':memory:');
+  const registry=new CapabilityRegistry(folder,join(process.cwd(),'skills'),
+    configuredProviders({RELAY_GITHUB_TOKEN:'private-test'}),()=>({
+      list:async()=>{throw Error('legacy read discovery must not run');},
+      call:async()=>{throw Error('legacy read transport must not run');},
+      close:async()=>{}
+    }));
+  const limits:Limits={concurrency:2,queue:64,sessionUsd:0,globalUsd:0,
+    sessionTokens:0,reserveUsd:0,maxRunMs:5000};
+  const seen:string[]=[];
+  const harness:Harness={version:1,capabilities:{persistence:true,cancellation:true,tools:true},
+    run:async request=>{
+      if(request.task.prompt==='root native'){
+        assert.ok(request.nativeMcp);
+        assert.ok(!request.tools.some(t=>t.name==='mcp_github_issue_read'));
+        assert.ok(nativeMcpAllowed(request.nativeMcp).includes('mcp__github__issue_read'));
+        const schema=JSON.stringify(request.tools.find(t=>t.name==='relay_delegate')!.parameters);
+        assert.match(schema,/mcp__github__issue_read/);
+        const delegate=request.tools.find(t=>t.name==='relay_delegate')!;
+        await delegate.execute('n-1',{prompt:'Read GitHub issue #29',profile:'researcher',
+          requiredToolProvider:'github',tools:['mcp__github__issue_read']},
+          request.signal,undefined,{} as never);
+        return 'Research delegated.';
+      }
+      if(request.task.kind==='join'){
+        assert.equal(request.nativeMcp,undefined);
+        return 'Combined one verified read.';
+      }
+      if(request.task.prompt.startsWith('Read GitHub issue #29')){
+        assert.ok(request.nativeMcp);
+        assert.deepEqual(nativeMcpAllowed(request.nativeMcp),['mcp__github__issue_read']);
+        assert.ok(!request.tools.some(t=>t.name.startsWith('mcp_github_')));
+        seen.push('child');
+        return JSON.stringify({relayHandoff:{summary:'Source read via native path',
+          evidence:[],artifacts:[],openQuestions:[]}});
+      }
+      throw Error('Unexpected inference task '+request.task.prompt);
+    }};
+  const engine=new Engine(store,harness,limits,undefined,{},undefined,registry);
+  try{
+    await registry.update('integrations','github',true);
+    const convo=engine.conversation();
+    const root=engine.enqueue(convo.id,'root native',randomUUID());
+    for(let i=0;i<1000&&store.get<Task>('tasks',root.id)?.state!=='completed';i++)await delay(5);
+    assert.equal(store.get<Task>('tasks',root.id)?.state,'completed');
+    assert.deepEqual(seen,['child']);
+    assert.equal(engine.tasks().filter(t=>t.parentId===root.id).length,1);
+  }finally{
+    await engine.stop();store.close();await registry.close();
+    await rm(folder,{recursive:true,force:true});
+    if(prior===undefined)delete process.env.RELAY_PI_NATIVE_MCP;
+    else process.env.RELAY_PI_NATIVE_MCP=prior;
+  }
 });
