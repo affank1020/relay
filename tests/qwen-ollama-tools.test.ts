@@ -34,6 +34,25 @@ test('Recover only a request-advertised, bounded Qwen3-Coder function into a gen
   assert.equal(recoverQwenToolCall(output('An ordinary response'),readTool).kind,'none');
 });
 
+test('Two separate Pi delegation calls survive a malformed Qwen multi-call response',()=>{
+  const tools=[{type:'function',function:{name:'relay_pi_delegate',
+    parameters:{type:'object',properties:{prompt:{type:'string'},tools:{type:'array'}}}}}];
+  const raw='Delegating two issues.\\n\\n'+
+    '<function=relay_pi_delegate>\\n<parameter=prompt>Read issue 28</parameter>\\n'+
+    '<parameter=tools>["mcp__github__issue_read"]</parameter>\\n</function>\\n</tool_call>\\n'+
+    '<function=relay_pi_delegate>\\n<parameter=prompt>Read issue 29</parameter>\\n'+
+    '<parameter=tools>["mcp__github__issue_read"]</parameter>\\n</function>\\n</tool_call>';
+  const parsed=recoverQwenToolCall(output(raw),tools);
+  assert.equal(parsed.kind,'recovered');
+  const calls=parsed.completion.choices![0].message!.tool_calls as
+    Array<{function:{name:string;arguments:string}}>;
+  assert.equal(calls.length,2);
+  assert.deepEqual(calls.map(c=>JSON.parse(c.function.arguments)),[
+    {prompt:'Read issue 28',tools:['mcp__github__issue_read']},
+    {prompt:'Read issue 29',tools:['mcp__github__issue_read']}
+  ]);
+});
+
 test('Existing structured provider calls are preserved, never reparsed or duplicated',()=>{
   const raw={...output(''),choices:[{index:0,finish_reason:'tool_calls',
     message:{role:'assistant',content:null,tool_calls:[{id:'call_a',type:'function',
