@@ -33,7 +33,7 @@ export class Engine {
   private jobs=new Set<Promise<void>>();
   readonly gateway?:Gateway;
   readonly atlasContext?:AtlasContextService;
-  constructor(readonly store:Store, private harness:Harness, readonly limits:Limits, atlas?:AtlasTransport,devTasks:Record<string,string[]>={},readonly modelRegistry?:RelayModels,readonly capabilities?:CapabilityRegistry) {
+  constructor(readonly store:Store, private harness:Harness, readonly limits:Limits, atlas?:AtlasTransport,private readonly devTasks:Record<string,string[]>={},readonly modelRegistry?:RelayModels,readonly capabilities?:CapabilityRegistry) {
     if(!Number.isInteger(limits.concurrency)||limits.concurrency<1||limits.concurrency>4)throw new Error('Concurrency must be 1–4');
     for(const value of Object.values(limits))if(!Number.isFinite(value)||value<0)throw new Error('Invalid execution limit');
     if(limits.queue<1 || limits.maxRunMs<1000)throw new Error('Invalid queue or run timeout');
@@ -491,22 +491,22 @@ export class Engine {
       const joining=task.kind==='join'&&!!task.continuationOf;
       // Joins are inference-only; child text is untrusted and cannot introduce
       // new tool effects while we synthesise the outcome.
-      let atlasAvailable=false;
-      let tools:Awaited<ReturnType<Gateway['tools']>>=[];
-      if(!joining&&this.gateway) {
-        try { tools=await this.gateway.tools(task,controller.signal);atlasAvailable=true; }
-        catch { controller.signal.throwIfAborted();atlasAvailable=false;tools=[]; }
-      }
-      // Opt-in Pi transport before removing legacy MCP code.
+      // Compute trusted Pi read admission before touching the legacy Atlas
+      // Gateway, so the native path never probes two MCP transports for the
+      // same read-only tool inventory.
       const nativeMcp=!joining&&piNativeMcpEnabled()&&this.capabilities
         ?this.capabilities.nativeMcp(task,this.store):undefined;
       const nativeReadNames=nativeMcp?nativeMcpAllowed(nativeMcp):[];
-      // Pi owns ordinary Atlas MCP read discovery in native mode. Retain the
-      // Gateway only for Atlas-specific, approval-backed development tasks and
-      // server-side contextual observation/placement checks, never as a second
-      // model-facing read transport.
-      if(nativeReadNames.some(name=>name.startsWith('mcp__atlas__')))
-        tools=tools.filter(tool=>tool.name==='atlas_workspace_run_dev_task');
+      const nativeAtlas=nativeReadNames.some(name=>name.startsWith('mcp__atlas__'));
+      let atlasAvailable=nativeAtlas;
+      let tools:Awaited<ReturnType<Gateway['tools']>>=[];
+      if(!joining&&this.gateway&&(!nativeAtlas||Object.keys(this.devTasks).length>0)) {
+        try {
+          tools=await this.gateway.tools(task,controller.signal);
+          atlasAvailable=true;
+          if(nativeAtlas)tools=tools.filter(tool=>tool.name==='atlas_workspace_run_dev_task');
+        }catch {controller.signal.throwIfAborted();if(!nativeAtlas)atlasAvailable=false;tools=[];}
+      }
       const registryReadNames=new Set<string>();
       if(!joining && this.capabilities &&
           (!nativeMcp || !!process.env.RELAY_GITHUB_WRITE_REPOS?.trim())) {
