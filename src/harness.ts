@@ -1,15 +1,16 @@
 import { mkdir, readdir, lstat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createAgentSession, createToolSearchExtension, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ToolDefinition } from '@earendil-works/pi-coding-agent';
+import { createAgentSession, createMcpExtension, createToolSearchExtension, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { Task, Usage } from './store.js';
 import { refreshOllamaModels, type RelayModels } from './models.js';
 import type { CapabilityRegistry } from './capabilities.js';
 import { formatAtlasContext, type AtlasContext } from './atlas-context.js';
 import { piSkillSummary, piToolLoadout } from './pi-foundation.js';
+import { nativeMcpAllowed, nativeMcpAuditExtension, nativeMcpConfig, type NativeMcpRun } from './pi-native-mcp.js';
 import { Type } from '@sinclair/typebox';
 
 export type HarnessPhase = 'preparing_directories' | 'loading_model' | 'checking_local_provider' | 'loading_resources' | 'opening_session' | 'creating_session' | 'running_inference' | 'finalizing_response';
-export interface HarnessRequest { version:1; task:Task; modelKey?:string; atlasContext?:AtlasContext|null; atlasAvailable?:boolean; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; onSkills?:(names:string[])=>void; onSkippedSkills?:(names:string[])=>void; }
+export interface HarnessRequest { version:1; task:Task; modelKey?:string; atlasContext?:AtlasContext|null; atlasAvailable?:boolean; nativeMcp?:NativeMcpRun; signal:AbortSignal; tools:ToolDefinition[]; onText:(text:string)=>void; onUsage:(usage:Usage)=>void; onPhase?:(phase:HarnessPhase)=>void; onSkills?:(names:string[])=>void; onSkippedSkills?:(names:string[])=>void; }
 export interface Harness {
   readonly version:1;
   readonly capabilities: { persistence:boolean; cancellation:boolean; tools:boolean };
@@ -51,7 +52,7 @@ export class PiHarness implements Harness {
     }
     await rm(directory,{recursive:true,force:true,maxRetries:2,retryDelay:100});
   }
-  async run({task,modelKey,atlasContext,atlasAvailable,signal,tools,onText,onUsage,onPhase,onSkills,onSkippedSkills}:HarnessRequest):Promise<string> {
+  async run({task,modelKey,atlasContext,atlasAvailable,nativeMcp,signal,tools,onText,onUsage,onPhase,onSkills,onSkippedSkills}:HarnessRequest):Promise<string> {
     onPhase?.('preparing_directories');
     const cwd=join(this.root,'isolated'); const agentDir=join(this.root,'agent');
     const sessionDir=join(this.root,'sessions',task.conversationId);
@@ -116,10 +117,11 @@ export class PiHarness implements Harness {
     // shell tool just to open SKILL.md: a bounded reader serves only the already
     // validated bytes of the same admission snapshot.
     const layout=piToolLoadout(tools);
+    const nativeReadNames=nativeMcp?nativeMcpAllowed(nativeMcp):[];
     let skillManifest='';
     // Modifier-based tool activation lets Pi's search enable deferred tools,
     // so enforce Relay's immutable per-run allowlist at every tool invocation.
-    const runtimeAllowed=new Set(layout.allowedNames);
+    const runtimeAllowed=new Set([...layout.allowedNames,...nativeReadNames]);
     const guard={name:'relay-tool-admission',factory:(pi:import('@earendil-works/pi-coding-agent').ExtensionAPI)=>{
       pi.on('tool_call',event=>{
         if(!runtimeAllowed.has(event.toolName))
@@ -127,8 +129,16 @@ export class PiHarness implements Harness {
       });
     }};
     const loader=new DefaultResourceLoader({cwd,agentDir,settingsManager,noExtensions:true,disabledBuiltinExtensions:['mcp'],
-      extensionFactories:[guard,...(layout.deferredNames.length?[{name:'relay-native-tool-search',
-        factory:createToolSearchExtension()}]:[])],
+      extensionFactories:[
+        guard,
+        ...(nativeReadNames.length&&nativeMcp?[nativeMcpAuditExtension(nativeMcp),{
+          name:'relay-native-mcp',factory:createMcpExtension({
+            loadConfig:()=>nativeMcpConfig(nativeMcp),
+            startupWaitMs:8000
+          })}]:[]),
+        ...((layout.deferredNames.length||nativeReadNames.length)?[{name:'relay-native-tool-search',
+          factory:createToolSearchExtension()}]:[])
+      ],
       noSkills:false,additionalSkillPaths:trusted.map(s=>s.path),
       skillsOverride:current=>({...current,skills:current.skills.filter(s=>trusted.some(t=>s.name===t.name&&s.filePath===t.path))}),
       noPromptTemplates:true,noThemes:true,noContextFiles:true,
@@ -156,8 +166,10 @@ export class PiHarness implements Harness {
     const manager=files.length?SessionManager.open(join(sessionDir,files.at(-1)!),sessionDir,cwd):SessionManager.create(cwd,sessionDir);
     onPhase?.('creating_session');
     const customTools=[...layout.customTools,...(skillReader?[skillReader]:[])];
-    const activeNames=[...layout.activeNames,...(skillReader?['read_skill']:[])];
-    const allowed=new Set([...layout.allowedNames,...(skillReader?['read_skill']:[])]);
+    const activeNames=[...layout.activeNames,
+      ...(nativeReadNames.length&&!layout.activeNames.includes('tool_search')?['tool_search']:[]),
+      ...(skillReader?['read_skill']:[])];
+    const allowed=new Set([...layout.allowedNames,...nativeReadNames,...(skillReader?['read_skill']:[])]);
     const {session}=await createAgentSession({cwd,agentDir,modelRuntime,model,settingsManager,resourceLoader:loader,sessionManager:manager,
       // The Pi SDK treats a plain tools array as an allowlist for future
       // activation. Modifier syntax preserves native tool_search's ability to
