@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { sharedPiChildMcpBus } from '../src/pi-child-mcp-bus.js';
 import { test } from 'node:test';
 import { piSubagentRuntime } from '../src/pi-subagents-runtime.js';
 import type { SubagentsBus } from '../src/pi-subagents-rpc.js';
@@ -26,7 +27,7 @@ test('batch starts two independent Pi researchers concurrently and requires real
     const sid=sessions.get(id);
     return sid?{session:{sessionManager:{getSessionId:()=>sid}}}:undefined;
   }};
-  const bus=new FakeBus(),spawns:string[]=[],finished:string[]=[],receipts:string[]=[];
+  const bridge=sharedPiChildMcpBus(),bus=new FakeBus(),spawns:string[]=[],finished:string[]=[],receipts:string[]=[];
   const tracked:string[]=[];
   const controller=new AbortController();
   bus.on('subagents:rpc:ping',raw=>{
@@ -48,7 +49,7 @@ test('batch starts two independent Pi researchers concurrently and requires real
     const emitRead=()=>{
       if(spawns.length<2){setTimeout(emitRead,5);return;}
       const requestId='read-'+issue;
-      const off=bus.on('relay:child-mcp:reply:'+requestId,value=>{
+      const off=bridge.on('relay:child-mcp:reply:'+requestId,value=>{
         off();
         const result=value as {success:boolean;text:string};
         if(!result.success){
@@ -58,7 +59,7 @@ test('batch starts two independent Pi researchers concurrently and requires real
         bus.emit('subagents:completed',{id,
           result:'Issue #'+issue+' verified body: '+result.text});
       });
-      bus.emit('relay:child-mcp:read',{requestId,sessionId:'session-'+issue,
+      bridge.emit('relay:child-mcp:read',{requestId,sessionId:'session-'+issue,
         tool:read,args:{method:'get',owner:'affank1020',repo:'relay',
           issue_number:Number(issue)}});
     };
