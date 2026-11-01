@@ -748,6 +748,18 @@ type CapabilitySnapshot={
   skills:Array<{id:string;name:string;description:string;version:string;revision:string|null;installed:boolean;enabled:boolean;loadFailure:string|null;source:'bundled'|'git';sourceRef?:string}>;
   integrations:Array<{id:string;label:string;enabled:boolean;configured:boolean;state:string;availableTools:string[];availableWriteTools?:string[]}>;
 };
+function showCapabilitiesView(view:'list'|'install') {
+  const installing=view==='install';
+  // Leaving the preview invalidates pending network responses and approvals.
+  if(!installing)clearGitSkillReview();
+  $('capabilitiesHome').hidden=installing;
+  $('gitSkillInstaller').hidden=!installing;
+  $('capabilitiesBack').hidden=!installing;
+  $('capabilitiesTitle').textContent=installing?'Install Skill':'Skills & integrations';
+  $('capabilitiesError').textContent='';
+  $<HTMLElement>('#capabilitiesDialog'.slice(1)).scrollTop=0;
+  if(installing)$<HTMLInputElement>('gitSkillOwner').focus();
+}
 async function drawCapabilities(snapshot:CapabilitySnapshot){
   const parent=$('capabilitiesContent');
   parent.replaceChildren();
@@ -756,26 +768,45 @@ async function drawCapabilities(snapshot:CapabilitySnapshot){
     ['Integrations','integrations',snapshot.integrations]
   ] as const){
     const group=el('section','capabilities-group','');
-    group.append(el('h3','',title));
+    const heading=el('div','capabilities-group-heading','');
+    heading.append(el('h3','',title));
+    if(kind==='skills'){
+      const add=document.createElement('button');
+      add.type='button';add.id='openGitSkillInstaller';
+      add.className='capabilities-add';add.textContent='+ Install Skill';
+      add.onclick=()=>showCapabilitiesView('install');
+      heading.append(add);
+    }
+    group.append(heading);
+    const list=el('div','capabilities-list','');
     for(const item of items){
       const row=el('div','capability-row','');
       const label=document.createElement('label');
+      label.className='capability-main';
       const check=document.createElement('input');
-      check.type='checkbox';check.checked=item.enabled;
+      check.type='checkbox';check.className='capability-toggle';check.checked=item.enabled;
       const isSkill='name' in item;
+      const name=isSkill?item.name:item.label;
       const available=isSkill?item.installed:item.configured;
-      check.disabled=!available;check.setAttribute('aria-label','Enable '+(isSkill?item.name:item.label));
+      check.disabled=!available;
+      check.setAttribute('aria-label','Enable '+name);
       const writes=isSkill?0:item.availableWriteTools?.length??0;
       const description=isSkill?item.description:
-        (item.availableTools.length?item.availableTools.length+' read tools':'Read-only MCP')+
+        (item.availableTools.length?item.availableTools.length+' read tools':'GitHub MCP')+
         (writes?' · '+writes+' writes requiring approval':'');
-      const info=el('span','','');
-      info.append(el('span','capability-name',isSkill?item.name:item.label),
-        el('div','capability-description',description));
-      if(isSkill&&item.sourceRef)info.append(el('div','capability-description',item.sourceRef));
+      const info=el('span','capability-copy','');
+      info.append(el('span','capability-name',name),
+        el('span','capability-description',description));
+      if(isSkill&&item.sourceRef)info.append(el('span','capability-description capability-source',item.sourceRef));
+      if(!isSkill&&!item.configured)
+        info.append(el('span','capability-description capability-source','Set RELAY_GITHUB_TOKEN on the Relay server to enable.'));
       label.append(check,info);
-      const state=isSkill?(item.loadFailure??'v'+item.version):item.state;
-      row.append(label,el('span','capability-state',state));
+      let state:string;
+      if(isSkill)state=item.loadFailure?'Load failed':!item.installed?'Missing file':item.enabled?'Enabled':'Disabled';
+      else state=!item.configured?'Setup required':!item.enabled?'Disabled':
+        item.state==='ready'?'Ready':item.state==='offline'?'Offline':'Not checked';
+      const right=el('div','capability-right','');
+      right.append(el('span','capability-state'+((item.enabled&&!('loadFailure' in item&&item.loadFailure))?' is-on':''),state));
       check.onchange=()=>{
         check.disabled=true;
         void (async()=>{
@@ -804,20 +835,21 @@ async function drawCapabilities(snapshot:CapabilitySnapshot){
             }catch(e){remove.disabled=false;$('capabilitiesError').textContent=text(e);}
           })();
         };
-        row.append(remove);
+        right.append(remove);
       }
-      group.append(row);
+      row.append(label,right);list.append(row);
     }
-    parent.append(group);
+    group.append(list);parent.append(group);
   }
 }
 $<HTMLButtonElement>('openCapabilities').onclick=()=>{
   $<HTMLDialogElement>('capabilitiesDialog').showModal();
+  showCapabilitiesView('list');
   $('capabilitiesContent').textContent='Loading…';
-  $('capabilitiesError').textContent='';
   void get<CapabilitySnapshot>('/capabilities').then(drawCapabilities).catch(e=>{$('capabilitiesError').textContent=text(e);});
   closeSidebar();
 };
+$<HTMLButtonElement>('capabilitiesBack').onclick=()=>showCapabilitiesView('list');
 $<HTMLButtonElement>('closeCapabilities').onclick=()=>$<HTMLDialogElement>('capabilitiesDialog').close();
 
 type GitSkillPreview={
@@ -826,7 +858,7 @@ type GitSkillPreview={
 };
 let stagedGitSkill:GitSkillPreview|null=null;
 let gitSkillPreviewGeneration=0;
-$<HTMLDialogElement>('capabilitiesDialog').onclose=()=>clearGitSkillReview();
+$<HTMLDialogElement>('capabilitiesDialog').onclose=()=>showCapabilitiesView('list');
 function gitSkillFormSource(){
   return {
     owner:$<HTMLInputElement>('gitSkillOwner').value.trim(),
@@ -890,8 +922,9 @@ $<HTMLButtonElement>('gitSkillInstall').onclick=()=>{
         body:JSON.stringify({previewId:staged.previewId,sha256:staged.sha256,acknowledged:true})});
       const result=await response.json() as {capabilities:CapabilitySnapshot};
       await drawCapabilities(result.capabilities);
-      clearGitSkillReview();$<HTMLFormElement>('gitSkillPreviewForm').reset();
-      $('capabilitiesError').textContent='';
+      $<HTMLFormElement>('gitSkillPreviewForm').reset();
+      showCapabilitiesView('list');
+      $<HTMLButtonElement>('openGitSkillInstaller').focus();
     }catch(e){$('capabilitiesError').textContent=text(e);}
     finally{button.disabled=!stagedGitSkill||!$<HTMLInputElement>('gitSkillAcknowledge').checked;}
   })();
