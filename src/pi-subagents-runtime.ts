@@ -96,10 +96,11 @@ export function piSubagentRuntime(signal:AbortSignal,
         // process-level Pi bus can outlive a single root task; never leak
         // its budget callback into another conversation.
         const ownedAgents=new Set<string>();
+        const bufferedUsage=new Map<string,PiChildUsage[]>();
         const unlistenUsage=onChildUsage?bus.on('subagents:usage',value=>{
           if(!value||typeof value!=='object')return;
           const raw=value as {id?:unknown;usage?:Record<string,unknown>};
-          if(typeof raw.id!=='string'||!raw.usage||!ownedAgents.has(raw.id))return;
+          if(typeof raw.id!=='string'||!raw.usage)return;
           const u=raw.usage;
           const safe=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1e9?v:null;
           const input=safe(u.input),output=safe(u.output);
@@ -107,7 +108,14 @@ export function piSubagentRuntime(signal:AbortSignal,
           const cost=u.cost&&typeof u.cost==='object'
             ?safe((u.cost as Record<string,unknown>).total):null;
           if(input===null||output===null||cacheRead===null||cacheWrite===null)return;
-          onChildUsage({agentId:raw.id,usage:{input,output,cacheRead,cacheWrite,costUsd:cost}});
+          const item:PiChildUsage={agentId:raw.id,
+            usage:{input,output,cacheRead,cacheWrite,costUsd:cost}};
+          if(ownedAgents.has(raw.id))onChildUsage(item);
+          else if(bufferedUsage.size<16){
+            const entries=bufferedUsage.get(raw.id)??[];
+            if(entries.length<32)entries.push(item);
+            bufferedUsage.set(raw.id,entries);
+          }
         }):()=>{};
         let binding:Promise<boolean>|undefined;
         try{
@@ -115,7 +123,12 @@ export function piSubagentRuntime(signal:AbortSignal,
             type:requested.length?'relay-research':'relay-isolated',
             signal:ctxSignal??signal,maxTurns:12,maxRunMs:60000,
             onTransition:event=>{
-              if(event.status==='started')ownedAgents.add(event.agentId);
+              // Started and usage notifications may arrive before the RPC
+              // spawn acknowledgement. Replay only usage for the verified
+              // agent ID that PiSubagentsRpc matched to this delegation.
+              ownedAgents.add(event.agentId);
+              for(const usage of bufferedUsage.get(event.agentId)??[])onChildUsage?.(usage);
+              bufferedUsage.delete(event.agentId);
               onTransition?.(event);
               if(event.status==='started'&&broker)
                 binding=broker.bindWhenReady(event.agentId,requested);
