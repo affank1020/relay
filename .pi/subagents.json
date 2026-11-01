@@ -1,0 +1,9 @@
+{
+  "disableDefaultAgents": true,
+  "schedulingEnabled": false,
+  "maxConcurrent": 2,
+  "maxConcurrentForeground": 2,
+  "defaultMaxTurns": 12,
+  "backgroundByDefault": true,
+  "rememberAgents": false
+}
