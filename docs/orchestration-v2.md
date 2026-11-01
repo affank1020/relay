@@ -132,6 +132,31 @@ reporting tokens or price, so real billing can exceed these ceilings.
   Record the deployed commit, model, provider, timestamps, task/run IDs,
   observed tool receipts and actual outcomes before marking this complete.
 
+## Pi-native research delegation and tool discovery
+
+Relay already uses Pi for isolated child-agent sessions, while its existing
+SQLite scheduler owns task identities, bounded concurrency, joins, budgets and
+approval/reconciliation. The `relay_delegate` tool now advertises the **exact
+currently admitted read-only names** in its input schema. A root agent can
+explicitly grant those names to a research child; unavailable or write tools
+are not offered, and server policy validates every grant again.
+
+A child still defaults to **no external tools**, intentionally. Tool-less
+researchers receive an explicit verification limitation and must not claim
+they searched the web or consulted sources. A normal GitHub/Atlas/MCP tool
+must already be configured and enabled by the operator before its read
+capabilities appear in the parent schema. Relay does not yet include a general
+internet-search provider by default.
+
+Installing a third-party Pi subagent extension into Relay is **not** a
+precondition for functioning Pi-native delegation. Pi extensions execute in
+the host process with its permissions, so importing one directly would bypass
+Relay's existing trusted-Skills, tool-admission and approval boundaries.
+Evaluate any external extension in an isolated environment and audit its
+execution/permissions before deciding whether to replace (not duplicate)
+Relay's existing scheduler. Do not turn on `noExtensions:false` for ordinary
+sessions without that boundary.
+
 ## Deferred extensions
 
 User-editable/Skill-backed profile manifests, explicit per-child Skills,
