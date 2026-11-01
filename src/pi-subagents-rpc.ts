@@ -132,7 +132,7 @@ export class PiSubagentsRpc {
       // with ALL builtin shell/filesystem tools denied.
       const reply=await this.rpc('spawn',{type:'relay-isolated',prompt,
         options:{isolated:true,inheritContext:false,isBackground:true,
-          maxTurns,description:'Relay isolated delegated task'}},options.signal);
+          maxTurns,description:'Relay isolated delegated task'}});
       if(!object(reply)||typeof reply.id!=='string'||!reply.id)
         throw Error('Pi subagent RPC did not return an agent ID');
       agentId=reply.id;
