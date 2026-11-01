@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { SubagentTransition } from './pi-subagents-rpc.js';
 import type { Store, Task, Conversation, State, Usage, InvocationRecord } from './store.js';
 import { terminal } from './store.js';
+import { READ_TOOLS } from './gateway.js';
 
 /**
  * Projection, not a second executor. pi-subagents owns child scheduling and
@@ -34,11 +35,13 @@ export class PiSubagentLedger {
     const childId=this.childIds.get(agentId);
     const child=childId?this.store.get<Task>('tasks',childId):undefined;
     if(!root||root.state!=='running'||root.agentRunId!==this.root.agentRunId||
-        !child||terminal(child.state)||!/^mcp__[a-z0-9_]+__[a-zA-Z0-9_]+$/.test(tool))return;
+        !child||terminal(child.state)||!(
+          /^mcp__[a-z0-9_]+__[a-zA-Z0-9_]+$/.test(tool) ||
+          (tool.startsWith('atlas_')&&READ_TOOLS.has(tool.slice(6)))))return;
     const invocationId=randomUUID(),id=child.id+':'+invocationId;
     this.store.transaction(()=>{
       const receipt:InvocationRecord={id,invocationId,kind:'mcp_read',
-        providerId:tool.split('__')[1],toolName:tool,
+        providerId:tool.startsWith('atlas_')?'atlas':tool.split('__')[1],toolName:tool,
         state:success?'completed':'failed_read',parentTaskId:this.root.id};
       this.store.save('invocations',receipt);
       this.store.event(child.conversationId,{taskId:child.id,
