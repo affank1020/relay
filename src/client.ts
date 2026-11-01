@@ -757,7 +757,8 @@ function showCapabilitiesView(view:'list'|'install') {
   $('capabilitiesBack').hidden=!installing;
   $('capabilitiesTitle').textContent=installing?'Install Skill':'Skills & integrations';
   $('capabilitiesError').textContent='';
-  $<HTMLElement>('#capabilitiesDialog'.slice(1)).scrollTop=0;
+  const panel=document.querySelector<HTMLElement>('.capabilities-panel');
+  if(panel)panel.scrollTop=0;
   if(installing)$<HTMLInputElement>('gitSkillOwner').focus();
 }
 async function drawCapabilities(snapshot:CapabilitySnapshot){
@@ -792,14 +793,15 @@ async function drawCapabilities(snapshot:CapabilitySnapshot){
       check.setAttribute('aria-label','Enable '+name);
       const writes=isSkill?0:item.availableWriteTools?.length??0;
       const description=isSkill?item.description:
-        (item.availableTools.length?item.availableTools.length+' read tools':'GitHub MCP')+
+        (item.availableTools.length?item.availableTools.length+' read tools':item.id==='github'?'GitHub MCP':'MCP integration')+
         (writes?' · '+writes+' writes requiring approval':'');
       const info=el('span','capability-copy','');
       info.append(el('span','capability-name',name),
         el('span','capability-description',description));
       if(isSkill&&item.sourceRef)info.append(el('span','capability-description capability-source',item.sourceRef));
       if(!isSkill&&!item.configured)
-        info.append(el('span','capability-description capability-source','Set RELAY_GITHUB_TOKEN on the Relay server to enable.'));
+        info.append(el('span','capability-description capability-source',
+          item.id==='github'?'Set RELAY_GITHUB_TOKEN on the Relay server to enable.':'Configure this MCP provider on the Relay server.'));
       label.append(check,info);
       let state:string;
       if(isSkill)state=item.loadFailure?'Load failed':!item.installed?'Missing file':item.enabled?'Enabled':'Disabled';
