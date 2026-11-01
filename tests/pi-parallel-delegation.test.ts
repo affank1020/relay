@@ -96,6 +96,8 @@ test('batch starts two independent Pi researchers concurrently and requires real
 });
 
 test('batch validates every research child before any spawn',async()=>{
+  const prior=process.env.RELAY_PI_CHILD_MCP;
+  process.env.RELAY_PI_CHILD_MCP='1';
   const controller=new AbortController(),bus=new FakeBus();
   let spawns=0;
   bus.on('subagents:rpc:spawn',()=>{spawns++;});
@@ -106,4 +108,6 @@ test('batch validates every research child before any spawn',async()=>{
     {prompt:'Read GitHub issue #29',tools:[]}
   ]},controller.signal,undefined,{} as never),/require explicit read tools/);
   assert.equal(spawns,0);
+  if(prior===undefined)delete process.env.RELAY_PI_CHILD_MCP;
+  else process.env.RELAY_PI_CHILD_MCP=prior;
 });
