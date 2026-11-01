@@ -4,13 +4,14 @@ import { dirname,join } from 'node:path';
 import type { SubagentsBus, SubagentTransition } from './pi-subagents-rpc.js';
 import { PiSubagentsRpc } from './pi-subagents-rpc.js';
 import { PiChildMcpBroker } from './pi-child-mcp-broker.js';
+import { piSubagentsEnabled,piChildMcpEnabled } from './pi-mode.js';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Type } from '@sinclair/typebox';
 
 // Explicit, opt-in operator mode. Never install or discover arbitrary Pi
 // extensions from untrusted projects or from a user's chat prompt.
 export function piSubagentEnabled(task:{parentId:string|null;delegation?:unknown}):boolean {
-  return process.env.RELAY_PI_SUBAGENTS==='1' && !task.parentId && !task.delegation;
+  return piSubagentsEnabled() && !task.parentId && !task.delegation;
 }
 /** Upstream tools must not bypass Relay's audited bridge. This list is not
  * the security boundary: the live tool_call hook blocks every other name. */
@@ -24,7 +25,7 @@ export function verifyPiSubagentsPolicy(projectRoot=process.cwd()):void {
     'extensions: false','skills: false','isolated: true'])
     if(!file.split(/\r?\n/).includes(required))
       throw new Error('Reviewed Pi subagent capability policy missing or changed');
-  if(process.env.RELAY_PI_CHILD_MCP==='1'){
+  if(piChildMcpEnabled()){
     const child=readFileSync(join(projectRoot,'.pi','agents','relay-research.md'),'utf8');
     for(const required of ['name: relay-research',
       'tools: ext:pi-child-mcp-extension/relay_child_mcp_read',
@@ -97,7 +98,7 @@ export function piSubagentRuntime(signal:AbortSignal,
         if(requested.length!==new Set(requested).size ||
             requested.some(name=>!allowedReadNames.includes(name)))
           throw new Error('Requested child MCP tool is not authorised for this run');
-        if(requested.length&&process.env.RELAY_PI_CHILD_MCP!=='1')
+        if(requested.length&&!piChildMcpEnabled())
           throw new Error('Child MCP broker is not enabled on this Relay server');
         const broker=requested.length?new PiChildMcpBroker(bus,signal,
           async (name,params)=>{
