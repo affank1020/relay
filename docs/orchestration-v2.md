@@ -157,6 +157,34 @@ execution/permissions before deciding whether to replace (not duplicate)
 Relay's existing scheduler. Do not turn on `noExtensions:false` for ordinary
 sessions without that boundary.
 
+## Live Qwen research failure and admission guard (1 November 2026)
+
+A real `ollama/qwen3-coder:30b` request to delegate two GitHub issue
+reads produced four child agents (two duplicate prompts per issue). They
+completed inference but none had a verified GitHub MCP read, and some
+incorrectly treated an Atlas project-list tool as a GitHub prerequisite.
+This is a **failed research acceptance**, not proof of working GitHub MCP.
+
+Relay's GitHub MCP uses a server-side `RELAY_GITHUB_TOKEN` and an operator
+opt-in under **Skills & integrations**. GitHub being connected to a separate
+app, or Atlas MCP being available, does not configure this integration.
+The authenticated `GET /api/capabilities` reports whether GitHub is
+configured, enabled, ready or offline. It does not disclose the token.
+
+The `relay_delegate` tool now exposes an optional `requiredToolProvider`
+(`github` or `atlas`). A parent explicitly requiring GitHub issue research
+should set `requiredToolProvider:'github'` **and** pass the relevant admitted
+`mcp_github_*` read-tool names in `tools`. Without both, the call fails
+**before spawning** a child and gives an actionable error. This is a
+validation guard, not an implicit grant. Same parent + prompt + dependency
+list + delegated capability/model/budget/context snapshot reuses the prior
+child task, preventing accidental doubled inference. Deliberately distinct
+child requests still execute separately.
+
+The provider-required guard only applies when requested by the parent model.
+It cannot guarantee that a model faithfully selects this option; production
+acceptance still requires a configured provider and actual tool receipts.
+
 ## Deferred extensions
 
 User-editable/Skill-backed profile manifests, explicit per-child Skills,
