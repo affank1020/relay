@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chromium } from '@playwright/test';
 import { CapabilityRegistry } from '../src/capabilities.js';
+import { configuredProviders } from '../src/integrations/manager.js';
 import { createPlatform } from '../src/platform.js';
 import { Engine } from '../src/engine.js';
 import { Store } from '../src/store.js';
@@ -25,7 +26,7 @@ test('real browser previews, explicitly installs, enables and revokes a pinned G
       content:Buffer.from(content).toString('base64')
     }));
   }) as typeof fetch;
-  const registry=new CapabilityRegistry(root,join(process.cwd(),'skills'),[],undefined,mockedFetch);
+  const registry=new CapabilityRegistry(root,join(process.cwd(),'skills'),configuredProviders({}),undefined,mockedFetch);
   const store=new Store(':memory:');
   const harness={version:1 as const,capabilities:{persistence:true,cancellation:true,tools:true},run:async()=>''};
   const engine=new Engine(store,harness,{concurrency:1,queue:10,sessionUsd:0,globalUsd:0,
@@ -42,7 +43,27 @@ test('real browser previews, explicitly installs, enables and revokes a pinned G
     await page.locator('#token').fill(token);
     await page.locator('#loginForm button').click();
     await page.locator('#openCapabilities').click();
-    await page.locator('details.git-skill-installer summary').click();
+    await page.locator('#capabilitiesContent .capability-row').first().waitFor({state:'visible'});
+    assert.equal(await page.locator('#gitSkillInstaller').isHidden(),true,
+      'GitHub installation form stays out of the ordinary settings view');
+    assert.equal(await page.locator('#capabilitiesContent .capability-row').count(),3);
+    assert.equal(await page.getByRole('checkbox',{name:'Enable GitHub'}).isDisabled(),true);
+    assert.equal(await page.getByText('Setup required',{exact:true}).isVisible(),true);
+    const layout=await page.evaluate(()=>{
+      const modal=document.querySelector('#capabilitiesDialog')!.getBoundingClientRect();
+      const toggle=document.querySelector('.capability-toggle')!.getBoundingClientRect();
+      const name=document.querySelector('.capability-name')!.getBoundingClientRect();
+      return {modalWidth:modal.width,toggleWidth:toggle.width,aligned:toggle.right<name.left};
+    });
+    assert.ok(layout.modalWidth>=600,'desktop modal has room for legible rows');
+    assert.ok(layout.toggleWidth>=16&&layout.toggleWidth<=20,'checkbox must not inherit full-width dialog input rule');
+    assert.ok(layout.aligned,'checkbox must sit beside its label, not occupy the whole row');
+    await page.locator('#openGitSkillInstaller').click();
+    await page.locator('#gitSkillInstaller').waitFor({state:'visible'});
+    assert.equal(await page.locator('#capabilitiesHome').isHidden(),true);
+    await page.locator('#capabilitiesBack').click();
+    assert.equal(await page.locator('#gitSkillInstaller').isHidden(),true);
+    await page.locator('#openGitSkillInstaller').click();
     await page.locator('#gitSkillOwner').fill('example-owner');
     await page.locator('#gitSkillRepo').fill('reviewed-skills');
     await page.locator('#gitSkillCommit').fill('a'.repeat(40));
@@ -82,6 +103,16 @@ test('real browser previews, explicitly installs, enables and revokes a pinned G
     await page.getByText('browser-skill',{exact:true}).waitFor({state:'detached'});
     assert.equal((await registry.list()).skills.some(s=>s.id===installed.id),false);
     assert.equal(await registry.skills.promptContent(),'');
+    assert.equal(await page.locator('#capabilitiesHome').isVisible(),true,
+      'successful installation returns to the capability list');
+    await page.setViewportSize({width:390,height:780});
+    const mobile=await page.evaluate(()=>{
+      const dialog=document.querySelector('#capabilitiesDialog')!.getBoundingClientRect();
+      const toggle=document.querySelector('.capability-toggle')!.getBoundingClientRect();
+      return {left:dialog.left,right:dialog.right,viewport:window.innerWidth,toggle:toggle.width};
+    });
+    assert.ok(mobile.left>=0&&mobile.right<=mobile.viewport,'dialog fits a mobile viewport');
+    assert.ok(mobile.toggle>=16&&mobile.toggle<=20,'mobile toggles remain compact');
     await page.close();
   }finally{
     await browser.close();
