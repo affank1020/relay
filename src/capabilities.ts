@@ -6,6 +6,7 @@ import { fetchPinnedGitSkill, skillDigest, validRecord, SkillPackageError,
   type GitSkillCandidate, type ReviewedGitSkill } from './skills/git.js';
 import { configuredProviders, ConnectionManager, type ProviderConfig, type ProviderTransport, type WriteApproval } from './integrations/manager.js';
 import type { Store, Task } from './store.js';
+import type { NativeMcpRun } from './pi-native-mcp.js';
 
 interface Settings {
   version:1; skills:Record<string,boolean>; integrations:Record<string,boolean>;
@@ -72,6 +73,9 @@ export class CapabilityRegistry {
   async skillPaths(){return this.skills.permittedPaths();}
   async tools(task:Task,store:Store,signal:AbortSignal,approve?:WriteApproval){
     return this.connections.tools(task,store,signal,approve);
+  }
+  nativeMcp(task:Task,store:Store):NativeMcpRun {
+    return {task,store,providers:this.connections.nativeProviders()};
   }
   async update(kind:'skills'|'integrations',id:string,enabled:boolean){
     if(typeof enabled!=='boolean'||!(kind==='skills'?this.skills.contains(id):this.connections.contains(id)))
