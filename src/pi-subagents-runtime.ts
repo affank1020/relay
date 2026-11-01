@@ -134,7 +134,7 @@ export function piSubagentRuntime(signal:AbortSignal,
               ownedAgents.add(event.agentId);
               for(const usage of bufferedUsage.get(event.agentId)??[])onChildUsage?.(usage);
               bufferedUsage.delete(event.agentId);
-              onTransition?.(event);
+              onTransition?.({...event,profile:requested.length?'research':'analysis'});
               if(event.status==='started'&&broker)
                 binding=broker.bindWhenReady(event.agentId,requested);
               if(event.status!=='started')broker?.revoke(event.agentId);
