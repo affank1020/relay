@@ -105,3 +105,20 @@ test('model-facing pi delegation bridges to extension RPC with fixed safe profil
   assert.deepEqual(transitions,['completed']);
   assert.equal(handlers.size,0);
 });
+
+test('Pi research child policy explicitly grants only the audited read bridge',async()=>{
+  const prior=process.env.RELAY_PI_CHILD_MCP;
+  process.env.RELAY_PI_CHILD_MCP='1';
+  try {
+    assert.doesNotThrow(()=>verifyPiSubagentsPolicy());
+    const definition=await readFile('.pi/agents/relay-research.md','utf8');
+    assert.match(definition,/tools: ext:pi-child-mcp-extension\/relay_child_mcp_read/);
+    assert.match(definition,/disallowed_tools: read, bash, powershell, write, edit, grep, find, ls/);
+    assert.match(definition,/extensions: \[\/app\/dist\/pi-child-mcp-extension\.js\]/);
+    assert.match(definition,/skills: false/);
+    assert.match(definition,/isolated: false/);
+  }finally{
+    if(prior===undefined)delete process.env.RELAY_PI_CHILD_MCP;
+    else process.env.RELAY_PI_CHILD_MCP=prior;
+  }
+});
