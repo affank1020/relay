@@ -32,7 +32,6 @@ export class PiSubagentLedger {
           dependencies:[],attemptOf:null,result:'',error:null,usage:[],
           agentId:event.agentId,agentRunId:randomUUID(),modelKey:this.root.modelKey,
           kind:'pi_subagent'};
-        this.childIds.set(event.agentId,id);
         this.store.save('tasks',child);
         this.store.event(conversationId,{taskId:id,agentId:event.agentId,
           agentRunId:child.agentRunId,parentTaskId:this.root.id,
@@ -55,6 +54,9 @@ export class PiSubagentLedger {
         agentId:this.root.agentId??null,agentRunId:this.root.agentRunId??null,
         childTaskId:child!.id,type:'delegation',state:next});
     });
+    // Install the in-memory map only after the SQLite transaction commits.
+    // A rolled-back foreign key or IO failure must not leave a phantom child.
+    if(!priorId&&child)this.childIds.set(event.agentId,child.id);
     return child;
   }
 }
