@@ -176,7 +176,7 @@ export function piSubagentRuntime(signal:AbortSignal,
             task.tools.length!==new Set(task.tools).size||
             task.tools.some(name=>!allowedReadNames.includes(name)))
           throw new Error('Parallel child has invalid or unauthorised tool grants');
-        if(!task.tools.length&&/\\b(github|issue\\s*#?\\d+|mcp|atlas|fetch|external source|repository)\\b/i.test(task.prompt))
+        if(!task.tools.length&&/\b(github|issue\s*#?\d+|mcp|atlas|fetch|external source|repository)\b/i.test(task.prompt))
           throw new Error('Parallel GitHub/Atlas researchers require explicit read tools');
         if(task.tools.length&&!piChildMcpEnabled())
           throw new Error('Parallel child MCP broker is not enabled');
