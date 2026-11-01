@@ -106,3 +106,30 @@ test('RPC spawn refusal does not leave a dangling task or listeners',async()=>{
     /No active session/);
   deny();assert.equal(bus.listenerCount(),0);
 });
+
+test('abort before spawn acknowledgement stops the late-starting child',async()=>{
+  const {bus,api,controller}=setup();
+  let reply:((id:string)=>void)|undefined;
+  const stopIds:string[]=[];
+  const unspawn=bus.on('subagents:rpc:spawn',data=>{
+    const request=data as {requestId:string};
+    reply=id=>bus.emit('subagents:rpc:spawn:reply:'+request.requestId,
+      {success:true,data:{id}});
+  });
+  const unstop=bus.on('subagents:rpc:stop',data=>{
+    const req=data as {requestId:string;agentId:string};
+    stopIds.push(req.agentId);
+    bus.emit('subagents:rpc:stop:reply:'+req.requestId,{success:true});
+  });
+  const changes:string[]=[];
+  const task=api.run({prompt:'Analyze',type:'relay-isolated',signal:controller.signal,
+    onTransition:event=>changes.push(event.status)});
+  controller.abort();
+  assert.ok(reply);
+  reply!('late-child');
+  await assert.rejects(task,/cancelled/);
+  await Promise.resolve();
+  assert.deepEqual(stopIds,['late-child']);
+  assert.deepEqual(changes,['stopped']);
+  unspawn();unstop();assert.equal(bus.listenerCount(),0);
+});
