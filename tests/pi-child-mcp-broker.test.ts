@@ -45,7 +45,7 @@ test('Unbound or unapproved children cannot invoke native MCP or write tools',as
   const reg=registry('agent1','session1');
   broker.bind('agent1',['mcp__github__issue_read'],reg);
   const results:unknown[]=[];
-  const listen=id=>bus.on('relay:child-mcp:reply:'+id,r=>results.push(r));
+  const listen=(id:string)=>bus.on('relay:child-mcp:reply:'+id,r=>results.push(r));
   const unsubs=[listen('deny1'),listen('deny2')];
   bus.emit('relay:child-mcp:read',{requestId:'deny1',sessionId:'session1',
     tool:'mcp__github__create_issue',args:{title:'bad'}});
