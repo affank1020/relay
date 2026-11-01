@@ -7,6 +7,7 @@ COPY src ./src
 COPY public ./public
 COPY scripts/build.sh ./scripts/build.sh
 COPY scripts/atlas-smoke.ts ./scripts/atlas-smoke.ts
+COPY scripts/pi-smoke.ts ./scripts/pi-smoke.ts
 RUN npm run check && npm run build
 RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 # Optional Pi subagent engine is pinned and only activated by RELAY_PI_SUBAGENTS=1.
