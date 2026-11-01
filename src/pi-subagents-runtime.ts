@@ -94,8 +94,13 @@ export function piSubagentRuntime(signal:AbortSignal,
           async (name,params)=>{
             // Nested Pi tool calls preserve native provider revocation, approval
             // and audit guards; no child credentials or duplicate transport.
-            const result=await ctx.executeTool(name,params);
-            return result as {isError?:boolean;content?:Array<{type:string;text?:string}>};
+            // Pi returns AgentToolCallOutcome { toolCall, result, isError },
+            // NOT a bare AgentToolResult. Unwrap its nested result so the
+            // child receives the actual GitHub/Atlas response and failures
+            // remain failures. Never synthesize a verified source on missing
+            // result data.
+            const outcome=await ctx.executeTool(name,params);
+            return {isError:outcome.isError,content:outcome.result.content};
           },(agentId,tool,success)=>onReadReceipt?.(agentId,tool,success)):undefined;
         // Observe usage only for the lifetime of this delegated call. A
         // process-level Pi bus can outlive a single root task; never leak
