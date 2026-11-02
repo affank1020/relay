@@ -1,10 +1,12 @@
 import type { Store, Task } from '../store.js';
 import { githubWriteRepositories } from './github-writes.js';
 import { READ_TOOLS } from '../gateway.js';
+import { atlasCodingCheckouts } from '../atlas-coding.js';
 
 export interface ProviderConfig {
   id:string; label:string; url:string; token:string; readTools:readonly string[];
   writeRepositories?:readonly string[];
+  codingCheckouts?:readonly string[];
 }
 export interface IntegrationStatus {
   id:string; label:string; enabled:boolean; configured:boolean;
@@ -28,6 +30,8 @@ export function configuredProviders(env:NodeJS.ProcessEnv):ProviderConfig[] {
   // Atlas is a first-class trusted Pi MCP provider. Unlike arbitrary
   // operator-added hosts its endpoint already belongs to Relay's Atlas
   // awareness configuration and is validated by the existing Gateway.
+  if(!env.ATLAS_MCP_URL&&env.RELAY_ATLAS_CODING_CHECKOUTS?.trim())
+    throw new Error('ATLAS_MCP_URL required for coding checkouts');
   if(env.ATLAS_MCP_URL){
     const url=new URL(env.ATLAS_MCP_URL);
     if(url.username||url.password||url.search||url.hash||
@@ -37,7 +41,7 @@ export function configuredProviders(env:NodeJS.ProcessEnv):ProviderConfig[] {
     providers.push({id:'atlas',label:'Atlas',url:url.toString(),
       token:env.ATLAS_MCP_TOKEN??'',
       // Atlas enforces read authorization; Relay projects verified resources.
-      readTools:[...READ_TOOLS]});
+      readTools:[...READ_TOOLS],codingCheckouts:atlasCodingCheckouts(env.RELAY_ATLAS_CODING_CHECKOUTS)});
   }
   const raw=env.RELAY_MCP_PROVIDERS || '[]';
   let configs:unknown;
