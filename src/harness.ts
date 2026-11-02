@@ -95,7 +95,7 @@ export class PiHarness implements Harness {
     if(this.registry?.ollama&&provider==='ollama') {
       modelRuntime.registerProvider('ollama',{
         baseUrl:this.registry.ollama.baseUrl,api:'openai-completions',apiKey:'ollama',
-        models:this.registry.ollama.modelIds.map(id=>({id,name:id,reasoning:false,input:['text' as const],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:8192,maxTokens:4096,compat:{supportsDeveloperRole:false,supportsReasoningEffort:false}}))
+        models:this.registry.ollama.modelIds.map(id=>({id,name:id,reasoning:false,input:['text' as const],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:this.registry.ollama.contextWindow,maxTokens:this.registry.ollama.maxOutputTokens,compat:{supportsDeveloperRole:false,supportsReasoningEffort:false}}))
       });
     }
     const model=modelRuntime.getModel(provider,id);
