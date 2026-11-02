@@ -6,7 +6,8 @@ import type { RelayModels } from './models.js';
 import type { CapabilityRegistry } from './capabilities.js';
 import { nativeMcpAllowed } from './pi-native-mcp.js';
 import { PiSubagentLedger } from './pi-subagent-ledger.js';
-import { Gateway, READ_TOOLS, type AtlasTransport } from './gateway.js';
+import { Gateway, READ_TOOLS, payload, type AtlasTransport } from './gateway.js';
+import type { CodingCheckout } from './atlas-coding.js';
 import { originatingConversation, completedDependencyReceipts, used, validateDependencies, type DelegationSnapshot, type DependencyReceipt } from './orchestration.js';
 import { AtlasContextService, type AtlasContext } from './atlas-context.js';
 
@@ -28,7 +29,7 @@ export class Engine {
   private jobs=new Set<Promise<void>>();
   readonly gateway?:Gateway;
   readonly atlasContext?:AtlasContextService;
-  constructor(readonly store:Store, private harness:Harness, readonly limits:Limits, atlas?:AtlasTransport,private readonly devTasks:Record<string,string[]>={},readonly modelRegistry?:RelayModels,readonly capabilities?:CapabilityRegistry) {
+  constructor(readonly store:Store, private harness:Harness, readonly limits:Limits, private readonly atlas?:AtlasTransport,private readonly devTasks:Record<string,string[]>={},readonly modelRegistry?:RelayModels,readonly capabilities?:CapabilityRegistry) {
     if(!Number.isInteger(limits.concurrency)||limits.concurrency<1||limits.concurrency>4)throw new Error('Concurrency must be 1–4');
     for(const value of Object.values(limits))if(!Number.isFinite(value)||value<0)throw new Error('Invalid execution limit');
     if(limits.queue<1 || limits.maxRunMs<1000)throw new Error('Invalid queue or run timeout');
@@ -431,12 +432,39 @@ export class Engine {
         void this.cancel(child.id);
     this.kick();
   }
+  /** Re-check Atlas placement and capabilities directly, never trusting model prose
+   * or cached workspace/Node status when admitting a coding mutation. */
+  private async inspectAtlasCodingCheckout(checkoutId:string,signal:AbortSignal):Promise<CodingCheckout> {
+    if(!this.atlas)throw new Error('Atlas service unavailable');
+    signal.throwIfAborted();
+    const workspace=payload(await this.atlas.call('get_workspace',{checkoutId},signal));
+    const checkout=(workspace.workspace&&typeof workspace.workspace==='object'
+      ?workspace.workspace:workspace) as Record<string,unknown>;
+    const nodeId=typeof checkout.nodeId==='string'?checkout.nodeId:'';
+    if(checkout.id!==checkoutId||!nodeId)throw new Error('Cannot verify checkout placement');
+    const nodeResponse=payload(await this.atlas.call('get_node',{nodeId},signal));
+    const node=(nodeResponse.node&&typeof nodeResponse.node==='object'
+      ?nodeResponse.node:nodeResponse) as Record<string,unknown>;
+    if(node.id!==nodeId)throw new Error('Cannot verify assigned Node');
+    const git=payload(await this.atlas.call('workspace_git_status',{checkoutId},signal));
+    if(git.available!==true)throw new Error('Git workspace unavailable');
+    return {id:checkoutId,nodeId,active:checkout.status==='active',
+      online:node.status==='online',capabilities:Array.isArray(node.capabilities)
+        ?node.capabilities.filter((x):x is string=>typeof x==='string'):[],
+      branch:typeof git.branch==='string'?git.branch:'',
+      repository:typeof git.originRepository==='string'?git.originRepository:''};
+  }
   private async execute(task:Task,controller:AbortController,deps:Task[]) {
     let phase:HarnessPhase|'atlas_tool_discovery'|'pi_initialization'='atlas_tool_discovery';
     const timeout=setTimeout(()=>controller.abort(new Error('Execution time limit reached')),this.limits.maxRunMs);
     try {
       const nativeMcp=this.capabilities?.nativeMcp(task,this.store);
-      if(nativeMcp){nativeMcp.approve=(...args)=>this.approve(...args);nativeMcp.signal=controller.signal;}
+      if(nativeMcp){
+        nativeMcp.approve=(...args)=>this.approve(...args);
+        nativeMcp.signal=controller.signal;
+        nativeMcp.devTasks=this.devTasks;
+        if(this.atlas)nativeMcp.atlasCodingInspect=(id,signal)=>this.inspectAtlasCodingCheckout(id,signal);
+      }
       const nativeReadNames=nativeMcp?nativeMcpAllowed(nativeMcp):[];
       const atlasAvailable=nativeReadNames.some(name=>name.startsWith('mcp__atlas__'));
       // Atlas development operations retain their resource/approval policy.
