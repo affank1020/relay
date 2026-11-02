@@ -55,3 +55,18 @@ test('Ollama discovery deduplicates concurrent reads and caps the catalog size',
   assert.equal(registry.ollama?.modelIds.length,8);
   assert.equal(registry.models.length,9);
 });
+
+test('local Pi context budgets are explicit and bounded by effective Ollama settings',()=>{
+  const url='http://127.0.0.1:11434/v1';
+  const configured=loadRelayModels({RELAY_OLLAMA_URL:url,
+    RELAY_OLLAMA_CONTEXT_TOKENS:'32768',RELAY_OLLAMA_MAX_OUTPUT_TOKENS:'8192'});
+  assert.equal(configured.ollama?.contextWindow,32768);
+  assert.equal(configured.ollama?.maxOutputTokens,8192);
+  const defaults=loadRelayModels({RELAY_OLLAMA_URL:url});
+  assert.equal(defaults.ollama?.contextWindow,8192);
+  assert.equal(defaults.ollama?.maxOutputTokens,4096);
+  for(const context of ['1024','-1','foo','9999999999'])
+    assert.throws(()=>loadRelayModels({RELAY_OLLAMA_URL:url,RELAY_OLLAMA_CONTEXT_TOKENS:context}),/Invalid/);
+  assert.throws(()=>loadRelayModels({RELAY_OLLAMA_URL:url,
+    RELAY_OLLAMA_CONTEXT_TOKENS:'8192',RELAY_OLLAMA_MAX_OUTPUT_TOKENS:'8192'}),/reserve/);
+});
