@@ -1,9 +1,18 @@
 export interface RelayModel { key:string; provider:'openrouter'|'ollama'; id:string; label:string; }
-export interface RelayModels { defaultKey:string; models:RelayModel[]; ollama?:{baseUrl:string; modelIds:string[]; online?:boolean; lastChecked?:number}; }
+export interface RelayModels { defaultKey:string; models:RelayModel[]; ollama?:{baseUrl:string; modelIds:string[]; contextWindow?:number; maxOutputTokens?:number; online?:boolean; lastChecked?:number}; }
 const VALID_MODEL=/^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,110}$/;
 const MAX_LOCAL_MODELS=8;
 const DISCOVERY_INTERVAL_MS=15_000;
 const pending=new WeakMap<RelayModels,Promise<void>>();
+/** These describe the configured provider, not advertised model limits.
+ * Operators must match Ollama's actual effective context configuration. */
+const parseTokenBudget=(name:string,raw:string|undefined,fallback:number,min:number,max:number)=>{
+  if(raw===undefined||raw.trim()==='')return fallback;
+  if(!/^[0-9]+$/.test(raw.trim()))throw new Error('Invalid '+name);
+  const value=Number(raw.trim());
+  if(!Number.isSafeInteger(value)||value<min||value>max)throw new Error('Invalid '+name);
+  return value;
+};
 
 /** Only an administrator-defined, private inference endpoint can be registered. */
 export function loadRelayModels(env:Record<string,string|undefined>):RelayModels {
@@ -25,7 +34,10 @@ export function loadRelayModels(env:Record<string,string|undefined>):RelayModels
   const ids=requested?requested.split(',').map(x=>x.trim()):[];
   if(ids.length>MAX_LOCAL_MODELS||ids.some(id=>!VALID_MODEL.test(id))||new Set(ids).size!==ids.length)throw new Error('Invalid Ollama model list');
   for(const id of ids)models.push({key:'ollama/'+id,provider:'ollama',id,label:'MacBook · '+id});
-  return {defaultKey:models[0].key,models,ollama:{baseUrl:url.origin+'/v1',modelIds:ids}};
+  const contextWindow=parseTokenBudget('RELAY_OLLAMA_CONTEXT_TOKENS',env.RELAY_OLLAMA_CONTEXT_TOKENS,8192,8192,131072);
+  const maxOutputTokens=parseTokenBudget('RELAY_OLLAMA_MAX_OUTPUT_TOKENS',env.RELAY_OLLAMA_MAX_OUTPUT_TOKENS,4096,1024,16384);
+  if(contextWindow-maxOutputTokens<4096)throw new Error('Local model context must reserve at least 4096 tokens for input');
+  return {defaultKey:models[0].key,models,ollama:{baseUrl:url.origin+'/v1',modelIds:ids,contextWindow,maxOutputTokens}};
 }
 
 /** Bounded, deduplicated, server-side model discovery; never accepts client URLs.

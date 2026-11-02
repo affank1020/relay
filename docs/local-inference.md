@@ -108,3 +108,30 @@ port 11434 to the internet. Proxy requests remain server-side and only
 validated model IDs from the configured private endpoint are exposed to browsers; no user-controlled inference
 URLs are accepted. Local inference isn't equivalent to local-only storage,
 because the Relay conversation database lives on the VPS.
+
+## Coding context configuration
+
+Relay defaults to an 8,192-token context window and 4,096-token output
+budget for unconfigured Ollama instances. Those are conservative Pi metadata
+values, not a measurement of the actual available context on the Mac.
+
+To use a larger coding context, configure the **Ollama process on the Mac**
+with a matching effective `OLLAMA_CONTEXT_LENGTH`, then configure Relay's
+private `RELAY_OLLAMA_CONTEXT_TOKENS` and optional
+`RELAY_OLLAMA_MAX_OUTPUT_TOKENS`. For example, after confirming the 30B
+model fits and is stable at 16K with your other apps:
+
+```dotenv
+# Mac: effective Ollama runtime setting (configure how Ollama is launched)
+OLLAMA_CONTEXT_LENGTH=16384
+
+# Relay VPS: Pi's expected model budget
+RELAY_OLLAMA_CONTEXT_TOKENS=16384
+RELAY_OLLAMA_MAX_OUTPUT_TOKENS=4096
+```
+
+The setting alone does not enlarge Ollama's actual context. Ensure the Mac
+runtime uses the corresponding length and inspect `ollama ps` for model
+residency. Longer contexts and parallel subagents consume additional unified
+memory; start with one active coding run, not multiple 30B sessions. A model
+switch never silently falls back to a cloud provider.
