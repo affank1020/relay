@@ -58,6 +58,7 @@ export function nativeMcpConfig(run:NativeMcpRun):LoadedMcpConfig {
   const names=run.providers.map(p=>p.config.id.replaceAll('-','_'));
   if(new Set(names).size!==names.length)throw new Error('Colliding native MCP provider namespaces');
   const allowed=new Set(nativeMcpAllowed(run));
+  const direct=new Set(nativeMcpDirectNames(run));
   return {
     errors:[],autoEnableCodemode:false,
     servers:run.providers.filter(p=>p.enabled()&&(!!p.config.token ||
