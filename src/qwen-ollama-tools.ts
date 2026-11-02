@@ -22,10 +22,10 @@ export function recoverQwenToolCall(completion:OpenAICompletion,tools:readonly T
   if(typeof message.content!=='string')return {kind:'none',completion};
   // A dangling Qwen tag is not a real structured tool call. Do not mistake
   // an unfinished coding turn for success or execute ambiguous text.
-  if(/<\\/?tool_call>\\s*$/.test(message.content) &&
-     !/<function[=\\s]/.test(message.content))
+  if(/<\/?tool_call>\s*$/.test(message.content) &&
+     !/<function[=\s]/.test(message.content))
     return {kind:'invalid',completion};
-  if(!/<function[=\\s]/.test(message.content))
+  if(!/<function[=\s]/.test(message.content))
     return {kind:'none',completion};
   const raw=message.content;
   if(raw.length>65536)return {kind:'invalid',completion};
