@@ -26,6 +26,7 @@ The dark web UI provides streaming chat, model switching within a chat, source-t
 - [Verification and live acceptance](docs/verification.md)
 - [Deployment and ingress](docs/deployment.md)
 - [Atlas awareness](docs/atlas-awareness.md)
+- [Scoped Atlas coding](docs/coding.md)
 
 Production data belongs in the persistent `/data` volume. Merging to `main` retains the existing CI-gated deployment workflow; the reconstruction PR must remain unmerged until the owner chooses to deploy.
 
