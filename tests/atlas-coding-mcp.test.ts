@@ -32,6 +32,7 @@ test('approved base can create isolated worktree, then bounded edits require a s
   const task:Task={id:randomUUID(),conversationId,requestId:randomUUID(),prompt:'Fix issue',state:'running',
     createdAt:new Date().toISOString(),parentId:null,dependencies:[],attemptOf:null,
     result:'',error:null,usage:[],agentRunId:randomUUID()};
+  store.save('conversations',{id:task.conversationId,title:'fixture',createdAt:new Date().toISOString()});
   store.save('tasks',task);
   let enabled=true,approvals:string[]=[];
   const atlas=configuredProviders({ATLAS_MCP_URL:'https://atlas.example/mcp',ATLAS_MCP_TOKEN:'credential',
@@ -83,6 +84,7 @@ test('Atlas publishing checks the verified remote and rejects unauthorized named
   const task:Task={id:randomUUID(),conversationId:randomUUID(),requestId:randomUUID(),
     prompt:'Fix',state:'running',createdAt:new Date().toISOString(),parentId:null,
     dependencies:[],attemptOf:null,result:'',error:null,usage:[],agentRunId:randomUUID()};
+  store.save('conversations',{id:task.conversationId,title:'fixture',createdAt:new Date().toISOString()});
   store.save('tasks',task);
   const atlas=configuredProviders({ATLAS_MCP_URL:'https://atlas.example/mcp',ATLAS_MCP_TOKEN:'credential',
     RELAY_ATLAS_CODING_CHECKOUTS:base})[1];
