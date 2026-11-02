@@ -83,7 +83,8 @@ export function nativeMcpCanInvoke(run:NativeMcpRun,name:string):boolean {
 export function nativeMcpAuditExtension(run:NativeMcpRun) {
   return {name:'relay-native-mcp-policy',factory:(pi:ExtensionAPI)=>{
     const checkouts=new Map<string,AtlasCheckoutFact>();
-    const newCodingCheckouts=new Set<string>();
+    // Derived worktrees retain their approved source within this Pi turn.
+    const newCodingCheckouts=new Map<string,string>();
     const approvedCodingScopes=new Set<string>();
     const active=new Map<string,{id:string;invocationId:string;providerId:string;toolName:string;
       codingCheckoutId?:string;codingNodeId?:string;codingRepository?:string;codingBranch?:string}>();
@@ -120,8 +121,9 @@ export function nativeMcpAuditExtension(run:NativeMcpRun) {
               !/^atlas\/[a-z0-9][a-z0-9/_-]{0,72}$/.test(String((args as Record<string,unknown>).branch)))
               return {block:true,reason:'Only approved bases may create atlas/* worktrees'};
           }
+          const taskSource=newCodingCheckouts.get(codingCheckoutId)??codingCheckoutId;
           if(method==='workspace_run_dev_task'&&
-            !run.devTasks?.[codingCheckoutId]?.includes(String((args as Record<string,unknown>).task)))
+            !run.devTasks?.[taskSource]?.includes(String((args as Record<string,unknown>).task)))
             return {block:true,reason:'Development task not in the operator allowlist'};
           try {
             codingCheckout=await run.atlasCodingInspect?.(codingCheckoutId,run.signal);
@@ -216,7 +218,7 @@ export function nativeMcpAuditExtension(run:NativeMcpRun) {
                inspected.repository===entry.codingRepository&&
                inspected.branch===entry.codingBranch&&
                codingCheckoutPermitted(inspected,'workspace_patch_file'))
-              newCodingCheckouts.add(id.toLowerCase());
+              newCodingCheckouts.set(id.toLowerCase(),entry.codingCheckoutId!);
           }
         }catch{/* The worktree may exist, but no unverified coding grant is issued. */}
       }
