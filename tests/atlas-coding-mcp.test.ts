@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {randomUUID} from 'node:crypto';
-import {Store,type Task} from '../src/store.js';
+import {Store,type Task,type Conversation} from '../src/store.js';
 import {configuredProviders} from '../src/integrations/manager.js';
 import {nativeMcpAllowed,nativeMcpAuditExtension,type NativeMcpRun} from '../src/pi-native-mcp.js';
 
@@ -74,6 +74,31 @@ test('approved base can create isolated worktree, then bounded edits require a s
     assert.equal(approvals.at(-1),'atlas:workspace_git_open_pull_request');
     assert.equal((store.get('invocations',task.id+':edit-1') as any).state,'completed');
     assert.equal((store.get('invocations',task.id+':create') as any).kind,'mcp_write');
+    const stored=store.get<Conversation>('conversations',conversationId);
+    assert.deepEqual(stored?.codingWorktrees,[{id:child,baseId:base,nodeId:node,
+      repository:'affank1020/relay',branch:'atlas/coding-issue'}]);
+    // Same user conversation, new Pi turn. Authority is remembered, but
+    // checkout scope must be independently approved again.
+    const next:Task={...task,id:randomUUID(),requestId:randomUUID(),agentRunId:randomUUID()};
+    store.save('tasks',next);
+    const secondHooks=new Map<string,(event:any)=>Promise<any>>();
+    nativeMcpAuditExtension({...run,task:next}).factory({on:(name:string,fn:any)=>{
+      secondHooks.set(name,fn);return ()=>{};}} as never);
+    const continuation=await secondHooks.get('tool_call')!({
+      toolName:'mcp__atlas__workspace_patch_file',toolCallId:'second-turn',
+      input:{checkoutId:child,path:'src/c.ts',expectedSha256:'sha',oldText:'a',newText:'b'}});
+    assert.equal(continuation,undefined);
+    assert.equal(approvals.at(-1),'atlas:coding_checkout');
+    const otherConversation=randomUUID(),otherTask:Task={...next,id:randomUUID(),
+      conversationId:otherConversation,requestId:randomUUID(),agentRunId:randomUUID()};
+    store.save('conversations',{id:otherConversation,title:'unrelated',createdAt:new Date().toISOString()});
+    store.save('tasks',otherTask);
+    const foreignHooks=new Map<string,(event:any)=>Promise<any>>();
+    nativeMcpAuditExtension({...run,task:otherTask}).factory({on:(name:string,fn:any)=>{
+      foreignHooks.set(name,fn);return ()=>{};}} as never);
+    assert.match(JSON.stringify(await foreignHooks.get('tool_call')!({
+      toolName:'mcp__atlas__workspace_patch_file',toolCallId:'other-chat',
+      input:{checkoutId:child,path:'src/c.ts'}})),/not approved/);
     enabled=false;
     assert.match(JSON.stringify(await call('workspace_patch_file','revoked',{checkoutId:child})),/not permitted/);
   }finally{store.close();}
