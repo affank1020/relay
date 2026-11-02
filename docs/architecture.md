@@ -40,7 +40,7 @@ One immutable session grant and a call-time hook govern MCP authority. Disabling
 
 GitHub's two reviewed writes remain root-only and require an exact configured repository plus explicit approval of the complete argument set. Dispatched writes with unconfirmed results remain uncertain and cannot be silently retried. Atlas development tasks retain their separate, small domain gateway because validating checkout placement, Node capability and named task approval is application policy. Ordinary Atlas reads use native MCP and produce bounded resource observations.
 
-No project selector is required. The assistant discovers projects, logical Workspaces, physical checkouts, Nodes and capabilities through Atlas tools. Optional pinned context is a convenience, not permission or proof of current Node state. Observation widgets distinguish discovery from execution.
+Optional Atlas coding is root-only and explicitly scoped to operator-allowlisted checkouts. It uses Pi native MCP and independent live checkout/Node/Git preflights. A base checkout may only create a fresh atlas/* worktree; edits, staging and commits require one per-turn approval on a verified atlas/* checkout. Push and draft PR creation receive separate exact-operation approvals. Subagents remain read-only, and unknown dispatched writes require reconciliation. See [coding](coding.md).\n\nNo project selector is required. The assistant discovers projects, logical Workspaces, physical checkouts, Nodes and capabilities through Atlas tools. Optional pinned context is a convenience, not permission or proof of current Node state. Observation widgets distinguish discovery from execution.
 
 ## Extension boundary
 

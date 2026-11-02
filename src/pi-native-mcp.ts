@@ -7,15 +7,27 @@ import { GITHUB_WRITES, approvedGitHubWriteArgs, isGitHubWrite } from './integra
 import type { WriteApproval } from './integrations/manager.js';
 import { observeAtlasResult, type AtlasCheckoutFact } from './atlas-awareness.js';
 import { observeAtlasDetailResult } from './atlas-awareness-details.js';
+import { ATLAS_CODING_TOOLS, isAtlasCodingTool, codingCheckoutInput,
+  codingCheckoutPermitted, sensitiveCodingTool, validCheckoutId,
+  type CodingCheckout } from './atlas-coding.js';
 
 // Pi's own MCP transport/discovery owns connections and tool definitions.
 // Relay owns just admission and durable event attribution. Never load ambient
 // mcp.json, project resources or arbitrary tools in this server process.
 export interface NativeMcpProvider { config:ProviderConfig; enabled:()=>boolean }
-export interface NativeMcpRun { providers:NativeMcpProvider[]; task:Task; store:Store; approve?:WriteApproval; signal?:AbortSignal }
+export interface NativeMcpRun { providers:NativeMcpProvider[]; task:Task; store:Store; approve?:WriteApproval; signal?:AbortSignal;
+  devTasks?:Record<string,string[]>;
+  /** Independent server-side reads, never delegated to the model. */
+  atlasCodingInspect?:(checkoutId:string,signal:AbortSignal)=>Promise<CodingCheckout>;
+}
 
 const nativeName=(id:string,name:string)=>'mcp__'+id.replaceAll('-','_')+'__'+name;
-const providerTools=(run:NativeMcpRun,config:ProviderConfig)=>[...config.readTools,...(!run.task.parentId&&!run.task.delegation&&config.id==='github'&&config.writeRepositories?.length&&run.approve?GITHUB_WRITES:[])];
+const providerTools=(run:NativeMcpRun,config:ProviderConfig)=>[
+  ...config.readTools,
+  ...(!run.task.parentId&&!run.task.delegation&&config.id==='github'&&config.writeRepositories?.length&&run.approve?GITHUB_WRITES:[]),
+  ...(!run.task.parentId&&!run.task.delegation&&config.id==='atlas'&&config.codingCheckouts?.length&&
+      run.approve&&run.signal&&run.atlasCodingInspect?ATLAS_CODING_TOOLS:[])
+];
 export function nativeMcpAllowed(run:NativeMcpRun):string[] {
   const child=!!run.task.parentId||!!run.task.delegation;
   const granted=new Set(run.task.delegation?.toolNames??[]);
@@ -71,7 +83,10 @@ export function nativeMcpCanInvoke(run:NativeMcpRun,name:string):boolean {
 export function nativeMcpAuditExtension(run:NativeMcpRun) {
   return {name:'relay-native-mcp-policy',factory:(pi:ExtensionAPI)=>{
     const checkouts=new Map<string,AtlasCheckoutFact>();
-    const active=new Map<string,{id:string;invocationId:string;providerId:string;toolName:string}>();
+    const newCodingCheckouts=new Set<string>();
+    const approvedCodingScopes=new Set<string>();
+    const active=new Map<string,{id:string;invocationId:string;providerId:string;toolName:string;
+      codingCheckoutId?:string;codingNodeId?:string;codingRepository?:string;codingBranch?:string}>();
     pi.on('tool_call',async event=>{
       if(!event.toolName.startsWith('mcp__'))return;
       const name=event.toolName;
@@ -85,36 +100,126 @@ export function nativeMcpAuditExtension(run:NativeMcpRun) {
       const invocationId=randomUUID();
       const args=event.input;
       const digest=createHash('sha256').update(JSON.stringify({name,args})).digest('hex');
-      const writing=provider.config.id==='github'&&isGitHubWrite(method);
+      const githubWrite=provider.config.id==='github'&&isGitHubWrite(method);
+      const atlasWrite=provider.config.id==='atlas'&&isAtlasCodingTool(method);
+      const writing=githubWrite||atlasWrite;
       const record:InvocationRecord={id:key,invocationId,taskId:run.task.id,kind:writing?'mcp_write':'mcp_read',
         digest,providerId:provider.config.id,toolName:name,state:'dispatched'};
+      let codingCheckout:CodingCheckout|undefined;
+      let codingCheckoutId:string|undefined;
       if(writing){
-        const safe=approvedGitHubWriteArgs(method,args,provider.config.writeRepositories??[]);
-        if(!safe||!run.approve||!run.signal)return {block:true,reason:'Write scope not permitted'};
+        if(!run.approve||!run.signal)return {block:true,reason:'Write approval unavailable'};
+        if(atlasWrite){
+          codingCheckoutId=codingCheckoutInput(args)??undefined;
+          const rootAllowed=!!codingCheckoutId && !!provider.config.codingCheckouts?.includes(codingCheckoutId);
+          if(!codingCheckoutId||(!rootAllowed&&!newCodingCheckouts.has(codingCheckoutId)))
+            return {block:true,reason:'Checkout not approved for Relay coding'};
+          // A configured base checkout is only allowed to spawn an isolated worktree.
+          if(method==='workspace_git_create_worktree'){
+            if(!rootAllowed||typeof (args as Record<string,unknown>).branch!=='string'||
+              !/^atlas\/[a-z0-9][a-z0-9/_-]{0,72}$/.test(String((args as Record<string,unknown>).branch)))
+              return {block:true,reason:'Only approved bases may create atlas/* worktrees'};
+          }
+          if(method==='workspace_run_dev_task'&&
+            !run.devTasks?.[codingCheckoutId]?.includes(String((args as Record<string,unknown>).task)))
+            return {block:true,reason:'Development task not in the operator allowlist'};
+          try {
+            codingCheckout=await run.atlasCodingInspect?.(codingCheckoutId,run.signal);
+          }catch {
+            return {block:true,reason:'Could not verify live Atlas checkout and Node'};
+          }
+          if(!codingCheckout||codingCheckout.id!==codingCheckoutId||
+             !codingCheckoutPermitted(codingCheckout,method))
+            return {block:true,reason:'Checkout branch, Node or capability not approved'};
+          const callArgs=args as Record<string,unknown>;
+          if(method==='workspace_git_open_pull_request'&&
+            (callArgs.repository!==codingCheckout.repository||callArgs.branch!==codingCheckout.branch))
+            return {block:true,reason:'Pull request repository or branch differs from verified checkout'};
+          if(method==='workspace_git_push_branch'&&
+            (callArgs.repository!==undefined&&callArgs.repository!==codingCheckout.repository||
+             callArgs.branch!==undefined&&callArgs.branch!==codingCheckout.branch))
+            return {block:true,reason:'Push differs from verified checkout'};
+        }
+        const safe=githubWrite?approvedGitHubWriteArgs(method,args,provider.config.writeRepositories??[]):args;
+        if(!safe||typeof safe!=='object'||Array.isArray(safe))
+          return {block:true,reason:'Write scope not permitted'};
         run.store.save('invocations',{...record,state:'validating'});
-        try{
-          await run.approve(run.task,invocationId,provider.config.id+':'+method,safe,run.signal);
+        try {
+          if(atlasWrite&&codingCheckoutId){
+            // One approval authorises bounded file edits/commits on this worktree
+            // for this one parent turn. External publication stays per-call.
+            if(method==='workspace_git_create_worktree'||sensitiveCodingTool(method)){
+              await run.approve(run.task,invocationId,'atlas:'+method,safe as Record<string,unknown>,run.signal);
+            }else if(!approvedCodingScopes.has(codingCheckoutId)){
+              await run.approve(run.task,invocationId,'atlas:coding_checkout',
+                {checkoutId:codingCheckoutId,branch:codingCheckout!.branch,
+                  repository:codingCheckout!.repository,nodeId:codingCheckout!.nodeId,
+                  scope:'bounded file edits, Git staging/commits and configured development tasks during this turn'},run.signal);
+              approvedCodingScopes.add(codingCheckoutId);
+            }
+          }else{
+            await run.approve(run.task,invocationId,provider.config.id+':'+method,safe as Record<string,unknown>,run.signal);
+          }
           run.signal.throwIfAborted();
           if(!nativeMcpCanInvoke(run,name))throw new Error('Revoked');
+          // Placement can change while the user is reviewing a permission.
+          if(atlasWrite&&codingCheckoutId){
+            const latest=await run.atlasCodingInspect?.(codingCheckoutId,run.signal);
+            if(!latest||latest.id!==codingCheckoutId||latest.nodeId!==codingCheckout!.nodeId||
+               latest.repository!==codingCheckout!.repository||
+               !codingCheckoutPermitted(latest,method))
+              throw new Error('Checkout changed during approval');
+          }
         }catch{
           run.store.save('invocations',{...record,state:'denied_before_dispatch'});
-          return {block:true,reason:'Write was not approved or authority was revoked'};
+          return {block:true,reason:'Coding authority denied, changed or revoked'};
         }
       }
       run.store.save('invocations',record);
       run.store.event(run.task.conversationId,{taskId:run.task.id,
         agentId:run.task.agentId??null,agentRunId:run.task.agentRunId??null,
         invocationId,tool:provider.config.id+':'+method,type:'tool',state:'started'});
-      active.set(event.toolCallId,{id:key,invocationId,providerId:provider.config.id,toolName:method});
+      active.set(event.toolCallId,{id:key,invocationId,providerId:provider.config.id,toolName:method,
+        codingCheckoutId,codingNodeId:codingCheckout?.nodeId,
+        codingRepository:codingCheckout?.repository,
+        codingBranch:typeof (args as Record<string,unknown>).branch==='string'?
+          String((args as Record<string,unknown>).branch):undefined});
     });
-    pi.on('tool_result',event=>{
+    pi.on('tool_result',async event=>{
       const entry=active.get(event.toolCallId);
       if(!entry)return;
       active.delete(event.toolCallId);
       // A provider may be disabled or an agent cancelled *during* dispatch.
       // Do not deliver or audit a successful result after its authority ends.
       const revoked=!nativeMcpCanInvoke(run,event.toolName);
-      const failed=event.isError||revoked;
+      let failed=event.isError||revoked;
+      // Admit a freshly-created worktree only after independent verification.
+      // Never trust a model-selected ID or permit writes to the original main checkout.
+      if(!failed&&entry.providerId==='atlas'&&entry.toolName==='workspace_git_create_worktree'&&
+         run.atlasCodingInspect&&run.signal){
+        try{
+          const envelope=event.structuredContent as {structuredContent?:unknown}|undefined;
+          let response=envelope?.structuredContent;
+          if(!response){
+            const text=event.content.filter(v=>v.type==='text').map(v=>v.text).join('');
+            if(text.length<=256000)response=JSON.parse(text);
+          }
+          const value=response as {result?:Record<string,unknown>}|undefined;
+          const raw=value?.result??response as Record<string,unknown>|undefined;
+          const created=(raw?.checkout && typeof raw.checkout==='object'?
+            raw.checkout:raw?.workspace && typeof raw.workspace==='object'?
+            raw.workspace:raw) as Record<string,unknown>|undefined;
+          const id=created?.checkoutId??created?.id;
+          if(validCheckoutId(id)){
+            const inspected=await run.atlasCodingInspect(id.toLowerCase(),run.signal);
+            if(inspected.id===id.toLowerCase()&&inspected.nodeId===entry.codingNodeId&&
+               inspected.repository===entry.codingRepository&&
+               inspected.branch===entry.codingBranch&&
+               codingCheckoutPermitted(inspected,'workspace_patch_file'))
+              newCodingCheckouts.add(id.toLowerCase());
+          }
+        }catch{/* The worktree may exist, but no unverified coding grant is issued. */}
+      }
       const stored=run.store.get<InvocationRecord>('invocations',entry.id);
       if(stored)run.store.save('invocations',{...stored,
         state:failed?(stored.kind==='mcp_write'?'uncertain':'failed_read'):'completed'});
