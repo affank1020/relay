@@ -1,5 +1,5 @@
 export interface RelayModel { key:string; provider:'openrouter'|'ollama'; id:string; label:string; }
-export interface RelayModels { defaultKey:string; models:RelayModel[]; ollama?:{baseUrl:string; modelIds:string[]; contextWindow:number; maxOutputTokens:number; online?:boolean; lastChecked?:number}; }
+export interface RelayModels { defaultKey:string; models:RelayModel[]; ollama?:{baseUrl:string; modelIds:string[]; contextWindow?:number; maxOutputTokens?:number; online?:boolean; lastChecked?:number}; }
 const VALID_MODEL=/^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,110}$/;
 const MAX_LOCAL_MODELS=8;
 const DISCOVERY_INTERVAL_MS=15_000;
