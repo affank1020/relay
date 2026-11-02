@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { LoadedMcpConfig } from '@earendil-works/pi-coding-agent';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import type { Store, Task, InvocationRecord } from './store.js';
+import type { Store, Task, InvocationRecord, Conversation, CodingWorktreeGrant } from './store.js';
 import type { ProviderConfig } from './integrations/manager.js';
 import { GITHUB_WRITES, approvedGitHubWriteArgs, isGitHubWrite } from './integrations/github-writes.js';
 import type { WriteApproval } from './integrations/manager.js';
@@ -113,7 +113,10 @@ export function nativeMcpAuditExtension(run:NativeMcpRun) {
         if(atlasWrite){
           codingCheckoutId=codingCheckoutInput(args)??undefined;
           const rootAllowed=!!codingCheckoutId && !!provider.config.codingCheckouts?.includes(codingCheckoutId);
-          if(!codingCheckoutId||(!rootAllowed&&!newCodingCheckouts.has(codingCheckoutId)))
+          const persisted=run.store.get<Conversation>('conversations',run.task.conversationId)
+            ?.codingWorktrees?.find(grant=>grant.id===codingCheckoutId &&
+              !!provider.config.codingCheckouts?.includes(grant.baseId));
+          if(!codingCheckoutId||(!rootAllowed&&!newCodingCheckouts.has(codingCheckoutId)&&!persisted))
             return {block:true,reason:'Checkout not approved for Relay coding'};
           // A configured base checkout is only allowed to spawn an isolated worktree.
           if(method==='workspace_git_create_worktree'){
@@ -131,7 +134,10 @@ export function nativeMcpAuditExtension(run:NativeMcpRun) {
             return {block:true,reason:'Could not verify live Atlas checkout and Node'};
           }
           if(!codingCheckout||codingCheckout.id!==codingCheckoutId||
-             !codingCheckoutPermitted(codingCheckout,method))
+             !codingCheckoutPermitted(codingCheckout,method)||
+             (persisted&&(persisted.nodeId!==codingCheckout.nodeId||
+               persisted.branch!==codingCheckout.branch||
+               persisted.repository!==codingCheckout.repository)))
             return {block:true,reason:'Checkout branch, Node or capability not approved'};
           const callArgs=args as Record<string,unknown>;
           if(method==='workspace_git_open_pull_request'&&
@@ -217,8 +223,19 @@ export function nativeMcpAuditExtension(run:NativeMcpRun) {
             if(inspected.id===id.toLowerCase()&&inspected.nodeId===entry.codingNodeId&&
                inspected.repository===entry.codingRepository&&
                inspected.branch===entry.codingBranch&&
-               codingCheckoutPermitted(inspected,'workspace_patch_file'))
-              newCodingCheckouts.set(id.toLowerCase(),entry.codingCheckoutId!);
+               codingCheckoutPermitted(inspected,'workspace_patch_file')){
+              const targetId=id.toLowerCase(),baseId=entry.codingCheckoutId!;
+              newCodingCheckouts.set(targetId,baseId);
+              const conversation=run.store.get<Conversation>('conversations',run.task.conversationId);
+              if(conversation&&!conversation.internalParentConversationId){
+                const grant:CodingWorktreeGrant={id:targetId,baseId,nodeId:inspected.nodeId,
+                  repository:inspected.repository,branch:inspected.branch};
+                const prior=(conversation.codingWorktrees??[]).filter(item=>item.id!==targetId);
+                // Fail closed at the persisted cap, never silently evict a still-approved worktree.
+                if(prior.length<16)run.store.save('conversations',
+                  {...conversation,codingWorktrees:[...prior,grant]});
+              }
+            }
           }
         }catch{/* The worktree may exist, but no unverified coding grant is issued. */}
       }

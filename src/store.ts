@@ -4,7 +4,13 @@ import type { AtlasContext } from './atlas-context.js';
 import type { AtlasResourceObservation } from './atlas-awareness.js';
 
 export type State = 'queued' | 'running' | 'awaiting_approval' | 'waiting_children' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+export interface CodingWorktreeGrant {
+  /** Proven by Atlas worktree creation and immediate live inspection. */
+  id:string;baseId:string;nodeId:string;repository:string;branch:string;
+}
 export interface Conversation { id: string; title: string; createdAt: string; modelKey?: string; manualTitle?: boolean; atlasContext?: AtlasContext|null;
+  /** Server-issued, per-conversation worktree provenance. Each new turn still requires write approval. */
+  codingWorktrees?:CodingWorktreeGrant[];
   /** Internal Pi child session; never a user chat. Direct task URLs still permit inspection. */
   internalParentConversationId?: string;
 }
