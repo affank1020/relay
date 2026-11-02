@@ -39,7 +39,7 @@ test('approved base can create isolated worktree, then bounded edits require a s
     RELAY_ATLAS_CODING_CHECKOUTS:base})[1];
   const run:NativeMcpRun={task,store,providers:[{config:atlas,enabled:()=>enabled}],
     approve:async(_task,_id,tool)=>{approvals.push(tool);},
-    signal:new AbortController().signal,devTasks:{[child]:['test']},
+    signal:new AbortController().signal,devTasks:{[base]:['test']},
     atlasCodingInspect:async id=>({id,nodeId:node,repository:'affank1020/relay',
       branch:id===base?'main':'atlas/coding-issue',active:true,online:true,
       capabilities:['workspace.files','workspace.git','workspace.dev']})};
