@@ -189,7 +189,7 @@ export class PiHarness implements Harness {
         'Atlas is available through approved MCP tools when configured. Discover projects, logical workspaces, physical checkouts, Nodes and their online state as needed. No project selection is required. Resolve resource identities through tools, never guess IDs or assume a Node is online. '+
         'When authorised Atlas coding tools are present, investigate before editing. Create a fresh atlas/* worktree from an allowlisted base, verify the returned checkout ID, and make edits only on the isolated worktree. Read files before using SHA-checked patches. Use only named approved development tasks for tests. Inspect Git status and diff before commit. Push and open a draft PR only with explicit approval. Never modify a dirty main checkout or assume a previous action succeeded. '+
         formatAtlasContext(atlasContext)+taskIdentityHint+
-        (codingBases.length?'\\nOperator-approved Atlas coding base checkout IDs: '+codingBases.join(', ')+'. These are only starting points for fresh isolated worktrees.':'')+
+        (codingBases.length?'\nOperator-approved Atlas coding base checkout IDs: '+codingBases.join(', ')+'. These are only starting points for fresh isolated worktrees.':'')+
         (atlasAvailable===false?' Atlas MCP is currently unavailable.':'')+skillManifest});
     await loader.reload();
     if(loader.getExtensions().errors.length)throw new Error('Approved Pi extension failed to load');
