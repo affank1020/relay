@@ -53,6 +53,12 @@ test('Two separate Pi delegation calls survive a malformed Qwen multi-call respo
   ]);
 });
 
+test('Bare Qwen tool-call marker is not accepted as a completed coding answer',()=>{
+  const marker='I will read the issue, then inspect the workspace.\\n<tool_call>';
+  assert.equal(recoverQwenToolCall(output(marker),readTool).kind,'invalid');
+  assert.equal(recoverQwenToolCall(output('Just a normal explanation'),readTool).kind,'none');
+});
+
 test('Existing structured provider calls are preserved, never reparsed or duplicated',()=>{
   const raw={...output(''),choices:[{index:0,finish_reason:'tool_calls',
     message:{role:'assistant',content:null,tool_calls:[{id:'call_a',type:'function',
