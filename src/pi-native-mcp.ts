@@ -223,7 +223,7 @@ export function nativeMcpAuditExtension(run:NativeMcpRun) {
             if(inspected.id===id.toLowerCase()&&inspected.nodeId===entry.codingNodeId&&
                inspected.repository===entry.codingRepository&&
                inspected.branch===entry.codingBranch&&
-               codingCheckoutPermitted(inspected,'workspace_patch_file'))
+               codingCheckoutPermitted(inspected,'workspace_patch_file')){
               const targetId=id.toLowerCase(),baseId=entry.codingCheckoutId!;
               newCodingCheckouts.set(targetId,baseId);
               const conversation=run.store.get<Conversation>('conversations',run.task.conversationId);
@@ -235,6 +235,7 @@ export function nativeMcpAuditExtension(run:NativeMcpRun) {
                 if(prior.length<16)run.store.save('conversations',
                   {...conversation,codingWorktrees:[...prior,grant]});
               }
+            }
           }
         }catch{/* The worktree may exist, but no unverified coding grant is issued. */}
       }
