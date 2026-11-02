@@ -24,7 +24,7 @@ Every write is checked against current Atlas checkout placement, Node online sta
 
 - Child sessions are read-only and cannot inherit coding authority.
 - No arbitrary bash, arbitrary Git mutations, deployments, merges or production execution.
-- A derived worktree is automatically admitted only within the same agent turn; for a later turn, add its verified checkout UUID to the operator's coding allowlist and restart Relay. Persisting a narrower user-reviewed grant is follow-up work.
+- A worktree created and verified by Relay is remembered only in its original conversation. Follow-up turns can edit/revise it under a new per-turn checkout approval; other conversations do not inherit that authority. Operator checkout allowlist revocation still removes access. At most 16 checked worktrees are retained per conversation.
 - Named tasks need both Atlas configuration and an exact base-checkout entry in Relay's `RELAY_ATLAS_DEV_TASKS`. With an Atlas Server supporting approved worktree task inheritance, verified worktrees created during the same Pi turn can run the base's named tasks. Older Atlas versions may not inherit tasks, so deploy the corresponding Atlas change first. Future turns require a fresh authorised coding scope.
 - Only an operator-provided Atlas checkout can be a starting point; model prose and stale Node status cannot grant authority.
 - This is a coding-enablement slice, not proof of live end-to-end acceptance. Before using it for unattended work, test one small real issue through worktree, edit, tests and draft PR, and review the first PR manually.
