@@ -36,10 +36,29 @@ export function nativeMcpAllowed(run:NativeMcpRun):string[] {
     providerTools(run,config).filter(name=>!child || granted.has(nativeName(config.id,name)))
       .map(name=>nativeName(config.id,name)));
 }
+/** A tiny deterministic starting toolset avoids broad repository searches
+ * and repeated tool_search calls for local models. All tool calls still go
+ * through the same runtime authorisation/approval checks. */
+const directStartupTools=new Set([
+  'github:issue_read',
+  'atlas:get_workspace',
+  'atlas:workspace_git_status',
+  'atlas:workspace_git_create_worktree'
+]);
+export function nativeMcpDirectNames(run:NativeMcpRun):string[] {
+  if(run.task.parentId||run.task.delegation)return [];
+  const allowed=new Set(nativeMcpAllowed(run));
+  return run.providers.flatMap(({config})=>providerTools(run,config)
+    .filter(name=>directStartupTools.has(config.id+':'+name))
+    .map(name=>nativeName(config.id,name))
+    .filter(name=>allowed.has(name)));
+}
+
 export function nativeMcpConfig(run:NativeMcpRun):LoadedMcpConfig {
   const names=run.providers.map(p=>p.config.id.replaceAll('-','_'));
   if(new Set(names).size!==names.length)throw new Error('Colliding native MCP provider namespaces');
   const allowed=new Set(nativeMcpAllowed(run));
+  const direct=new Set(nativeMcpDirectNames(run));
   return {
     errors:[],autoEnableCodemode:false,
     servers:run.providers.filter(p=>p.enabled()&&(!!p.config.token ||
@@ -54,7 +73,8 @@ export function nativeMcpConfig(run:NativeMcpRun):LoadedMcpConfig {
           // Default deny: never discover arbitrary MCP writes or unknown tools.
           exposure:'hidden' as const,
           toolExposure:Object.fromEntries(providerTools(run,config).map(name=>[name,
-            allowed.has(nativeName(config.id,name))?'deferred':'hidden'])) as Record<string,'deferred'|'hidden'>
+            !allowed.has(nativeName(config.id,name))?'hidden':
+             direct.has(nativeName(config.id,name))?'direct':'deferred'])) as Record<string,'direct'|'deferred'|'hidden'>
         }
       }))
   };

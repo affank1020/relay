@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { configuredProviders } from '../src/integrations/manager.js';
 import { nativeMcpAllowed, nativeMcpCanInvoke, nativeMcpConfig,
-  nativeMcpAuditExtension, type NativeMcpRun } from '../src/pi-native-mcp.js';
+  nativeMcpAuditExtension, nativeMcpDirectNames, type NativeMcpRun } from '../src/pi-native-mcp.js';
 import { Store, type Task } from '../src/store.js';
 import { Engine, type Limits } from '../src/engine.js';
 import { CapabilityRegistry } from '../src/capabilities.js';
@@ -36,7 +36,8 @@ test('Pi native config exposes only approved GitHub reads with no write privileg
     assert.equal(config.servers.length,1);
     const server=config.servers[0].config;
     assert.equal(server.exposure,'hidden');
-    assert.equal(server.toolExposure?.issue_read,'deferred');
+    assert.equal(server.toolExposure?.issue_read,'direct');
+    assert.deepEqual(nativeMcpDirectNames(run),['mcp__github__issue_read']);
     assert.equal(server.toolExposure?.create_issue,undefined);
     assert.ok(!JSON.stringify({tools:nativeMcpAllowed(run)}).includes('private-do-not-log'));
     assert.ok(nativeMcpAllowed(run).includes('mcp__github__issue_read'));
@@ -99,6 +100,8 @@ test('Atlas becomes a trusted native Pi read provider without exposing mutations
     run.providers.push({config:atlas,enabled:()=>true});
     const exposed=nativeMcpAllowed(run);
     assert.ok(exposed.includes('mcp__atlas__list_nodes'));
+    assert.ok(nativeMcpDirectNames(run).includes('mcp__atlas__get_workspace'));
+    assert.equal(configs.find(c=>c.id==='atlas')?.codingCheckouts?.length,0);
     assert.ok(!exposed.includes('mcp__atlas__workspace_run_dev_task'));
     const config=nativeMcpConfig(run);
     const server=config.servers.find(p=>p.name==='atlas');
